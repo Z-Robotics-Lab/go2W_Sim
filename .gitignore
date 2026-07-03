@@ -2,6 +2,7 @@
 IsaacLab/
 robot_lab/
 assets/unitree_ros/
+assets/piper_ros/
 
 # 传感器网格（fetch_sensor_meshes.sh 下载；mid360 网格许可不明，不再分发）
 assets/sensor_meshes/

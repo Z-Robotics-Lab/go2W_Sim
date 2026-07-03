@@ -21,4 +21,10 @@ if [ ! -d assets/unitree_ros ]; then
   git -C assets/unitree_ros sparse-checkout set robots/go2w_description
 fi
 
-echo "OK: IsaacLab v2.3.2 / robot_lab v2.3.2 / unitree_ros(go2w_description)"
+if [ ! -d assets/piper_ros ]; then
+  git clone --depth 1 --branch humble --filter=blob:none --sparse \
+    https://github.com/agilexrobotics/piper_ros.git assets/piper_ros
+  git -C assets/piper_ros sparse-checkout set src/piper_description
+fi
+
+echo "OK: IsaacLab v2.3.2 / robot_lab v2.3.2 / unitree_ros(go2w_description) / piper_ros(piper_description)"
