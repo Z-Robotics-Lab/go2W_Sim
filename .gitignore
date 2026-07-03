@@ -1,0 +1,13 @@
+# 第三方仓库（用 scripts/clone_deps.sh 拉取并锁定版本，不入库）
+IsaacLab/
+robot_lab/
+assets/unitree_ros/
+
+# 本地运行时产物
+docker-cache/
+wheels/
+logs/
+.venv/
+outputs/
+*.log
+__pycache__/
