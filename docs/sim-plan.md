@@ -1,0 +1,72 @@
+# 仿真里程碑 M1 — 传感器版 Go2W 落地室内仓库场景（GUI 可跑）
+
+目标：一台与真机配置一致的 Go2W 数字孪生，放进 Isaac Sim 内置室内复杂环境，
+GUI 中可视、物理可跑，作为后续室内导航 + 抓取开发的基座。
+
+## 机器人配置（与真机采购一致）
+
+| 部件 | 安装位置 | 姿态/质量 | 建模方式 |
+|---|---|---|---|
+| Livox Mid-360 | 头顶（x≈+0.25m）| **前倾 20°**（pitch +0.349rad），0.265kg | 圆柱体 + 传感器 frame（后续挂 RTX Lidar）|
+| PiPER 6 轴臂 | 背部前段（x≈+0.13m）| 4.2kg + 夹爪 | 官方 piper_description URDF 合入 |
+| D435 深度相机 | PiPER 末端 link6（**手眼**）| 0.072kg | 盒体 + camera frame（后续挂 Camera prim）|
+| NUC 主机 | 背部后段（x≈-0.18m）| **0.5kg 配重块**（用户指定）| 盒体配重 |
+| 安装板/杂项 | 背部 | 补足到背部总载 **~6.5kg** | 并入配重质量 |
+
+参考基准（来自官方 go2w URDF 实测）：躯干质量 6.921kg；头部挂点 x=0.285；
+内置雷达位 x=0.28945, pitch 2.878rad——Mid-360 的挂法参考它。
+
+## 工作分解（按顺序）
+
+1. **[进行中] 容器环境收尾**：isaaclab 六包 + rsl-rl + robot_lab 手动 pip 安装
+   （绕开 isaaclab.sh 的强制 torch 下载；镜像自带 torch 2.7.0+cu128 已验证 CUDA 可用）。
+2. **基线冒烟**：headless 跑 `RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-v0` 5 个迭代，
+   证明未改装的 Go2W 在 Isaac Sim 里能跑 RL 任务。
+3. **URDF 合成**：`assets/urdf/go2w_sensored.urdf`
+   - 基底：unitree_ros `go2w_description.urdf`（12 腿关节 + 4 轮关节 `*_foot_joint`）
+   - 合入 piper_description（6 关节 + 夹爪；base fixed 到躯干背部前段）
+   - 新增固定 link：mid360（前倾 20°）、d435（fixed 到 piper link6）、nuc_weight（0.5kg）
+   - 质量校验：背部合计 ~6.5kg；URDF 通过 Isaac 导入器解析
+4. **URDF -> USD**：IsaacLab `convert_urdf.py`（轮关节零刚度/速度驱动，腿关节位置驱动；
+   注意 fixed-link 带惯量的 merge 行为——IsaacLab 2.3.2 已锁定兼容的 importer 版本）
+   产出 `assets/usd/go2w_sensored/`（提交进库）。
+5. **仓库场景脚本**：`scripts/sim/warehouse_scene.py`
+   - 加载 Isaac Sim 内置室内资产（Nucleus 云端 `Isaac/Environments/Simple_Warehouse/
+     full_warehouse.usd`，首次加载走网络并缓存到 docker-cache/ov；备选 hospital/office）
+   - 落入 go2w_sensored USD，腿关节按站立位姿加 PD 保持，轮子速度驱动
+   - headless 模式下渲染视口截图到 logs/scene.png 作为无人值守验证
+6. **GUI 运行**：`scripts/run_gui.sh`（xhost + X11 socket 直通容器），用户桌面直接打开
+   Isaac Sim 窗口看场景、拖机器人、跑物理。
+7. **传感器真实化（M2，硬性要求：所有传感器/手臂出真实可用读数）**
+   - Mid-360 → RTX Lidar prim 挂 `mid360_link`。Isaac Sim 5.1 不带 Livox 配置（已核实，
+     只有 HESAI/Ouster/SICK/SLAMTEC/Velodyne/ZVISION）：优先找社区 Mid-360 RTX JSON，
+     否则按规格自制近似（360°×[-7°,+52°]，~20 万点/秒，随机化 emitter 近似非重复扫描）
+   - D435 → Camera prim 挂 `d435_link`（RGB + distance_to_image_plane 深度两路）
+   - PiPER → 关节位置目标可控 + 关节状态可读（已是真关节），后续 IK/MoveIt2
+   - ROS2 bridge（Isaac Sim 5.1 支持 Jazzy）把点云/图像/关节态发成 topic，与真机拓扑同构
+   - URDF 侧已为此铺路：`merge_fixed_joints=False` 保留了 mid360/d435 的独立 frame
+
+## 风险与对策
+
+- **Nucleus 云资产下载慢/断**（国内网络）：仓库场景 USD+贴图约百 MB 级，一次性缓存;
+  若不可用，退级方案是本地简单房间（ground plane + 盒体货架）先跑通,后补资产包。
+- **合成 URDF 的关节命名冲突**：piper 与 go2w 均有 `base_link` 概念——合成时 piper 全部
+  link/joint 加 `piper_` 前缀（已知 piper_description 本身以 base_link 为根）。
+- **手臂加入后重心后移/前移**：站立位姿可能需要微调；M1 只要求稳定站立不翻。
+- **RL 任务与带臂模型不兼容**：M1 不训练带臂 RL；robot_lab 的 Go2W 任务继续用原版 URDF，
+  带臂模型用于场景/导航/抓取开发。全身 loco-manipulation 是路线图阶段 6（LeggedManip_Lab 路线）。
+
+## 完成判据（M1 Definition of Done）
+
+- [ ] GUI 中打开仓库场景，传感器版 Go2W 站立在地面，物理稳定（不翻、不抖）
+- [ ] 机器人 USD 的 16 个运动关节 + 6 个臂关节在 stage 里可见且属性正确
+- [ ] Mid-360 前倾 20°、D435 在末端朝前、NUC/稳压器在背板内（stage 里量得到）
+- [ ] headless 渲染的场景截图存档（无人值守可复验）
+- [ ] 全部脚本/URDF/USD 进 git，README 状态表更新
+
+## 完成判据（M2 Definition of Done — 传感器真实可用）
+
+- [ ] Mid-360 点云：仓库场景中采一帧，点数/FOV/量程与规格相符，存 .npy + 可视化截图
+- [ ] D435：RGB 与深度图各存一帧，深度值与场景几何吻合（抽查已知距离物体）
+- [ ] PiPER：发一组关节目标 → 关节实际到位（误差 < 1e-2 rad），末端带着 D435 动
+- [ ] （进阶）ROS2 bridge 出 /points /image /joint_states，rviz2 或 ros2 topic hz 验证
