@@ -43,7 +43,9 @@ from pathlib import Path
 nav = Path(sys.argv[1])
 src = (nav / "src/base_autonomy/vehicle_simulator/launch/system_real_robot.launch").read_text()
 out = src.replace("  ld.add_action(start_joy)\n", "").replace("  ld.add_action(start_mid360)\n", "")
-out = out.replace("""      'realRobot': 'true',""", """      'realRobot': 'true',
+# realRobot=false：关掉 pathFollower 的 /dev/ttyACM0 串口重试（T-Bot 真机底盘用，
+# 我们走 /cmd_vel topic）；autonomyMode=true：无手柄自主使能
+out = out.replace("""      'realRobot': 'true',""", """      'realRobot': 'false',
       'autonomyMode': 'true',
       'maxSpeed': '0.6',
       'autonomySpeed': '0.6',""")

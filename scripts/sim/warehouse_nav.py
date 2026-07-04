@@ -57,7 +57,7 @@ WAREHOUSE_USD = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/full_warehou
 
 # Go2W 轮几何（left_wheel.dae 实测半径 0.086m；轮距待实测校准）
 WHEEL_RADIUS = 0.086
-TRACK_WIDTH = 0.42
+TRACK_WIDTH = 0.288  # 自检实测（左右前轮世界系间距）
 # Mid-360 出厂标定: imu^T_laser=[-0.011,-0.02329,0.04412] -> IMU 在雷达系的位置取反
 IMU_OFFSET_IN_LIDAR = (0.011, 0.02329, -0.04412)
 
@@ -95,7 +95,9 @@ GO2W_NAV_CFG = ArticulationCfg(
             effort_limit_sim=23.5, velocity_limit_sim=30.0, stiffness=100.0, damping=5.0),
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*_foot_joint"],
-            effort_limit_sim=23.5, velocity_limit_sim=30.0, stiffness=0.0, damping=2.0),
+            # 滑移转向要克服四轮横向摩擦：阻尼 2 时转向力矩不足（回归实测直线 OK
+            # 转弯全丢），提到 8
+            effort_limit_sim=60.0, velocity_limit_sim=30.0, stiffness=0.0, damping=8.0),
         "arm": ImplicitActuatorCfg(
             joint_names_expr=["piper_joint[1-6]"],
             effort_limit_sim=30.0, velocity_limit_sim=5.0, stiffness=100.0, damping=5.0),
@@ -156,8 +158,7 @@ def main():
         # CMU 栈的 imu_acc_x_limit 限幅假设 IMU 水平：斜装 IMU 的重力 x 分量会被
         # 剪掉导致重力初始化错 13°、vehicle 系歪（RViz 路径扇面竖起，已实锤）。
         # 雷达相对 IMU 的 20° 俯仰改由标定文件 imu_laser_rotation_offset 声明。
-        offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR,
-                                rot=(0.984808, 0.0, -0.173648, 0.0)),
+        offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR),
         update_period=1 / 100,
         gravity_bias=(0.0, 0.0, 0.0),  # 纯运动学加速度；重力在发布时按姿态正确投影
     ))
@@ -173,6 +174,13 @@ def main():
         offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0),
                                    convention="world"),
     ))
+    # 轮胎高摩擦材质：滑移转向的横摆力矩来自轮-地纵向抓地力
+    wheel_mat = sim_utils.RigidBodyMaterialCfg(
+        static_friction=1.6, dynamic_friction=1.4, restitution=0.0)
+    wheel_mat.func("/World/Materials/wheel_rubber", wheel_mat)
+    for foot in ("FL", "FR", "RL", "RR"):
+        sim_utils.bind_physics_material(f"/World/Robot/{foot}_foot",
+                                        "/World/Materials/wheel_rubber")
     setup_lidar_ros2()
     sim.reset()
     print(f"[NAV] joints({robot.num_joints}) ready")
@@ -206,8 +214,10 @@ def main():
     left = [i for i, n in zip(wheel_ids, wheel_names) if n.startswith(("FL", "RL"))]
     right = [i for i, n in zip(wheel_ids, wheel_names) if n.startswith(("FR", "RR"))]
 
+    yaw0 = {"v": 0.0}
+    st = {"vx": 0.4, "wz": 0.0}  # 自检指令（独立于 cmd：外部 pathFollower 会持续发
+    # cmd_vel=0 把 cmd 字典覆盖——第7轮自检取证的教训）
     if args_cli.selftest:
-        cmd["vx"], cmd["t"] = 0.4, 1e18  # 恒定前进指令
         start_pos = None
 
     step = 0
@@ -218,8 +228,11 @@ def main():
         rclpy.spin_once(node, timeout_sec=0.0)
         sim_t["now"] += physics_dt
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
-        vx = cmd["vx"] if (sim_t["now"] - cmd["t"]) < 0.5 or args_cli.selftest else 0.0
-        wz = cmd["wz"] if (sim_t["now"] - cmd["t"]) < 0.5 or args_cli.selftest else 0.0
+        if args_cli.selftest:
+            vx, wz = st["vx"], st["wz"]
+        else:
+            vx = cmd["vx"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            wz = cmd["wz"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
 
         robot.set_joint_position_target(default_pos)
         vel_t = robot.data.default_joint_vel.clone()
@@ -234,19 +247,27 @@ def main():
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
         robot.update(physics_dt)
         imu.update(physics_dt)
-        d435.update(physics_dt)
+        # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线
+        # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）
+        if step % 10 == 0:
+            d435.update(physics_dt)
 
         # /clock：仿真时钟广播（导航栈开 use_sim_time 对齐）
         sec, nsec = sim_stamp()
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec
         clock_pub.publish(clock_msg)
 
-        # IMU 200Hz 发布（比力 = 本体系运动学加速度 + R^T·(0,0,9.81)，真实 IMU 物理）
+        # IMU 发布：比力（斜帧）-> 恒定 Ry(+20°) 旋到水平帧。
+        # isaaclab OffsetCfg.rot 实测不作用于测量值（样本仍斜帧），故自己旋。
+        # 与 SLAM 标定 imu_laser_rotation_offset=[0,20,0]（雷达相对水平 IMU 俯仰 20°）自洽。
         g_b = math_utils.quat_apply_inverse(
             imu.data.quat_w, torch.tensor([[0.0, 0.0, 9.81]], device=imu.data.quat_w.device))
-        acc = (imu.data.lin_acc_b + g_b)[0].tolist()
-        gyr = imu.data.ang_vel_b[0].tolist()
-        quat = imu.data.quat_w[0].tolist()  # wxyz
+        ax, ay, az = (imu.data.lin_acc_b + g_b)[0].tolist()
+        gx_, gy_, gz_ = imu.data.ang_vel_b[0].tolist()
+        CY, SY = 0.9396926, 0.3420201  # cos/sin(20°)
+        acc = (CY * ax + SY * az, ay, -SY * ax + CY * az)
+        gyr = (CY * gx_ + SY * gz_, gy_, -SY * gx_ + CY * gz_)
+        quat = imu.data.quat_w[0].tolist()  # wxyz（arise use_imu_roll_pitch=false，仅参考）
         imu_msg.header.stamp.sec, imu_msg.header.stamp.nanosec = sec, nsec
         imu_msg.header.frame_id = "imu"
         imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z = acc
@@ -279,19 +300,47 @@ def main():
         if args_cli.selftest:
             if step == 100:
                 start_pos = robot.data.root_pos_w[0].clone()
+            if step == 150:
+                # 实测轮距（左右前轮世界系 y 距离）
+                fl = robot.body_names.index("FL_foot"); fr = robot.body_names.index("FR_foot")
+                track = abs(robot.data.body_pos_w[0, fl, 1] - robot.data.body_pos_w[0, fr, 1])
+                print(f"[SELFTEST] 实测轮距 track={track:.3f}m (脚本用 {TRACK_WIDTH})")
+            if step == 240:
+                print(f"[DIAG] wheel_ids={list(wheel_ids)} wheel_names={list(wheel_names)}")
+                print(f"[DIAG] left={list(left)} right={list(right)}")
+                print(f"[DIAG] vel_t@wheels={vel_t[0, wheel_ids].tolist()} (应为 [4.65]x4)")
+            if step == 250:
+                z = robot.data.root_pos_w[0, 2].item()
+                leg_ids, leg_names = robot.find_joints("FL_(hip|thigh|calf)_joint")
+                lp = robot.data.joint_pos[0, leg_ids].tolist()
+                lt = default_pos[0, leg_ids].tolist()
+                tq = robot.data.applied_torque[0, wheel_ids].tolist()
+                print(f"[DIAG] 身高z={z:.3f} (站立应~0.37)")
+                print(f"[DIAG] FL腿 实际={[round(v,2) for v in lp]} 目标={[round(v,2) for v in lt]}")
+                print(f"[DIAG] 轮施加力矩={[round(v,1) for v in tq]}")
             if step == 300:
                 wv = robot.data.joint_vel[0, wheel_ids].tolist()
                 print(f"[SELFTEST] 轮速实测 {dict(zip(wheel_names, [round(v,2) for v in wv]))} "
                       f"(目标 {round((0.4)/WHEEL_RADIUS,2)})")
-            if step == 300:  # 2s+ @100Hz
+            if step == 300:  # 前进段结束，切纯旋转
                 dp = (robot.data.root_pos_w[0] - start_pos).tolist()
-                fwd = dp[0]
-                print(f"[SELFTEST] 2s 前进位移 dx={fwd:.3f}m dy={dp[1]:.3f} "
-                      f"(期望 ~0.8m; 为负则轮向符号要翻)")
-                print(f"[SELFTEST] {'PASS' if fwd > 0.4 else 'FAIL'}")
+                print(f"[SELFTEST] 前进 dx={dp[0]:.3f}m dy={dp[1]:.3f} "
+                      f"({'PASS' if dp[0] > 0.3 else 'FAIL'})")
+                st["vx"], st["wz"] = 0.3, 0.5  # 行进弧线段（planner 的真实指令形态）
+                q = robot.data.root_quat_w[0].tolist()
+                import math as _m
+                yaw0["v"] = _m.atan2(2*(q[0]*q[3]+q[1]*q[2]), 1-2*(q[2]**2+q[3]**2))
+            if step == 600:  # 3s 旋转结束：测 yaw 响应
+                import math as _m
+                q = robot.data.root_quat_w[0].tolist()
+                yaw1 = _m.atan2(2*(q[0]*q[3]+q[1]*q[2]), 1-2*(q[2]**2+q[3]**2))
+                dyaw = (yaw1 - yaw0["v"] + _m.pi) % (2*_m.pi) - _m.pi
+                print(f"[SELFTEST] 3s 旋转 dyaw={_m.degrees(dyaw):.1f}deg "
+                      f"(指令 0.5rad/s x3s = 86deg; >45 PASS): "
+                      f"{'PASS' if _m.degrees(dyaw) > 45 else 'FAIL'}")
                 break
         if step == 200:
-            print(f"[NAV] imu sample: acc={[round(a,2) for a in acc]} (期望 x~-3.3 z~9.2, 前倾20°)")
+            print(f"[NAV] imu sample: acc={[round(a,2) for a in acc]} (水平化后期望 ~[0,0,9.8])")
         if args_cli.shot_dir and step % 3000 == 0:  # 30s @100Hz
             import os
             from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport

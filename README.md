@@ -90,6 +90,18 @@ docker exec -u 0 go2w-isaac bash -c "cd /workspace/go2w/robot_lab && TERM=xterm 
 20. DDS 必须隔离域（本仓库约定 ROS_DOMAIN_ID=42）：域 0 会和主机上其他 ROS 项目串台。
 21. 手动 cmake install 到 /usr/local 后要 `ldconfig`，否则节点起不来（libgtsam 找不到）。
 22. 编排脚本别用 `set -u`（ROS setup.bash 有 unbound 变量，直接静默死）。
+23. **宿主机上其他项目的定时清理会跨命名空间杀容器内同 uid 进程**（本机实证：
+    vector_os_nano 循环每轮末的 `rosm nuke` 定点清除我们 navstack 里的 ROS 进程，
+    时间戳 ±1s 吻合）。防御：关键容器用 root 运行（`--user 0`，非 root 清理器 EPERM）+
+    PID-1 supervisor 自愈（run_all_forever.sh）+ 配对重启脚本（restart_all.sh）。
+24. fastdds 大消息（900KB 点云）+ 频繁进程死亡环境：禁 SHM 强制 UDP
+    （FASTDDS_BUILTIN_TRANSPORTS=UDPv4），/dev/shm 僵尸段会让 SHM 静默瘫痪。
+25. **自检必须与生产数据通路隔离**：navstack 的 pathFollower 无目标时持续发
+    cmd_vel=0，会把自检的注入指令每帧覆盖（第 7 轮自检取证）。
+26. 手搓四轮差速在 Go2W 上物理不可行（轴距>轮距的定轴四轮滑移转向：3s 只转 2-4°）。
+    正解 = robot_lab 训练速度跟踪 RL 策略（真机 wheeled_sport 的仿真等价物）。
+27. isaaclab `Imu` 的 OffsetCfg.rot 不作用于测量值——斜装传感器的水平化在发布器里
+    用常量旋转自己做。
 
 ## 导航栈集成（M3，已验收）
 
@@ -121,7 +133,8 @@ docker exec navstack bash -c "export ROS_DOMAIN_ID=42 && source /opt/ros/jazzy/s
 - [x] GUI 平地场景人工目检通过
 - [x] M1：full_warehouse 场景导入（云资产已缓存，站高 0.375m 稳定）
 - [x] M2（部分）：Mid-360 RTX 点云 + 物理正确 IMU（斜装重力投影）真实读数
-- [x] M3：CMU 导航栈全链路（SLAM 稳定 + waypoint 自主导航验收通过）
+- [x] M3：CMU 导航栈全链路（SLAM 稳定 + 单点 waypoint 到达多次验证）
+- [ ] M3 收尾：方形巡航 4/4（阻塞于转向——RL locomotion 策略训练中）
 - [x] M2 收尾：D435 RGB+深度已出 ROS2 topic（/camera/image /camera/depth，进 RViz）
 - [ ] M2 尾巴：PiPER 关节 ROS2 控制接口（M4 前置）
 - [ ] 后续：RViz 可视化操作、更多 waypoint 回归、真机部署包
