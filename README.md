@@ -133,8 +133,9 @@ docker exec navstack bash -c "export ROS_DOMAIN_ID=42 && source /opt/ros/jazzy/s
 - [x] GUI 平地场景人工目检通过
 - [x] M1：full_warehouse 场景导入（云资产已缓存，站高 0.375m 稳定）
 - [x] M2（部分）：Mid-360 RTX 点云 + 物理正确 IMU（斜装重力投影）真实读数
-- [x] M3：CMU 导航栈全链路（SLAM 稳定 + 单点 waypoint 到达多次验证）
-- [ ] M3 收尾：方形巡航 4/4（阻塞于转向——RL locomotion 策略训练中）
+- [x] M3 完成：方形巡航回归 4/4（34s/139s/12s/80s，含转弯与回原点闭环）
+- [x] RL locomotion：robot_lab Go2W 速度策略（2000 iters, reward 114.5）替代差速——
+      弧线转向 2.3°→95°（41 倍），wheeled_sport 仿真等价物，附带 vy 全向
 - [x] M2 收尾：D435 RGB+深度已出 ROS2 topic（/camera/image /camera/depth，进 RViz）
 - [ ] M2 尾巴：PiPER 关节 ROS2 控制接口（M4 前置）
 - [ ] 后续：RViz 可视化操作、更多 waypoint 回归、真机部署包

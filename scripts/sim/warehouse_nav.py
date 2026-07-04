@@ -337,19 +337,13 @@ def main():
                 fl = robot.body_names.index("FL_foot"); fr = robot.body_names.index("FR_foot")
                 track = abs(robot.data.body_pos_w[0, fl, 1] - robot.data.body_pos_w[0, fr, 1])
                 print(f"[SELFTEST] 实测轮距 track={track:.3f}m (脚本用 {TRACK_WIDTH})")
-            if step == 240:
-                print(f"[DIAG] wheel_ids={list(wheel_ids)} wheel_names={list(wheel_names)}")
-                print(f"[DIAG] left={list(left)} right={list(right)}")
-                print(f"[DIAG] vel_t@wheels={vel_t[0, wheel_ids].tolist()} (应为 [4.65]x4)")
             if step == 250:
                 z = robot.data.root_pos_w[0, 2].item()
                 leg_ids, leg_names = robot.find_joints("FL_(hip|thigh|calf)_joint")
                 lp = robot.data.joint_pos[0, leg_ids].tolist()
                 lt = default_pos[0, leg_ids].tolist()
                 tq = robot.data.applied_torque[0, wheel_ids].tolist()
-                print(f"[DIAG] 身高z={z:.3f} (站立应~0.37)")
-                print(f"[DIAG] FL腿 实际={[round(v,2) for v in lp]} 目标={[round(v,2) for v in lt]}")
-                print(f"[DIAG] 轮施加力矩={[round(v,1) for v in tq]}")
+                print(f"[DIAG] 身高z={z:.3f} 轮力矩={[round(v,1) for v in tq]}")
             if step == 300:
                 wv = robot.data.joint_vel[0, wheel_ids].tolist()
                 print(f"[SELFTEST] 轮速实测 {dict(zip(wheel_names, [round(v,2) for v in wv]))} "

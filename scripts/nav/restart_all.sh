@@ -7,6 +7,8 @@
 set -e
 GO2W="$(cd "$(dirname "$0")/../.." && pwd)"
 NAV="$GO2W/refs/Navigation-Physical-Experiment"
+# RL locomotion 策略（robot_lab 训练；差速在 Go2W 上物理不可行——README 坑 26）
+POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt}"
 
 echo "[1/4] navstack supervisor 重启"
 docker rm -f navstack >/dev/null 2>&1 || true
@@ -22,7 +24,7 @@ docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAI
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
   -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
   go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
-  /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras \
+  /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
   --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
 
 echo "[3/4] 等 Isaac 就绪（IMU 样本出现）"
