@@ -15,6 +15,11 @@ sed -i 's/use_sim_time: false/use_sim_time: true/g' "$NAV"/src/slam/arise_slam_m
 sed -i "s/SetParameter(name='use_sim_time', value='false')/SetParameter(name='use_sim_time', value='true')/" \
   "$NAV"/src/slam/arise_slam_mid360/launch/arize_slam.launch.py
 
+# 1b. 斜装雷达补偿：雷达相对（虚拟平装）IMU 前倾 20 度（单位: 度）。
+# 背景：栈的 imu_acc 限幅假设 IMU 水平，Isaac 侧 IMU 已用 -20° 姿态偏置拉平。
+sed -i 's/data: \[0.0, 0.0, 0.0\] #\[0.0, 0.5, 0.0\]/data: [0.0, 20.0, 0.0] # lidar pitched 20 deg vs level imu/' \
+  "$NAV"/src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml
+
 # 2. XML launch 注入（只对非自闭合 <node ...> 块）
 python3 - "$NAV" <<'PYEOF'
 import re, sys

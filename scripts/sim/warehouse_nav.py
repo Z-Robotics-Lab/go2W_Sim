@@ -38,12 +38,14 @@ import torch  # noqa: E402
 from geometry_msgs.msg import TwistStamped  # noqa: E402
 from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
 from rosgraph_msgs.msg import Clock  # noqa: E402
+from sensor_msgs.msg import Image  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 from isaaclab.actuators import ImplicitActuatorCfg  # noqa: E402
 from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
+from isaaclab.sensors import Camera, CameraCfg  # noqa: E402
 from isaaclab.sensors import Imu as IsaacImu  # noqa: E402
 from isaaclab.sensors import ImuCfg  # noqa: E402
 from isaaclab.sim import SimulationCfg, SimulationContext  # noqa: E402
@@ -150,12 +152,27 @@ def main():
     robot = Articulation(GO2W_NAV_CFG)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
-        offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR),
+        # rot: -20° 俯仰抵消雷达前倾 -> IMU 帧水平（等效"IMU 平装在车体"）。
+        # CMU 栈的 imu_acc_x_limit 限幅假设 IMU 水平：斜装 IMU 的重力 x 分量会被
+        # 剪掉导致重力初始化错 13°、vehicle 系歪（RViz 路径扇面竖起，已实锤）。
+        # 雷达相对 IMU 的 20° 俯仰改由标定文件 imu_laser_rotation_offset 声明。
+        offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR,
+                                rot=(0.984808, 0.0, -0.173648, 0.0)),
         update_period=1 / 100,
         gravity_bias=(0.0, 0.0, 0.0),  # 纯运动学加速度；重力在发布时按姿态正确投影
     ))
     # 注意：isaaclab 默认 gravity_bias=(0,0,9.81) 是在传感器本体系直接加常量，
     # 只对水平安装成立；我们的 Mid-360 前倾 20°，必须按姿态投影（否则 SLAM 拿到错误重力方向）
+    # D435 RGB+深度（挂手眼 d435_link，X 前向=convention world；69deg HFOV）
+    d435 = Camera(CameraCfg(
+        prim_path="/World/Robot/d435_link/d435_cam",
+        update_period=0.1, height=480, width=640,
+        data_types=["rgb", "distance_to_image_plane"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=1.93, horizontal_aperture=2.65, clipping_range=(0.11, 20.0)),
+        offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0),
+                                   convention="world"),
+    ))
     setup_lidar_ros2()
     sim.reset()
     print(f"[NAV] joints({robot.num_joints}) ready")
@@ -164,6 +181,8 @@ def main():
     rclpy.init()
     node = rclpy.create_node("go2w_isaac_bridge")
     imu_pub = node.create_publisher(Imu, "/imu/data", 50)
+    rgb_pub = node.create_publisher(Image, "/camera/image", 5)
+    depth_pub = node.create_publisher(Image, "/camera/depth", 5)
     clock_pub = node.create_publisher(Clock, "/clock", 10)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
@@ -215,6 +234,7 @@ def main():
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
         robot.update(physics_dt)
         imu.update(physics_dt)
+        d435.update(physics_dt)
 
         # /clock：仿真时钟广播（导航栈开 use_sim_time 对齐）
         sec, nsec = sim_stamp()
@@ -233,6 +253,27 @@ def main():
         imu_msg.angular_velocity.x, imu_msg.angular_velocity.y, imu_msg.angular_velocity.z = gyr
         imu_msg.orientation.w, imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z = quat
         imu_pub.publish(imu_msg)
+
+        # 相机 10Hz（每 10 个物理步）发布 RGB + 深度
+        if step % 10 == 0 and "rgb" in d435.data.output:
+            rgb = d435.data.output["rgb"][0]
+            if rgb.shape[-1] == 4:
+                rgb = rgb[..., :3]
+            rgb_np = rgb.to("cpu", non_blocking=False).numpy().tobytes() if hasattr(rgb, "to") else rgb.tobytes()
+            im = Image()
+            im.header.stamp.sec, im.header.stamp.nanosec = sec, nsec
+            im.header.frame_id = "d435"
+            im.height, im.width = 480, 640
+            im.encoding, im.step = "rgb8", 640 * 3
+            im.data = rgb_np
+            rgb_pub.publish(im)
+            dep = d435.data.output["distance_to_image_plane"][0]
+            dm = Image()
+            dm.header = im.header
+            dm.height, dm.width = 480, 640
+            dm.encoding, dm.step = "32FC1", 640 * 4
+            dm.data = dep.to("cpu").numpy().astype("float32").tobytes() if hasattr(dep, "to") else dep.astype("float32").tobytes()
+            depth_pub.publish(dm)
 
         step += 1
         if args_cli.selftest:

@@ -122,5 +122,6 @@ docker exec navstack bash -c "export ROS_DOMAIN_ID=42 && source /opt/ros/jazzy/s
 - [x] M1：full_warehouse 场景导入（云资产已缓存，站高 0.375m 稳定）
 - [x] M2（部分）：Mid-360 RTX 点云 + 物理正确 IMU（斜装重力投影）真实读数
 - [x] M3：CMU 导航栈全链路（SLAM 稳定 + waypoint 自主导航验收通过）
-- [ ] M2 收尾：D435 深度图输出、PiPER 关节 ROS2 控制接口
+- [x] M2 收尾：D435 RGB+深度已出 ROS2 topic（/camera/image /camera/depth，进 RViz）
+- [ ] M2 尾巴：PiPER 关节 ROS2 控制接口（M4 前置）
 - [ ] 后续：RViz 可视化操作、更多 waypoint 回归、真机部署包
