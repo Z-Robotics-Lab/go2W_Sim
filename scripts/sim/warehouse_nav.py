@@ -21,6 +21,9 @@ parser.add_argument("--env", choices=["warehouse", "flat"], default="warehouse")
 parser.add_argument("--selftest", action="store_true", help="cmd_vel 前进自检后退出")
 parser.add_argument("--shot_dir", type=str, default=None,
                     help="每 30s 存一张视口截图到该目录（无人值守自查）")
+parser.add_argument("--policy", type=str, default=None,
+                    help="robot_lab Go2W 速度策略 checkpoint（.pt）——替代手搓差速，"
+                         "wheeled_sport 的仿真等价物，支持 vy")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
@@ -151,6 +154,14 @@ def main():
         ground = sim_utils.GroundPlaneCfg(); ground.func("/World/Ground", ground)
         light = sim_utils.DomeLightCfg(intensity=2000.0); light.func("/World/Light", light)
 
+    if args_cli.policy:
+        # 训练态增益（必须与 robot_lab UNITREE_GO2W_CFG 一致，策略才有效）
+        GO2W_NAV_CFG.actuators["legs"].stiffness = 25.0
+        GO2W_NAV_CFG.actuators["legs"].damping = 0.5
+        GO2W_NAV_CFG.actuators["legs"].effort_limit_sim = 23.5
+        GO2W_NAV_CFG.actuators["wheels"].stiffness = 0.0
+        GO2W_NAV_CFG.actuators["wheels"].damping = 0.5
+        GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
     robot = Articulation(GO2W_NAV_CFG)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
@@ -202,6 +213,7 @@ def main():
 
     def on_cmd(msg: TwistStamped):
         cmd["vx"] = msg.twist.linear.x
+        vy_cmd["v"] = msg.twist.linear.y
         cmd["wz"] = msg.twist.angular.z
         cmd["t"] = sim_t["now"]
 
@@ -220,6 +232,13 @@ def main():
     if args_cli.selftest:
         start_pos = None
 
+    policy_cache = {}
+    policy = None
+    if args_cli.policy:
+        from go2w_policy import Go2WPolicy
+        policy = Go2WPolicy(args_cli.policy, robot, args_cli.device or "cuda:0")
+    vy_cmd = {"v": 0.0}
+
     step = 0
     imu_msg = Imu()
     clock_msg = Clock()
@@ -234,15 +253,28 @@ def main():
             vx = cmd["vx"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
             wz = cmd["wz"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
 
-        robot.set_joint_position_target(default_pos)
-        vel_t = robot.data.default_joint_vel.clone()
-        wl = (vx - wz * TRACK_WIDTH / 2) / WHEEL_RADIUS
-        wr = (vx + wz * TRACK_WIDTH / 2) / WHEEL_RADIUS
-        for i in left:
-            vel_t[:, i] = wl
-        for i in right:
-            vel_t[:, i] = wr
-        robot.set_joint_velocity_target(vel_t)
+        if policy is not None:
+            vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            if step % 2 == 0:  # 策略 50Hz（sim 100Hz）
+                leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(vx, vy, wz)
+                policy_cache["legs"] = (leg_ids, leg_tgt)
+                policy_cache["wheels"] = (wheel_ids_p, wheel_vel)
+            robot.set_joint_position_target(default_pos)  # 臂/夹爪保持
+            if "legs" in policy_cache:
+                robot.set_joint_position_target(policy_cache["legs"][1],
+                                                joint_ids=policy_cache["legs"][0])
+                robot.set_joint_velocity_target(policy_cache["wheels"][1],
+                                                joint_ids=policy_cache["wheels"][0])
+        else:
+            robot.set_joint_position_target(default_pos)
+            vel_t = robot.data.default_joint_vel.clone()
+            wl = (vx - wz * TRACK_WIDTH / 2) / WHEEL_RADIUS
+            wr = (vx + wz * TRACK_WIDTH / 2) / WHEEL_RADIUS
+            for i in left:
+                vel_t[:, i] = wl
+            for i in right:
+                vel_t[:, i] = wr
+            robot.set_joint_velocity_target(vel_t)
         robot.write_data_to_sim()
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
         robot.update(physics_dt)
