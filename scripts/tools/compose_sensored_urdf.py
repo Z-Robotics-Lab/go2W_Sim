@@ -109,6 +109,22 @@ def main():
     for child in list(piper):
         out.append(child)
 
+    # 轮子碰撞体：网格凸包 -> 圆柱（速度控制下多边形轮滚动拖滞；实测 r=0.086 w=0.052,
+    # 网格沿轮轴(Y)外偏 0.048，左轮 +y 右轮 -y）
+    WHEEL_R, WHEEL_W, WHEEL_YOFF = 0.086, 0.052, 0.0481
+    for link in out.iter("link"):
+        n = link.get("name", "")
+        if n in ("FL_foot", "FR_foot", "RL_foot", "RR_foot"):
+            side = 1.0 if n.startswith(("FL", "RL")) else -1.0
+            col = link.find("collision")
+            origin = col.find("origin")
+            origin.set("xyz", f"0 {side * WHEEL_YOFF:.4f} 0")
+            origin.set("rpy", "1.5708 0 0")
+            geom = col.find("geometry")
+            for c in list(geom):
+                geom.remove(c)
+            ET.SubElement(geom, "cylinder", radius=str(WHEEL_R), length=str(WHEEL_W))
+
     m = MOUNTS
     sx, sy, sz = m["plate"]["size"]
     out.append(make_link("mount_plate", f'<box size="{sx} {sy} {sz}"/>',

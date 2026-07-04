@@ -227,9 +227,9 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0.0 0" />
+      <origin rpy="1.5708 0 0" xyz="0 0.0481 0" />
       <geometry>
-        <mesh filename="../unitree_ros/robots/go2w_description/dae/left_wheel.dae" />
+        <cylinder radius="0.086" length="0.052" />
       </geometry>
     </collision>
   </link>
@@ -396,9 +396,9 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 -0.0 0" />
+      <origin rpy="1.5708 0 0" xyz="0 -0.0481 0" />
       <geometry>
-        <mesh filename="../unitree_ros/robots/go2w_description/dae/right_wheel.dae" />
+        <cylinder radius="0.086" length="0.052" />
       </geometry>
     </collision>
   </link>
@@ -565,9 +565,9 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 0.0 0" />
+      <origin rpy="1.5708 0 0" xyz="0 0.0481 0" />
       <geometry>
-        <mesh filename="../unitree_ros/robots/go2w_description/dae/left_wheel.dae" />
+        <cylinder radius="0.086" length="0.052" />
       </geometry>
     </collision>
   </link>
@@ -734,9 +734,9 @@
       </material>
     </visual>
     <collision>
-      <origin rpy="0 0 0" xyz="0 -0.0 0" />
+      <origin rpy="1.5708 0 0" xyz="0 -0.0481 0" />
       <geometry>
-        <mesh filename="../unitree_ros/robots/go2w_description/dae/right_wheel.dae" />
+        <cylinder radius="0.086" length="0.052" />
       </geometry>
     </collision>
   </link>

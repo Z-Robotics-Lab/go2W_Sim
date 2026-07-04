@@ -78,6 +78,40 @@ docker exec -u 0 go2w-isaac bash -c "cd /workspace/go2w/robot_lab && TERM=xterm 
     （姿态沿用 realsense2_description 官方 xacro）。
 14. GitHub 上不少 mesh 走 Git-LFS，raw 链接只给指针 → 用 media.githubusercontent.com。
 15. 一次只跑一个 sim 实例（GPU/内存都吃紧）；重启场景前 `pkill -9 -f "kit/pytho[n]"`。
+16. **GUI 模式下 Kit 时间线 = 物理时间 × (rendering_dt/物理dt)**：每个物理步都触发 app
+    更新且时间线前进 rendering_dt。必须 `render_interval=1` 且 dt 一致，否则 RTX 雷达
+    时间戳跑倍速，SLAM 直接发散（实测 2 倍速 → z 漂到 -7.5m）。
+17. RTX 雷达 helper 按扫描**完成时刻**打帧戳：转 CustomMsg 时必须回溯一个扫描周期
+    （否则每帧都"来自未来"，SLAM 等 IMU 覆盖等到 buffer 爆）。实测旋转周期 0.2 sim-s
+    （配置写 10Hz 也一样，内部系数），转换器按 0.2s 铺 offset_time。
+18. isaaclab 的 `Imu.gravity_bias` 是本体系加常量，只对水平安装正确——斜装传感器必须
+    自己按姿态投影重力（quat_apply_inverse），否则 SLAM 拿到错误重力方向。
+19. 物理 100Hz 时腿部 PD 60/2 站不稳会摔（截图实锤）；100/5 稳。
+20. DDS 必须隔离域（本仓库约定 ROS_DOMAIN_ID=42）：域 0 会和主机上其他 ROS 项目串台。
+21. 手动 cmake install 到 /usr/local 后要 `ldconfig`，否则节点起不来（libgtsam 找不到）。
+22. 编排脚本别用 `set -u`（ROS setup.bash 有 unbound 变量，直接静默死）。
+
+## 导航栈集成（M3，已验收）
+
+Isaac 当机器人、CMU 导航栈（refs 见 docs/sim-plan.md）当大脑，全链路已跑通：
+waypoint → FAR/local planner → cmd_vel → 差速轮速 → Go2W 在 full_warehouse 自主行驶
+至目标（SLAM 与地面真值交叉验证一致，静止漂移 5cm/20s）。
+
+```bash
+# 1) Isaac 侧（传感器桥：/lidar/points /imu/data /clock 出、/cmd_vel 入，DDS 域 42）
+docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
+  -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+  -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
+  go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
+  /isaac-sim/python.sh warehouse_nav.py --env warehouse --shot_dir /workspace/go2w/logs/shots"
+# 2) 导航栈容器（首次：clone 导航栈到 refs/ 并 bash scripts/nav/patch_navstack.sh refs/<repo>，
+#    再按其 docker/README 构建 jazzy-dev 镜像 + colcon build）
+docker exec -d navstack bash /ws/run_navstack.sh
+# 3) 发导航目标
+docker exec navstack bash -c "export ROS_DOMAIN_ID=42 && source /opt/ros/jazzy/setup.bash && \
+  source /ws/install/setup.bash && ros2 topic pub --once /way_point \
+  geometry_msgs/msg/PointStamped '{header: {frame_id: map}, point: {x: 2.5, y: 0.0, z: 0.0}}'"
+```
 
 ## 状态
 
@@ -85,5 +119,8 @@ docker exec -u 0 go2w-isaac bash -c "cd /workspace/go2w/robot_lab && TERM=xterm 
 - [x] 基线冒烟：Go2W 平地 RL 任务 5 迭代跑通（rsl_rl PPO，reward 正常）
 - [x] 传感器版 URDF：真实网格、FK 校准 D435 位姿、FRAME 数值验证（Mid-360 19.6°）
 - [x] GUI 平地场景人工目检通过
-- [ ] 仓库（warehouse）场景导入（M1 收尾，进行中）
-- [ ] M2：Mid-360 RTX 点云 / D435 深度图 / PiPER 关节控制真实读数
+- [x] M1：full_warehouse 场景导入（云资产已缓存，站高 0.375m 稳定）
+- [x] M2（部分）：Mid-360 RTX 点云 + 物理正确 IMU（斜装重力投影）真实读数
+- [x] M3：CMU 导航栈全链路（SLAM 稳定 + waypoint 自主导航验收通过）
+- [ ] M2 收尾：D435 深度图输出、PiPER 关节 ROS2 控制接口
+- [ ] 后续：RViz 可视化操作、更多 waypoint 回归、真机部署包
