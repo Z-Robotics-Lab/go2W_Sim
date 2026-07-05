@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Agent <-> 机器人 HTTP 桥（跑在 navstack 容器，supervisor 托管）。
+
+让 vector_os_nano（无 ROS 依赖的进程）通过 localhost HTTP 操控/感知 Go2W：
+  GET  /pose      -> SLAM 位姿 {x,y,z,stamp}（机器人自己的估计）
+  GET  /gt        -> 地面真值位姿（来自 SIM 的 /ground_truth/pose——verify 谓词专用，
+                     执行者无法伪造）
+  POST /waypoint  -> {"x":..,"y":..} 发布 /way_point 导航目标
+监听 127.0.0.1:8042。
+"""
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import rclpy
+from geometry_msgs.msg import PointStamped, PoseStamped
+from nav_msgs.msg import Odometry
+
+STATE = {"pose": None, "gt": None}
+
+
+def ros_thread():
+    rclpy.init()
+    node = rclpy.create_node("agent_bridge")
+
+    def on_odom(m: Odometry):
+        p = m.pose.pose.position
+        STATE["pose"] = {"x": p.x, "y": p.y, "z": p.z,
+                         "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
+
+    def on_gt(m: PoseStamped):
+        p = m.pose.position
+        STATE["gt"] = {"x": p.x, "y": p.y, "z": p.z,
+                       "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
+
+    node.create_subscription(Odometry, "/state_estimation", on_odom, 5)
+    node.create_subscription(PoseStamped, "/ground_truth/pose", on_gt, 5)
+    STATE["wp_pub"] = node.create_publisher(PointStamped, "/way_point", 5)
+    rclpy.spin(node)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # 静默访问日志
+        pass
+
+    def _json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        key = self.path.strip("/")
+        if key in ("pose", "gt"):
+            v = STATE.get(key)
+            self._json(200 if v else 503, v or {"error": f"no {key} yet"})
+        else:
+            self._json(404, {"error": "unknown"})
+
+    def do_POST(self):
+        if self.path.rstrip("/") == "/waypoint":
+            n = int(self.headers.get("Content-Length", 0))
+            try:
+                req = json.loads(self.rfile.read(n))
+                wp = PointStamped()
+                wp.header.frame_id = "map"
+                wp.point.x, wp.point.y = float(req["x"]), float(req["y"])
+                STATE["wp_pub"].publish(wp)
+                self._json(200, {"ok": True, "x": wp.point.x, "y": wp.point.y})
+            except Exception as e:  # noqa: BLE001 — 桥边界，回错误给调用方
+                self._json(400, {"error": str(e)})
+        else:
+            self._json(404, {"error": "unknown"})
+
+
+def main():
+    threading.Thread(target=ros_thread, daemon=True).start()
+    print("[BRIDGE] http://127.0.0.1:8042  (/pose /gt POST /waypoint)", flush=True)
+    HTTPServer(("127.0.0.1", 8042), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()

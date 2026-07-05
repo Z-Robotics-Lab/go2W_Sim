@@ -20,6 +20,14 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
 
 (
   while true; do
+    python3 -u /ws/agent_bridge.py >> /ws/bridge.log 2>&1
+    echo "BRIDGE-DIED exit=$? $(date)" >> /ws/bridge.log
+    sleep 2
+  done
+) &
+
+(
+  while true; do
     ros2 launch /ws/system_isaac_sim.launch.py sensorOffsetX:=0.27 sensorOffsetY:=0.0 \
       >> /ws/system.log 2>&1
     echo "SYSTEM-DIED exit=$? $(date)" >> /ws/system.log

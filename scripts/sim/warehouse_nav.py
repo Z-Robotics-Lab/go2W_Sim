@@ -38,7 +38,7 @@ import omni.graph.core as og  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 import rclpy  # noqa: E402
 import torch  # noqa: E402
-from geometry_msgs.msg import TwistStamped  # noqa: E402
+from geometry_msgs.msg import PoseStamped, TwistStamped  # noqa: E402
 from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
 from rosgraph_msgs.msg import Clock  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
@@ -200,6 +200,9 @@ def main():
     rclpy.init()
     node = rclpy.create_node("go2w_isaac_bridge")
     imu_pub = node.create_publisher(Imu, "/imu/data", 50)
+    # 地面真值位姿：来自 SIM 而非任何执行者——vector_os_nano verify 谓词的 GT 源
+    gt_pub = node.create_publisher(PoseStamped, "/ground_truth/pose", 10)
+    gt_msg = PoseStamped()
     rgb_pub = node.create_publisher(Image, "/camera/image", 5)
     depth_pub = node.create_publisher(Image, "/camera/depth", 5)
     clock_pub = node.create_publisher(Clock, "/clock", 10)
@@ -246,6 +249,7 @@ def main():
     while simulation_app.is_running():
         rclpy.spin_once(node, timeout_sec=0.0)
         sim_t["now"] += physics_dt
+        sec, nsec = sim_stamp()
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
@@ -279,13 +283,22 @@ def main():
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
         robot.update(physics_dt)
         imu.update(physics_dt)
+        if step % 20 == 0:  # GT 位姿 5Hz
+            p = robot.data.root_pos_w[0].tolist()
+            q = robot.data.root_quat_w[0].tolist()
+            gt_msg.header.stamp.sec, gt_msg.header.stamp.nanosec = sec, nsec
+            gt_msg.header.frame_id = "world"
+            gt_msg.pose.position.x, gt_msg.pose.position.y, gt_msg.pose.position.z = p
+            (gt_msg.pose.orientation.w, gt_msg.pose.orientation.x,
+             gt_msg.pose.orientation.y, gt_msg.pose.orientation.z) = q
+            gt_pub.publish(gt_msg)
+
         # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线
         # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）
         if step % 10 == 0:
             d435.update(physics_dt)
 
         # /clock：仿真时钟广播（导航栈开 use_sim_time 对齐）
-        sec, nsec = sim_stamp()
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec
         clock_pub.publish(clock_msg)
 
