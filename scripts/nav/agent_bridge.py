@@ -23,14 +23,19 @@ def ros_thread():
     rclpy.init()
     node = rclpy.create_node("agent_bridge")
 
+    def _yaw(q):
+        import math
+        return math.atan2(2 * (q.w * q.z + q.x * q.y),
+                          1 - 2 * (q.y * q.y + q.z * q.z))
+
     def on_odom(m: Odometry):
         p = m.pose.pose.position
-        STATE["pose"] = {"x": p.x, "y": p.y, "z": p.z,
+        STATE["pose"] = {"x": p.x, "y": p.y, "z": p.z, "yaw": _yaw(m.pose.pose.orientation),
                          "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
 
     def on_gt(m: PoseStamped):
         p = m.pose.position
-        STATE["gt"] = {"x": p.x, "y": p.y, "z": p.z,
+        STATE["gt"] = {"x": p.x, "y": p.y, "z": p.z, "yaw": _yaw(m.pose.orientation),
                        "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
 
     node.create_subscription(Odometry, "/state_estimation", on_odom, 5)

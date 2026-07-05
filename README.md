@@ -138,4 +138,7 @@ docker exec navstack bash -c "export ROS_DOMAIN_ID=42 && source /opt/ros/jazzy/s
       弧线转向 2.3°→95°（41 倍），wheeled_sport 仿真等价物，附带 vy 全向
 - [x] M2 收尾：D435 RGB+深度已出 ROS2 topic（/camera/image /camera/depth，进 RViz）
 - [ ] M2 尾巴：PiPER 关节 ROS2 控制接口（M4 前置）
-- [ ] 后续：RViz 可视化操作、更多 waypoint 回归、真机部署包
+- [x] M5/任务②：vector_os_nano agent 控狗——NL 目标 -> agent 规划 -> navigate ->
+      导航栈 -> RL 策略 -> GT 谓词 GROUNDED，VECTOR_VERDICT verified=true (EXIT 0)。
+      入口：scripts/vector_os/run_agent.sh（BYO world，vector_os_nano 零修改）
+- [ ] 后续：接入抓取（任务③）、RViz 可视化操作、真机部署包

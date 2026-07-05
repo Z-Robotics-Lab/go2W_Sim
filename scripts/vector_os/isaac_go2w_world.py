@@ -95,6 +95,118 @@ def go2w_at(x: float, y: float, tol: float = 0.8) -> bool:
     return math.hypot(gt["x"] - gx, gt["y"] - gy) < tol
 
 
+# ---- 技能层（VGG MOTION skill 正门）+ embodiment ------------------------------
+import time as _time
+
+from vector_os_nano.core.skill import SkillRegistry, skill
+from vector_os_nano.core.types import SkillResult
+
+
+@skill(aliases=["navigate", "nav_to_pos", "nav", "go to", "导航", "去", "开到", "走到"])
+class Go2WNavigateSkill:
+    """阻塞式导航技能：发 waypoint 并轮询直到到达（SLAM 系）或超时。"""
+
+    name = "navigate"
+    description = ("Navigate the Go2W robot to map coordinates (x, y). "
+                   "Blocks until arrival (tolerance ~0.7m) or 300s timeout.")
+
+    def _target(self, context, kw):
+        for src in (kw, getattr(context, "params", None) or {},
+                    getattr(context, "args", None) or {}):
+            if isinstance(src, dict) and "x" in src and "y" in src:
+                return float(src["x"]), float(src["y"])
+        text = str(getattr(context, "instruction", "") or getattr(context, "text", "") or kw)
+        import re
+        m = re.search(r"\(?\s*(-?\d+\.?\d*)\s*[,，]\s*(-?\d+\.?\d*)\s*\)?", text)
+        if m:
+            return float(m.group(1)), float(m.group(2))
+        raise ValueError(f"no (x, y) target in skill call: {text[:120]}")
+
+    def execute(self, context=None, **kw):
+        import sys
+        try:
+            x, y = self._target(context, kw)
+        except ValueError as e:
+            print(f"[SKILL] target parse FAIL: {e}", file=sys.stderr, flush=True)
+            return SkillResult(success=False, message=str(e))
+        print(f"[SKILL] navigate -> ({x},{y}) ctx={str(getattr(context,'params',None))[:80]} kw={str(kw)[:80]}",
+              file=sys.stderr, flush=True)
+        _post("waypoint", {"x": x, "y": y})
+        t0 = _time.time()
+        while _time.time() - t0 < 300:
+            _time.sleep(5)
+            _post("waypoint", {"x": x, "y": y})  # 周期重发（栈只认最新）
+            p = _get("pose")
+            # 到达（0.45m）后冻结：waypoint 改发当前位置让 pathFollower 停追，
+            # 停稳复核（0.7m）后返回——verify（0.8m）才有余量且不再漂移触发重试
+            if math.hypot(p["x"] - x, p["y"] - y) < 0.45:
+                _post("waypoint", {"x": p["x"], "y": p["y"]})
+                _time.sleep(6)
+                p = _get("pose")
+                d2 = math.hypot(p["x"] - x, p["y"] - y)
+                print(f"[SKILL] held check d={d2:.2f} at ({p['x']:.2f},{p['y']:.2f})",
+                      file=sys.stderr, flush=True)
+                if d2 < 0.7:
+                    return SkillResult(success=True,
+                                       message=f"arrived+held ({p['x']:.2f},{p['y']:.2f})")
+        p = _get("pose")
+        return SkillResult(success=False,
+                           message=f"timeout at ({p['x']:.2f},{p['y']:.2f})")
+
+
+class IsaacGo2WEmbodiment:
+    """最小 embodiment：VGG 就绪判据（_base 非 None）+ 技能注册表 + 状态读取。
+
+    状态方法全部读真实数据（桥），供内核 verifier 绑定使用。
+    """
+
+    def __init__(self) -> None:
+        self._base = self
+        self._arm = None
+        self._skill_registry = SkillRegistry()
+        self._skill_registry.register(Go2WNavigateSkill())
+
+    def navigate_to(self, x: float, y: float, timeout: float = 240.0) -> bool:
+        """native_loop 的 base 合同：阻塞导航，到达返回 True。
+
+        到达（0.45m）后 waypoint 冻结在当前位置（pathFollower 停追不再漂），
+        停稳复核 0.7m —— verify 的 go2w_at（0.8m）留有余量。
+        """
+        import sys
+        import time as _t
+        x, y = float(x), float(y)
+        # 慢动作 sim（约 0.3-0.5x 实时）里导航需 100-300s 墙钟；调用方的 60s 默认
+        # 超时会制造假失败步毒化判决——基座最了解自身动力学，下限钳 240s
+        timeout = max(float(timeout), 240.0)
+        print(f"[BASE] navigate_to ({x},{y}) timeout={timeout}", file=sys.stderr, flush=True)
+        _post("waypoint", {"x": x, "y": y})
+        t0 = _t.time()
+        while _t.time() - t0 < timeout:
+            _t.sleep(5)
+            _post("waypoint", {"x": x, "y": y})
+            p = _get("pose")
+            if math.hypot(p["x"] - x, p["y"] - y) < 0.45:
+                _post("waypoint", {"x": p["x"], "y": p["y"]})  # 冻结
+                _t.sleep(6)
+                p = _get("pose")
+                d = math.hypot(p["x"] - x, p["y"] - y)
+                print(f"[BASE] arrived+held d={d:.2f}", file=sys.stderr, flush=True)
+                return d < 0.7
+        print("[BASE] navigate_to timeout", file=sys.stderr, flush=True)
+        return False
+
+    def get_position(self):
+        p = _get("pose")
+        return (p["x"], p["y"])
+
+    def get_heading(self):
+        return float(_get("pose").get("yaw", 0.0))
+
+    def get_pose(self):
+        p = _get("pose")
+        return (p["x"], p["y"], p.get("yaw", 0.0))
+
+
 class IsaacGo2WWorld:
     """World Protocol 的鸭子类型实现（不继承任何内核类）。"""
 
