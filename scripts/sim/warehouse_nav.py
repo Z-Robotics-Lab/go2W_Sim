@@ -34,6 +34,22 @@ from isaacsim.core.utils.extensions import enable_extension  # noqa: E402
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
+# 渲染性能模式（GO2W_FAST_RENDER=0 关闭）：RTF = 渲染FPS/100（render_interval=1
+# 是雷达时钟正确性的硬约束，坑16），所以帧率就是实时率。关掉视觉特效对导航
+# 零影响（SLAM 吃雷达点云；D435 图像仅供 RViz 显示，画质降级可接受）。
+import os as _os  # noqa: E402
+if _os.environ.get("GO2W_FAST_RENDER", "1") != "0":
+    import carb.settings  # noqa: E402
+    _st = carb.settings.get_settings()
+    _st.set("/rtx/reflections/enabled", False)
+    _st.set("/rtx/indirectDiffuse/enabled", False)
+    _st.set("/rtx/ambientOcclusion/enabled", False)
+    _st.set("/rtx/raytracing/subsurface/enabled", False)
+    _st.set("/rtx/post/dlss/execMode", 0)          # DLSS performance
+    _st.set("/rtx-transient/dlssg/enabled", False)
+    _st.set("/app/viewport/grid/enabled", False)
+    print("[NAV] FAST_RENDER on: rtx effects off, dlss performance", flush=True)
+
 import omni.graph.core as og  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 import rclpy  # noqa: E402
