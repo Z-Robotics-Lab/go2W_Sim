@@ -27,7 +27,12 @@ JOINT_NAMES = LEG_JOINTS + WHEEL_JOINTS
 
 OBS_DIM, ACT_DIM = 57, 16
 SCALE_LIN, SCALE_ANG, SCALE_JVEL = 2.0, 0.25, 0.05
-ACT_SCALE_LEG, ACT_SCALE_WHEEL = 0.25, 5.0
+# 训练动作 scale 分关节：hip=0.125、thigh/calf=0.25（robot_lab rough_env_cfg
+# 的 scale 字典，训练快照 env.yaml 复核；vx-audit M1 坐实此前统一 0.25 让
+# 4 个 hip 的目标位移是训练态 2 倍——姿态扰动、步态失真）。LEG_JOINTS 序中
+# hip 位于 0,3,6,9。
+ACT_SCALE_WHEEL = 5.0
+LEG_ACT_SCALE = [0.125 if i % 3 == 0 else 0.25 for i in range(12)]
 
 
 class Go2WPolicy:
@@ -57,6 +62,7 @@ class Go2WPolicy:
         assert loadable >= 8, f"actor 权重装载异常: missing={missing} unexpected={unexpected}"
         self.net.eval()
         self.last_action = torch.zeros(1, ACT_DIM, device=device)
+        self.leg_act_scale = torch.tensor([LEG_ACT_SCALE], device=device)
         print(f"[POLICY] loaded {ckpt_path} (iter {ckpt.get('iter', '?')}), "
               f"joints={list(names)}")
 
@@ -75,6 +81,6 @@ class Go2WPolicy:
         obs = torch.cat([ang, grav, cmd, jpos, jvel, self.last_action], dim=1)
         a = self.net(obs)
         self.last_action = a.clone()
-        leg_targets = self.default_pos[:1, :12] + ACT_SCALE_LEG * a[:, :12]
+        leg_targets = self.default_pos[:1, :12] + self.leg_act_scale * a[:, :12]
         wheel_vels = ACT_SCALE_WHEEL * a[:, 12:]
         return self.leg_ids, leg_targets, self.wheel_ids, wheel_vels

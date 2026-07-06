@@ -169,7 +169,9 @@ def setup_lidar_ros2():
                 ("lidar_pub.inputs:topicName", "/lidar/points"),
                 ("lidar_pub.inputs:frameId", "sensor"),
                 ("lidar_pub.inputs:type", "point_cloud"),
-                ("lidar_pub.inputs:fullScan", True),
+                ("lidar_pub.inputs:fullScan", False),  # 增量模式：每拍点云=该拍扫过的方位片，
+                # 到达即时序（坑34：fullScan 整帧的点序非时序，索引铺 offset_time
+                # = 随机时间戳，运动中去畸变毁灭性出错 -> SLAM z 俯冲）
             ],
             og.Controller.Keys.CONNECT: [
                 ("tick.outputs:tick", "lidar_pub.inputs:execIn"),

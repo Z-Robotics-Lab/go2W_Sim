@@ -61,3 +61,15 @@
     verify 谓词可能读到陈旧 GT。已修：spin 回主线程（信号=全进程退出=supervisor 重生）
     + /pose /gt 超 5s 未更新返回 503。教训：rclpy 进程的存活判定永远看数据新鲜度，
     不看进程在不在。
+32. **pathFollower 速度会被任何 /joy 重写且栈内无 /speed 自愈源**：TeleopPanel 一碰
+    joySpeed 锁死（甚至归零）、autonomyMode 被关。修：桥 1Hz 发 /speed=NAV_SPEED +
+    每航点注入矫正 joy（axes[2]=-1 保自主）+ RViz 用去掉 TeleopPanel 的 go2w.rviz。
+33. **给 Isaac 关渲染特效可能连累 RTX 雷达**（它本身是光追传感器）——FAST_RENDER 观测到
+    雷达频率异常后回退为默认关闭；提速要重新单独验证雷达质量。
+34. **fullScan 整帧点云的点序完全非时序**（方位角前向率 ~48%=随机，发射器状态交织），
+    按索引铺 offset_time = 逐点随机时戳：静止无感、一运动 SLAM z 俯冲、地形被打空、
+    空路径、cmd_vel 全零、走走停停。正解 = fullScan=False 增量模式 + 转换器按增量片
+    真实时戳聚合组帧（pc2_to_livox 增量聚合版）。数字孪生级坑：真机 Livox 驱动原生
+    逐点时戳，此坑仅存在于仿真侧。
+35. 策略小指令特性（非坑，特征记录）：hip scale 修复后 vx 指令 0.15/0.30/0.60 跟踪
+    171%/128%/107%——存在 ~0.25 m/s 输出地板；“训练死区 0.2”假设已证伪。

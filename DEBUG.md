@@ -29,17 +29,23 @@
   → **探索完成了**，H1/H2（teleop 残留）REJECTED——与 teleop 无关
 - 追加发现: 桥 volume_age=55.6s 仍 200 → 僵尸桥（kill 后 HTTP 半边带冻结状态存活）
 
-## CONCLUDE
-根因链（一句话：不是故障，是探索完成 + 两个被调查暴露的真缺陷 + RTF 放大观感）：
-1. 直接原因（非缺陷）：TARE 探索完成 → 不再发航点 → pathFollower 发 0 速 →
-   机器人站立，RL 策略零指令下的站立微调看起来像"慢走"、轮子正确地不转。
-2. 真缺陷 A：探索完成后桥 nav_owner 卡在 explore，手动导航被 409 锁死。
-   修复：agent_bridge.py on_exploration_finish 里 finished→owner 释放为 idle。
-3. 真缺陷 B（僵尸桥，护城河级）：rclpy 接管 SIGTERM/SIGINT——spin 在子线程时，
-   信号只杀 ROS 线程，HTTP 主线程带冻结 STATE 继续应答（实测 55s 陈旧数据仍 200，
-   verify 谓词可能读到陈旧 GT）。修复：①结构——rclpy.spin 回主线程、HTTP 进守护
-   线程，信号=全进程退出=supervisor 干净重生；②守卫——/pose /gt 超 5s 未更新 503。
-4. 放大因素：RTF 0.21（GUI 长跑退化）——teardown+bringup 可恢复。
-验证：新桥 age 0.08/0.28s、owner=idle、POST /waypoint 200、GT 恢复位移（0.3m/15s 墙钟）。
-回归防护：结构修复使僵尸态不可能存在 + 陈旧守卫堵死"冻结数据喂谓词"路径（坑 30/31）。
-
+## CONCLUDE（终版，四病共存全部落地）
+根因链（按发现序）：
+① TeleopPanel joy 锁速+关自主、栈内无 /speed 自愈源 -> 修：桥 1Hz /speed +
+   航点矫正 joy + RViz 去毒面板（go2w.rviz）
+② （医源）矫正 joy 空 buttons -> terrainAnalysis buttons[5] 无界索引 SIGSEGV
+   -> 修：buttons 补满 12 位
+③ （医源）FAST_RENDER 关 RTX 特效疑似连累 RTX 雷达 -> 回退默认关
+④ 【真核心】fullScan 整帧点云点序完全非时序（解剖实测方位角前向率 48.5%=随机，
+   发射器状态交织）-> 按索引铺 offset_time = 逐点随机时戳 -> 静止无感、
+   运动中去畸变毁灭性出错（z 俯冲 -0.4/3s）-> 地形窗口被打空 -> localPlanner
+   空路径 -> pathFollower 全零 -> 走走停停爬行
+   -> 修：Isaac 侧 fullScan=False 增量模式（到达即时序）+ 转换器缓冲聚合
+      0.1s 帧、按增量片真实时戳赋 offset_time
+策略全程无罪：干净注入 vx 0.15/0.30/0.60 -> 跟踪 171%/128%/107%（hip scale
+修复后）；"训练指令死区 0.2"假设被证伪（小指令有 ~0.25 地板但可用）。
+修复后实测：运动中 z 稳定（-0.234→-0.236/30s，此前 3s 俯冲 0.4）；
+cmd_vel 出现 0.47-0.48 连续指令（此前全零）；直线巡航恢复 ~0.45 量级
+（窗口平均 0.209 含 180° 掉头段）。
+观察项：长会话 z 缓沉与掉头段 z 下探（-0.48）继续跟踪；RTF 0.12-0.2 的慢动作
+是渲染税（雷达时钟正确性约束 render_interval=1），不影响正确性。
