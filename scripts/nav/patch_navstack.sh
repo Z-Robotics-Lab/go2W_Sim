@@ -53,7 +53,77 @@ out = out.replace("""      'realRobot': 'true',""", """      'realRobot': 'false
 print("system_isaac_sim.launch.py written")
 PYEOF
 
-# 4. 转换节点 + 编排脚本
+# 5. 探索变体 launch：从 sim 基线 system_isaac_sim.launch.py 派生
+#    system_isaac_sim_with_exploration.launch.py —— 追加 TARE 探索规划器块（照抄
+#    system_*_with_exploration_planner.launch 的 start_tare_planner），并把 kAutoStart
+#    改成 false（改由 agent 发一次 /start_exploration(Bool true) 显式触发探索）。
+python3 - "$NAV" <<'PYEOF'
+import sys
+from pathlib import Path
+nav = Path(sys.argv[1])
+
+src = (nav / "system_isaac_sim.launch.py").read_text()
+out = src
+
+# 5a. 顶部加 exploration_planner_config 这个 LaunchConfiguration（照抄参考 with_exploration）
+out = out.replace(
+    "  world_name = LaunchConfiguration('world_name')\n",
+    "  world_name = LaunchConfiguration('world_name')\n"
+    "  exploration_planner_config = LaunchConfiguration('exploration_planner_config')\n",
+    1)
+
+# 5b. declare 块加 exploration_planner_config 声明（default indoor_small）
+out = out.replace(
+    "  declare_world_name = DeclareLaunchArgument('world_name', default_value='real_world', description='')\n",
+    "  declare_world_name = DeclareLaunchArgument('world_name', default_value='real_world', description='')\n"
+    "  declare_exploration_planner_config = DeclareLaunchArgument('exploration_planner_config', default_value='indoor_small', description='')\n",
+    1)
+
+# 5c. 在 ld = LaunchDescription() 前插入 start_tare_planner 定义。
+# 关键修正（核对真相源得出）：参考的 start_tare_planner 块只传 scenario、不传
+# use_sim_time；explore_world.launch 的 use_sim_time 默认 false。Isaac 全链走 /clock
+# 仿真时钟，这里必须显式传 use_sim_time:='true'，否则 TARE 用墙钟、与 SLAM/terrain
+# 时间戳错乱。scenario 用 indoor_small（kAutoStart 已 sed 成 false，agent 显式触发）。
+tare_block = (
+    "  # TARE 探索规划器（照抄 system_*_with_exploration_planner.launch 的 start_tare_planner，\n"
+    "  # 追加 use_sim_time:='true' —— Isaac /clock 全链仿真时钟，缺它 TARE 时间戳错乱）。\n"
+    "  start_tare_planner = IncludeLaunchDescription(\n"
+    "    PythonLaunchDescriptionSource(\n"
+    "      [get_package_share_directory('tare_planner'), '/explore_world.launch']),\n"
+    "    launch_arguments={\n"
+    "      'scenario': exploration_planner_config,\n"
+    "      'use_sim_time': 'true',\n"
+    "    }.items()\n"
+    "  )\n\n"
+    "  ld = LaunchDescription()\n"
+)
+out = out.replace("  ld = LaunchDescription()\n", tare_block, 1)
+
+# 5d. add_action：declare 挂在 declare 段末尾（checkTerrainConn 之后），
+# start_tare_planner 挂在动作段末尾（return ld 前，探索链最后一环）。
+out = out.replace(
+    "  ld.add_action(declare_checkTerrainConn)\n",
+    "  ld.add_action(declare_checkTerrainConn)\n"
+    "  ld.add_action(declare_exploration_planner_config)\n",
+    1)
+out = out.replace(
+    "\n  return ld\n",
+    "  ld.add_action(start_tare_planner)\n\n  return ld\n",
+    1)
+
+(nav / "system_isaac_sim_with_exploration.launch.py").write_text(out)
+print("system_isaac_sim_with_exploration.launch.py written")
+
+# 5e. indoor_small.yaml: kAutoStart true->false（agent 显式触发探索）。
+# kRushHome / kNoExplorationReturnHome 保持原值不动（探索结束回家行为不改）。
+cfg = nav / "src/exploration_planner/tare_planner/config/indoor_small.yaml"
+y = cfg.read_text()
+assert "kAutoStart : true" in y, "kAutoStart : true 未找到（config 格式变了？）"
+cfg.write_text(y.replace("kAutoStart : true", "kAutoStart : false", 1))
+print("indoor_small.yaml kAutoStart -> false")
+PYEOF
+
+# 6. 转换节点 + 编排脚本
 cp "$HERE/pc2_to_livox.py" "$NAV/pc2_to_livox.py"
 cp "$HERE/run_navstack.sh" "$NAV/run_navstack.sh"
 echo "OK: nav stack patched for Isaac sim integration"
