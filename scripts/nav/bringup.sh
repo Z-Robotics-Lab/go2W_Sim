@@ -104,6 +104,7 @@ up() {
   docker rm -f navstack >/dev/null 2>&1 || true
   docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
     -e ROS_DOMAIN_ID=42 -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
+    -e NAV_MODE="${NAV_MODE:-waypoint}" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "$NAV":/ws -w /ws \
     navstack:ready bash /ws/run_all_forever.sh >/dev/null
