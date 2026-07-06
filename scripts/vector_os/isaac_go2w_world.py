@@ -98,8 +98,66 @@ def go2w_at(x: float, y: float, tol: float = 0.8) -> bool:
 # ---- 技能层（VGG MOTION skill 正门）+ embodiment ------------------------------
 import time as _time
 
-from vector_os_nano.core.skill import SkillRegistry, skill
+from vector_os_nano.core.skill import SkillContext, SkillRegistry, skill
 from vector_os_nano.core.types import SkillResult
+
+
+# ---- 臂/夹爪鸭子合同（内核 arm_sim_oracle 的 GT 读数源，全部经桥读 SIM） ---------
+class Go2WArm:
+    """holding_object oracle 的臂侧合同：关节/FK/物体 GT 全为桥读数，执行者无法伪造。"""
+
+    _connected = True
+
+    def get_joint_positions(self) -> list[float]:
+        return [float(v) for v in _get("arm")["pos"][:6]]
+
+    def fk(self, joint_positions) -> tuple[list[float], None]:
+        """oracle 惯用法是 fk(get_joint_positions())——紧跟关节读数调用，
+        直接返回当前夹持中心的 SIM GT（等价于当前关节的 FK，且更诚实）。"""
+        e = _get("ee")
+        return [e["x"], e["y"], e["z"]], None
+
+    def get_object_positions(self) -> dict[str, list[float]]:
+        o = _get("object")
+        return {"box": [o["x"], o["y"], o["z"]]}
+
+    def get_object_velocities(self) -> dict[str, list[float]]:
+        o = _get("object")
+        return {"box": [o.get("vx", 0.0), o.get("vy", 0.0), o.get("vz", 0.0)]}
+
+
+class Go2WGripper:
+    """is_holding：合爪指令下实测开度仍被撑开（>14mm）——纯物理读数，非状态机自报。
+    weld_is_active：actor-causation 的 0->1 抓取信号（握持且箱子贴在夹持中心）。"""
+
+    _HOLD_APERTURE_MIN = 0.014
+
+    def _state(self):
+        a = _get("arm")
+        pos, cmd = a.get("pos") or [], a.get("cmd") or []
+        if len(pos) < 8 or len(cmd) < 8:
+            return None
+        aperture = float(pos[6]) - float(pos[7])          # j7 - j8 >= 0
+        cmd_closed = abs(float(cmd[6])) + abs(float(cmd[7])) < 0.005
+        return aperture, cmd_closed
+
+    def is_holding(self) -> bool:
+        st = self._state()
+        if st is None:
+            return False
+        aperture, cmd_closed = st
+        return cmd_closed and aperture > self._HOLD_APERTURE_MIN
+
+    def weld_is_active(self) -> dict[str, bool]:
+        try:
+            if not self.is_holding():
+                return {"box": False}
+            e = _get("ee")
+            o = _get("object")
+            d = math.dist((o["x"], o["y"], o["z"]), (e["x"], e["y"], e["z"]))
+            return {"box": d < 0.12}
+        except Exception:  # noqa: BLE001 — 桥断连时 fail-safe（分级 fail-closed）
+            return {"box": False}
 
 
 @skill(aliases=["navigate", "nav_to_pos", "nav", "go to", "导航", "去", "开到", "走到"])
