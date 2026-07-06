@@ -8,6 +8,17 @@ export FASTDDS_BUILTIN_TRANSPORTS=UDPv4  # 禁 SHM：击杀留下的僵尸段会
 source /opt/ros/jazzy/setup.bash
 source /ws/install/setup.bash
 
+# NAV_MODE 选 system launch 变体（由容器 docker run -e NAV_MODE=.. 注入；缺省 waypoint）：
+#   waypoint = system_isaac_sim.launch.py（纯手动 waypoint 导航，无探索规划器）
+#   explore  = system_isaac_sim_with_exploration.launch.py（额外拉 TARE 探索规划器）
+# 未知值一律回退 waypoint（fail-safe：不因拼写错就整条 system 链起不来）。
+NAV_MODE="${NAV_MODE:-waypoint}"
+case "$NAV_MODE" in
+  explore) SYSTEM_LAUNCH="system_isaac_sim_with_exploration.launch.py" ;;
+  waypoint) SYSTEM_LAUNCH="system_isaac_sim.launch.py" ;;
+  *) echo "[SUPERVISOR] 未知 NAV_MODE='$NAV_MODE'，回退 waypoint" ; SYSTEM_LAUNCH="system_isaac_sim.launch.py" ;;
+esac
+
 echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
 
 (
@@ -26,11 +37,28 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
   done
 ) &
 
+echo "[SUPERVISOR] NAV_MODE=$NAV_MODE -> $SYSTEM_LAUNCH" >> /ws/supervisor.log
 (
   while true; do
-    ros2 launch /ws/system_isaac_sim.launch.py sensorOffsetX:=0.27 sensorOffsetY:=0.0 \
+    ros2 launch "/ws/$SYSTEM_LAUNCH" sensorOffsetX:=0.27 sensorOffsetY:=0.0 \
       >> /ws/system.log 2>&1
     echo "SYSTEM-DIED exit=$? $(date)" >> /ws/system.log
+    sleep 3
+  done
+) &
+
+# RViz 可视化（软能力，死后重生）。headless 环境（DISPLAY 空）不空转刷日志——
+# 直接 sleep infinity 挂着，让 supervisor 的 wait 不提前返回。
+(
+  if [ -z "$DISPLAY" ]; then
+    echo "[RVIZ] DISPLAY 为空，headless——不启动 RViz（sleep infinity）" >> /ws/rviz.log
+    sleep infinity
+  fi
+  while true; do
+    ros2 run rviz2 rviz2 \
+      -d /ws/src/base_autonomy/vehicle_simulator/rviz/vehicle_simulator.rviz \
+      >> /ws/rviz.log 2>&1
+    echo "RVIZ-DIED exit=$? $(date)" >> /ws/rviz.log
     sleep 3
   done
 ) &
