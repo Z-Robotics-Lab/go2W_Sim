@@ -54,3 +54,10 @@
     鼠标点面板产生的轴值与扳机语义不匹配 → 一点就可能把 agent/TARE 的自主导航踢掉且难恢复
     （恢复需要一条 axes[2]<-0.1 的 /joy）。agent 跑任务时不要碰 TeleopPanel；sim 里人工
     遥控不在产品路径（真机人工接管=宇树遥控器+官方步态，绕开本栈）。
+30. **探索完成后 nav_owner 卡死**：TARE finished 后不再发航点，桥的 explore 占用若不
+    释放，手动导航被 409 锁到永远。已修：/exploration_finish=true 时 owner 自动归 idle。
+31. **僵尸桥（护城河级）**：rclpy.init 会接管 SIGTERM/SIGINT——若 rclpy.spin 跑在子线程，
+    kill/pkill 只杀 ROS 线程，HTTP 主线程带冻结 STATE 继续 200 应答（实测 55s 陈旧位姿），
+    verify 谓词可能读到陈旧 GT。已修：spin 回主线程（信号=全进程退出=supervisor 重生）
+    + /pose /gt 超 5s 未更新返回 503。教训：rclpy 进程的存活判定永远看数据新鲜度，
+    不看进程在不在。

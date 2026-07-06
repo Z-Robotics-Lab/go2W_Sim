@@ -39,6 +39,7 @@ from std_msgs.msg import Bool, Float32
 # 说明 goto->idle 不自动：桥无"到达"信号（到达检测在导航栈内，不在桥）。故 goto 是软占用
 #   ——30s 冷却过后 /explore 即可抢占，等价于软释放；需要硬释放时调用方显式发 /explore_stop。
 EXPLORE_GOTO_COOLDOWN_S = 30.0
+STALE_S = 5.0  # pose/gt 超龄即 503（僵尸桥/断流防护）
 
 STATE = {
     "pose": None, "gt": None,
@@ -49,7 +50,7 @@ STATE = {
 }
 
 
-def ros_thread():
+def ros_main():
     rclpy.init()
     node = rclpy.create_node("agent_bridge")
 
@@ -81,8 +82,12 @@ def ros_thread():
     def on_exploration_finish(m: Bool):
         # TARE 发 /exploration_finish(Bool)：探索完成信号。一旦 true 记住不回退（本轮探索
         # 已达完成；下次 POST /explore 重新触发时由调用方语义决定是否复位——见 do_POST）。
+        # 完成即释放互斥：TARE 完成后不再发 /way_point，owner 卡在 explore 会让手动
+        # 导航被 409 拒绝到永远（2026-07-06 实证：探索完成后机器人静止、goto 被锁）。
         if m.data:
             STATE["exploration_finished"] = True
+            if STATE.get("nav_owner") == "explore":
+                STATE["nav_owner"] = "idle"
 
     node.create_subscription(Odometry, "/state_estimation", on_odom, 5)
     node.create_subscription(PoseStamped, "/ground_truth/pose", on_gt, 5)
@@ -126,6 +131,15 @@ class Handler(BaseHTTPRequestHandler):
         key = self.path.strip("/")
         if key in ("pose", "gt"):
             v = STATE.get(key)
+            # 陈旧守卫（护城河）：ROS 侧断流时绝不供陈旧位姿给 verify 谓词——
+            # pose/gt 超过 STALE_S 秒未更新返回 503（2026-07-06 僵尸桥实证：
+            # rclpy 接管 SIGTERM，只死 ROS 线程，HTTP 曾带冻结状态继续应答）。
+            if v and key in ("pose", "gt"):
+                recv = STATE.get(f"{key}_recv")
+                age = None if recv is None else time.time() - recv
+                if age is None or age > STALE_S:
+                    self._json(503, {"error": f"{key} stale", "age_s": age})
+                    return
             self._json(200 if v else 503, v or {"error": f"no {key} yet"})
         elif key == "health":
             # 聚合桥自己可见的状态；始终 200（探针要能读到"各话题多久没数据"）。
@@ -217,11 +231,18 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    threading.Thread(target=ros_thread, daemon=True).start()
-    print("[BRIDGE] http://127.0.0.1:8042 "
-          "(/pose /gt /health /explore_progress POST /waypoint /explore /explore_stop)",
-          flush=True)
-    HTTPServer(("127.0.0.1", 8042), Handler).serve_forever()
+    # HTTP 在守护线程、rclpy.spin 在主线程：rclpy 接管 SIGTERM/SIGINT，若 spin 在
+    # 子线程，信号只会杀 ROS 半边、HTTP 半边带冻结 STATE 继续应答（僵尸桥，
+    # 2026-07-06 实证 55s 陈旧数据仍 200）。spin 在主线程则信号 -> spin 抛
+    # ExternalShutdownException -> 进程整体退出 -> supervisor 干净重生。
+    srv = HTTPServer(("127.0.0.1", 8042), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print("[BRIDGE] http://127.0.0.1:8042  (/pose /gt /health /explore_progress "
+          "POST /waypoint /explore /explore_stop)", flush=True)
+    try:
+        ros_main()
+    finally:
+        srv.shutdown()
 
 
 if __name__ == "__main__":
