@@ -24,7 +24,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import rclpy
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool, Float32
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool, Float32, String
 
 # nav_owner 互斥：谁在驱动 /way_point。
 #   idle   —— 无人占用，waypoint 与 explore 都可抢
@@ -47,6 +48,8 @@ STATE = {
     "exploration_finished": False,
     "nav_owner": "idle",
     "waypoint_recv": None,  # 墙钟：最近一次 POST /waypoint 成功发布的时刻
+    # 抓取管线（任务③）：箱子 GT / 夹持中心 GT / 臂关节实测+目标 / 状态机状态
+    "object": None, "ee": None, "arm": None, "grasp_status": None,
 }
 
 
@@ -89,6 +92,41 @@ def ros_main():
             if STATE.get("nav_owner") == "explore":
                 STATE["nav_owner"] = "idle"
 
+    def on_box(m: Odometry):
+        p, v = m.pose.pose.position, m.twist.twist.linear
+        STATE["object"] = {"x": p.x, "y": p.y, "z": p.z,
+                           "vx": v.x, "vy": v.y, "vz": v.z,
+                           "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
+        STATE["object_recv"] = time.time()
+
+    def on_ee(m: PoseStamped):
+        p = m.pose.position
+        STATE["ee"] = {"x": p.x, "y": p.y, "z": p.z, "yaw": _yaw(m.pose.orientation),
+                       "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
+        STATE["ee_recv"] = time.time()
+
+    def on_js(m: JointState):
+        cur = STATE.get("arm") or {}
+        STATE["arm"] = {"names": list(m.name), "pos": list(m.position),
+                        "cmd": cur.get("cmd"),
+                        "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
+        STATE["arm_recv"] = time.time()
+
+    def on_jc(m: JointState):
+        cur = STATE.get("arm") or {}
+        cur["cmd"] = list(m.position)
+        STATE["arm"] = cur
+
+    def on_gs(m: String):
+        STATE["grasp_status"] = {"status": m.data.split(";")[0], "raw": m.data}
+        STATE["grasp_recv"] = time.time()
+
+    node.create_subscription(Odometry, "/objects/box/odom", on_box, 5)
+    node.create_subscription(PoseStamped, "/piper/ee_pose", on_ee, 5)
+    node.create_subscription(JointState, "/piper/state", on_js, 5)
+    node.create_subscription(JointState, "/piper/cmd", on_jc, 5)
+    node.create_subscription(String, "/piper/grasp_status", on_gs, 5)
+    STATE["grasp_pub"] = node.create_publisher(String, "/piper/grasp_cmd", 5)
     node.create_subscription(Odometry, "/state_estimation", on_odom, 5)
     node.create_subscription(PoseStamped, "/ground_truth/pose", on_gt, 5)
     node.create_subscription(Float32, "/explored_volume", on_explored_volume, 5)
@@ -129,12 +167,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         key = self.path.strip("/")
-        if key in ("pose", "gt"):
+        if key in ("pose", "gt", "object", "ee", "arm", "grasp_status"):
             v = STATE.get(key)
-            # 陈旧守卫（护城河）：ROS 侧断流时绝不供陈旧位姿给 verify 谓词——
-            # pose/gt 超过 STALE_S 秒未更新返回 503（2026-07-06 僵尸桥实证：
-            # rclpy 接管 SIGTERM，只死 ROS 线程，HTTP 曾带冻结状态继续应答）。
-            if v and key in ("pose", "gt"):
+            # 陈旧守卫（护城河）：ROS 侧断流时绝不供陈旧数据给 verify 谓词——
+            # 位姿与抓取 oracle 数据源超过 STALE_S 秒未更新返回 503（2026-07-06
+            # 僵尸桥实证：rclpy 接管 SIGTERM 只死 ROS 线程，HTTP 带冻结状态应答）。
+            if v and key in ("pose", "gt", "object", "ee", "arm"):
                 recv = STATE.get(f"{key}_recv")
                 age = None if recv is None else time.time() - recv
                 if age is None or age > STALE_S:
@@ -150,7 +188,8 @@ class Handler(BaseHTTPRequestHandler):
                          "age_s": self._age("pose_recv")},
                 "gt": {"present": STATE.get("gt") is not None,
                        "age_s": self._age("gt_recv")},
-                "grasp": {"present": False, "age_s": None},  # 抓取话题占位（任务③接入后填）
+                "grasp": {"present": STATE.get("arm") is not None,
+                          "age_s": self._age("arm_recv")},
             })
         elif key == "explore_progress":
             # 探索进度（独立裁判读值）：explored_volume 来自 visualization_tools（执行者不可
@@ -173,6 +212,18 @@ class Handler(BaseHTTPRequestHandler):
             self._post_explore()
         elif path == "/explore_stop":
             self._post_explore_stop()
+        elif path == "/grasp":
+            # 触发 Isaac 侧 PiPER 抓取状态机（臂动作不占 /way_point，无互斥交互；
+            # 进度经 GET /grasp_status 轮询——状态机自报，最终裁决靠 holding_object
+            # oracle 读 GT，永不采信状态机的 done）。
+            try:
+                req = self._read_json_body()
+                msg = String()
+                msg.data = str(req.get("object", "box"))
+                STATE["grasp_pub"].publish(msg)
+                self._json(200, {"ok": True, "object": msg.data})
+            except Exception as e:  # noqa: BLE001 — 桥边界
+                self._json(400, {"error": str(e)})
         else:
             self._json(404, {"error": "unknown"})
 

@@ -40,14 +40,18 @@ import rclpy  # noqa: E402
 import torch  # noqa: E402
 from geometry_msgs.msg import PoseStamped, TwistStamped  # noqa: E402
 from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
+from nav_msgs.msg import Odometry  # noqa: E402
 from rosgraph_msgs.msg import Clock  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
+from sensor_msgs.msg import JointState  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 from isaaclab.actuators import ImplicitActuatorCfg  # noqa: E402
 from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
+from isaaclab.assets import RigidObject, RigidObjectCfg  # noqa: E402
 from isaaclab.sensors import Camera, CameraCfg  # noqa: E402
 from isaaclab.sensors import Imu as IsaacImu  # noqa: E402
 from isaaclab.sensors import ImuCfg  # noqa: E402
@@ -63,6 +67,24 @@ WHEEL_RADIUS = 0.086
 TRACK_WIDTH = 0.288  # 自检实测（左右前轮世界系间距）
 # Mid-360 出厂标定: imu^T_laser=[-0.011,-0.02329,0.04412] -> IMU 在雷达系的位置取反
 IMU_OFFSET_IN_LIDAR = (0.011, 0.02329, -0.04412)
+
+# 可抓物：6cm 红箱，方形回归验证过的空旷地带（(2,0)-(2,-2) 走廊内）。
+# 6cm 低于地形分析的障碍阈值——接近时 planner 不会把它当障碍绕开
+BOX_POS = (2.0, -1.0, 0.031)
+BOX_SIZE = 0.06
+BOX_CFG = RigidObjectCfg(
+    prim_path="/World/GraspBox",
+    spawn=sim_utils.CuboidCfg(
+        size=(BOX_SIZE, BOX_SIZE, BOX_SIZE),
+        rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+        mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
+        collision_props=sim_utils.CollisionPropertiesCfg(),
+        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.08, 0.08)),
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            static_friction=1.5, dynamic_friction=1.3, restitution=0.0),
+    ),
+    init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POS),
+)
 
 GO2W_NAV_CFG = ArticulationCfg(
     prim_path="/World/Robot",
@@ -163,6 +185,7 @@ def main():
         GO2W_NAV_CFG.actuators["wheels"].damping = 0.5
         GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
     robot = Articulation(GO2W_NAV_CFG)
+    box = RigidObject(BOX_CFG)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
         # rot: -20° 俯仰抵消雷达前倾 -> IMU 帧水平（等效"IMU 平装在车体"）。
@@ -196,6 +219,11 @@ def main():
     sim.reset()
     print(f"[NAV] joints({robot.num_joints}) ready")
 
+    # PiPER 抓取控制器（臂 8 关节目标的唯一属主；README 抓取管线见 sim-plan M5）
+    from piper_grasp import PiperGraspController
+    grasp = PiperGraspController(robot, args_cli.device or "cuda:0")
+    arm_ids_t = grasp.all_ids
+
     # rclpy: IMU 发布 + cmd_vel 订阅（桥扩展已带 jazzy 内部库）
     rclpy.init()
     node = rclpy.create_node("go2w_isaac_bridge")
@@ -206,6 +234,19 @@ def main():
     rgb_pub = node.create_publisher(Image, "/camera/image", 5)
     depth_pub = node.create_publisher(Image, "/camera/depth", 5)
     clock_pub = node.create_publisher(Clock, "/clock", 10)
+    # 抓取管线话题：箱子 GT、EE GT、臂关节态/目标、抓取指令与状态
+    box_pub = node.create_publisher(Odometry, "/objects/box/odom", 5)
+    ee_pub = node.create_publisher(PoseStamped, "/piper/ee_pose", 10)
+    js_pub = node.create_publisher(JointState, "/piper/state", 10)
+    jc_pub = node.create_publisher(JointState, "/piper/cmd", 10)
+    gs_pub = node.create_publisher(String, "/piper/grasp_status", 5)
+    grasp_req = {"pending": False}
+
+    def on_grasp_cmd(msg: String):
+        grasp_req["pending"] = True
+        print(f"[GRASP] cmd received: {msg.data!r}", flush=True)
+
+    node.create_subscription(String, "/piper/grasp_cmd", on_grasp_cmd, 5)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
 
@@ -279,6 +320,15 @@ def main():
             for i in right:
                 vel_t[:, i] = wr
             robot.set_joint_velocity_target(vel_t)
+        # 抓取：指令接收 -> 状态机启动；50Hz 伺服；臂目标最后写覆盖 default 保持
+        if grasp_req["pending"]:
+            grasp_req["pending"] = False
+            box.update(physics_dt)
+            grasp.start(box.data.root_pos_w[0])
+        if step % 2 == 0:
+            grasp.step(2 * physics_dt)
+        robot.set_joint_position_target(
+            grasp.q_tgt.unsqueeze(0), joint_ids=arm_ids_t)
         robot.write_data_to_sim()
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
         robot.update(physics_dt)
@@ -292,6 +342,48 @@ def main():
             (gt_msg.pose.orientation.w, gt_msg.pose.orientation.x,
              gt_msg.pose.orientation.y, gt_msg.pose.orientation.z) = q
             gt_pub.publish(gt_msg)
+            # 箱子 GT（pose+twist，verify oracle 的 get_object_positions/velocities 源）
+            box.update(physics_dt)
+            bp = box.data.root_pos_w[0].tolist()
+            bq = box.data.root_quat_w[0].tolist()
+            bv = box.data.root_lin_vel_w[0].tolist()
+            bo = Odometry()
+            bo.header.stamp.sec, bo.header.stamp.nanosec = sec, nsec
+            bo.header.frame_id = "world"
+            bo.child_frame_id = "box"
+            (bo.pose.pose.position.x, bo.pose.pose.position.y,
+             bo.pose.pose.position.z) = bp
+            (bo.pose.pose.orientation.w, bo.pose.pose.orientation.x,
+             bo.pose.pose.orientation.y, bo.pose.pose.orientation.z) = bq
+            (bo.twist.twist.linear.x, bo.twist.twist.linear.y,
+             bo.twist.twist.linear.z) = bv
+            box_pub.publish(bo)
+            gs = String()
+            gs.data = f"{grasp.status};aperture={grasp.aperture():.4f};" \
+                      f"cmd_closed={int(grasp.cmd_closed())}"
+            gs_pub.publish(gs)
+
+        if step % 5 == 0:  # 臂状态 20Hz：EE GT 位姿（=夹持中心）+ 关节实测/目标
+            ep = grasp.grip_center().tolist()
+            _, eq = grasp.ee_pose()
+            eq = eq.tolist()
+            em = PoseStamped()
+            em.header.stamp.sec, em.header.stamp.nanosec = sec, nsec
+            em.header.frame_id = "world"
+            em.pose.position.x, em.pose.position.y, em.pose.position.z = ep
+            (em.pose.orientation.w, em.pose.orientation.x,
+             em.pose.orientation.y, em.pose.orientation.z) = eq
+            ee_pub.publish(em)
+            js = JointState()
+            js.header.stamp.sec, js.header.stamp.nanosec = sec, nsec
+            js.name = grasp.arm_names + grasp.grip_names
+            js.position = robot.data.joint_pos[0, arm_ids_t].tolist()
+            js_pub.publish(js)
+            jc = JointState()
+            jc.header = js.header
+            jc.name = js.name
+            jc.position = grasp.q_tgt.tolist()
+            jc_pub.publish(jc)
 
         # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线
         # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）
