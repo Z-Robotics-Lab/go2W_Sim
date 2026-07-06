@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 把 scripts/nav/ 的运行时文件同步进 refs 克隆（容器挂 /ws 跑的是 refs 里的拷贝）。
+# 真相源永远是 scripts/nav/——本脚本被 bringup.sh / restart_all.sh 在起容器前调用，
+# 保证仓库更新后容器不会跑旧拷贝（2026-07-06 集成实证：桥/supervisor 旧拷贝导致
+# /health 404 + RViz 不起）。幂等，可重复调用。
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+NAV="${1:-$HERE/../../refs/Navigation-Physical-Experiment}"
+NAV="$(cd "$NAV" && pwd)"
+for f in pc2_to_livox.py run_navstack.sh agent_bridge.py run_all_forever.sh; do
+  cp "$HERE/$f" "$NAV/$f"
+done
+# P5.2 探索变体 launch：.reference 快照即真相（与 patch 第5步产物逐字节一致已验证）
+cp "$HERE/system_isaac_sim_with_exploration.launch.py.reference" \
+   "$NAV/system_isaac_sim_with_exploration.launch.py"
+echo "[sync] scripts/nav -> $NAV OK"

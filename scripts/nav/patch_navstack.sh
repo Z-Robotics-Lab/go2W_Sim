@@ -124,6 +124,5 @@ print("indoor_small.yaml kAutoStart -> false")
 PYEOF
 
 # 6. 转换节点 + 编排脚本
-cp "$HERE/pc2_to_livox.py" "$NAV/pc2_to_livox.py"
-cp "$HERE/run_navstack.sh" "$NAV/run_navstack.sh"
+bash "$HERE/sync_navstack_files.sh" "$NAV"
 echo "OK: nav stack patched for Isaac sim integration"

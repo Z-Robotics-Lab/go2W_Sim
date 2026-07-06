@@ -100,6 +100,7 @@ up() {
 
   # 3) 配对重启（内联 restart_all.sh 主体；铁律：navstack 与 Isaac 桥一起重启）------
   #    顺序: navstack(PID-1 supervisor) -> Isaac 桥 -> 门控。
+  bash "$HERE/sync_navstack_files.sh" "$NAV"   # 真相源 scripts/nav -> refs（防旧拷贝）
   _phase "navstack supervisor (paired restart)"
   docker rm -f navstack >/dev/null 2>&1 || true
   docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \

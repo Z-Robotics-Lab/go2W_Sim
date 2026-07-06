@@ -10,6 +10,7 @@ NAV="$GO2W/refs/Navigation-Physical-Experiment"
 # RL locomotion 策略（robot_lab 训练；差速在 Go2W 上物理不可行——README 坑 26）
 POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt}"
 
+bash "$GO2W/scripts/nav/sync_navstack_files.sh" "$NAV"  # 真相源同步（防旧拷贝）
 echo "[1/4] navstack supervisor 重启"
 docker rm -f navstack >/dev/null 2>&1 || true
 docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
