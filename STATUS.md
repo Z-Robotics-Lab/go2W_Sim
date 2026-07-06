@@ -6,11 +6,13 @@
 - ① 导航栈 Isaac 跑通：✅ 方形回归 4/4 + RL 运动策略（commit 3d9dc50）
 - ② vector_os_nano agent 控狗：✅ VECTOR_VERDICT verified=true GROUNDED EXIT 0（93e77ef）
 - ③ 接入抓取：进行中（刚起步，见下）
+- P5.1 基建：✅ bringup/status/teardown 三动作 + RViz 进 supervisor（feat/p5-bringup，未 push）
 
 ## 运行拓扑（两容器 + 宿主）
 - go2w-isaac 容器：warehouse_nav.py（RL策略/传感器桥/GT发布，DDS 域 42，root 运行）
 - navstack 容器：PID-1 supervisor（run_all_forever.sh：转换器+SLAM栈+HTTP桥:8042）
 - 一键全链重启+门控：bash scripts/nav/restart_all.sh（铁律：两侧必须配对重启）
+- 幂等拉起/健康探针/拆链：bringup.sh [up|teardown] · status.sh（L0-L5 JSON，green=L4）
 - agent 入口：bash scripts/vector_os/run_agent.sh [--no-permission -p "目标"]
 
 ## 关键文件
@@ -26,6 +28,10 @@
 2. 场景放可抓物（小箱/圆柱，Isaac 原生 prim 即可）
 3. embodiment 加 grasp base 合同 + holding_object GT 谓词（复用②的全套模式）
 4. 验收：agent NL "把箱子捡起来" -> verified=true
+
+## P5.1 下一步
+1. 待宿主 sim 空闲后跑一次真拉起：bash scripts/nav/bringup.sh -> 目测 status.sh green + RViz 出图
+2. 真跑核验 GET /health 输出 + teardown 后 status.sh l0=false（本轮只静态验证，未跑）
 
 ## 裁决项（待 CEO）
 - 把 world.register_tools 接线（Phase C）以 PR 贡献回 vector_os_nano -> 删 3 个 shim
