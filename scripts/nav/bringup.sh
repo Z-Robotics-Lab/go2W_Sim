@@ -101,6 +101,14 @@ up() {
   # 3) 配对重启（内联 restart_all.sh 主体；铁律：navstack 与 Isaac 桥一起重启）------
   #    顺序: navstack(PID-1 supervisor) -> Isaac 桥 -> 门控。
   bash "$HERE/sync_navstack_files.sh" "$NAV"   # 真相源 scripts/nav -> refs（防旧拷贝）
+  if [ "${NAV_MODE:-waypoint}" = "explore" ] && \
+     [ ! -x "$NAV/install/tare_planner/lib/tare_planner/tare_planner_node" ]; then
+    echo "[bringup] FAILED: explore 模式需要 tare_planner，但 install/ 里没有（镜像原始"
+    echo "  编译不含它）。补编（一次性，~3s，or-tools 为 vendored 预编译库）："
+    echo "  docker run --rm --memory 8g -v $NAV:/ws -w /ws navstack:ready bash -c \\"
+    echo "    'source /opt/ros/jazzy/setup.bash && colcon build --packages-select tare_planner'"
+    exit 1
+  fi
   _phase "navstack supervisor (paired restart)"
   docker rm -f navstack >/dev/null 2>&1 || true
   docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \

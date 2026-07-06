@@ -46,3 +46,11 @@
     正解 = robot_lab 训练速度跟踪 RL 策略（真机 wheeled_sport 的仿真等价物）。
 27. isaaclab `Imu` 的 OffsetCfg.rot 不作用于测量值——斜装传感器的水平化在发布器里
     用常量旋转自己做。
+28. **navstack:ready 镜像不含 tare_planner**（原始编译只做了 21 个包）——NAV_MODE=explore
+    首启会 PackageNotFoundError 崩溃循环、连带 SLAM 起不来。补编一次即可（or-tools 是
+    vendored 预编译库，3 秒）：bringup.sh 已加前置检查并打印补编命令。
+29. **RViz 的 TeleopPanel 会误杀自主模式**：它发 sensor_msgs/Joy 到 /joy，而 pathFollower
+    的 joystickHandler 按“手柄扳机”语义解读——axes[2] 不压死(-1) 就 autonomyMode=false。
+    鼠标点面板产生的轴值与扳机语义不匹配 → 一点就可能把 agent/TARE 的自主导航踢掉且难恢复
+    （恢复需要一条 axes[2]<-0.1 的 /joy）。agent 跑任务时不要碰 TeleopPanel；sim 里人工
+    遥控不在产品路径（真机人工接管=宇树遥控器+官方步态，绕开本栈）。

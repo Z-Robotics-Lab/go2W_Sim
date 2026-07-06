@@ -10,7 +10,8 @@
 - ③ 接入抓取：暂停，WIP 存 feat/grasp-wip（60%：IK伺服+状态机+箱子话题+臂合同）
 - P5.1 一键拉起：✅ 真跑验收（4ab8d63）——幂等短路/teardown/冷拉起 ALL-GREEN 至 L5
   （RViz 出图）/ /health 正常；集成缺口"容器跑旧拷贝"已修（sync_navstack_files.sh）
-- P5.2 探索基建：✅ 代码合入；真跑验收待做（NAV_MODE=explore + TARE 实测，见下）
+- P5.2 探索：✅ 真跑验收——NAV_MODE=explore 全绿、TARE 订阅实测、互斥 409 实测、
+  agent E2E '探索这个仓库' -> explored_volume 10140->10264 -> verified=True EXIT 0
 
 ## 运行拓扑（两容器 + 宿主）
 - go2w-isaac 容器：warehouse_nav.py（RL策略/传感器桥/GT，DDS 域 42，root）
@@ -26,12 +27,11 @@
 - 接口合同 docs/agent-bridge-api.md；手册 docs/user-manual.md；NUC docs/nuc-setup.md；
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
-## 下一步（P5.2 真跑验收）
-1. NAV_MODE=explore bash scripts/nav/bringup.sh（先 teardown）
-2. `ros2 topic info /start_exploration` 确认 TARE 订阅真名（yaml 覆盖 code default）
-3. POST /explore -> 目测自主探索 + /explore_progress 的 explored_volume 增长
-4. 【已知】/explore_stop 对 TARE 是 no-op（源码只认 true）——硬停用 NAV_MODE=waypoint 重启
-5. z-agent 侧：explore 技能 + Δexplored_volume 验证谓词；随后恢复任务③（抓取）
+## 下一步
+1. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
+2. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
+   NAV_MODE=waypoint 重启作为硬停
+3. P5.4 真机（等 CEO 三决策）；SLAM z 漂移观察项（本次会话 -0.5m，真机标定时一并看）
 
 ## 裁决项（待 CEO）
 - 真机 verify 语义 / NUC vs Orin 拓扑 / unitree_sdk2_python 依赖（P5.4 前）
