@@ -15,7 +15,12 @@ from sensor_msgs.msg import PointCloud2
 
 from livox_ros_driver2.msg import CustomMsg, CustomPoint
 
-SCAN_PERIOD_NS = 200_000_000  # 实测 RTX 雷达旋转周期 0.2 sim-s（一致性优先）
+SCAN_PERIOD_NS = 200_000_000  # 后备值。实际周期随 RTF 变（扫描完成与渲染帧耦合，
+# 坑17深层）：标定日 0.2，另日实测 0.21-0.25 且抖动——硬编码会让去畸变时间轴
+# 错位、SLAM z 乱漂（2026-07-06 实证 +0.5m/sim-min 游走）。故动态测：用相邻帧
+# header 差作为本帧周期，钳 [0.12, 0.40] 防野值，首帧用后备值。
+PERIOD_MIN_NS = 120_000_000
+PERIOD_MAX_NS = 400_000_000
 
 
 class Pc2ToLivox(Node):
@@ -42,13 +47,20 @@ class Pc2ToLivox(Node):
         # RTX helper 的帧戳是扫描完成时刻，点 offset 又向后铺 -> 帧总在"未来"，
         # SLAM 等 IMU 覆盖等不到。回溯一个周期：帧戳=扫描起始，offset 铺到完成时刻。
         end_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
-        start_ns = max(end_ns - SCAN_PERIOD_NS, 0)
+        prev = getattr(self, "_prev_end_ns", None)
+        self._prev_end_ns = end_ns
+        period_ns = SCAN_PERIOD_NS
+        if prev is not None:
+            measured = end_ns - prev
+            if PERIOD_MIN_NS <= measured <= PERIOD_MAX_NS:
+                period_ns = measured
+        start_ns = max(end_ns - period_ns, 0)
         out.header.stamp.sec = start_ns // 1_000_000_000
         out.header.stamp.nanosec = start_ns % 1_000_000_000
         out.timebase = start_ns
         pts = []
         unpack = struct.unpack_from
-        dt = SCAN_PERIOD_NS // max(n, 1)
+        dt = period_ns // max(n, 1)
         for i in range(n):
             base = i * step
             x = unpack("<f", data, base + offs["x"])[0]

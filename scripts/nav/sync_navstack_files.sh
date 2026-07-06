@@ -13,4 +13,17 @@ done
 # P5.2 探索变体 launch：.reference 快照即真相（与 patch 第5步产物逐字节一致已验证）
 cp "$HERE/system_isaac_sim_with_exploration.launch.py.reference" \
    "$NAV/system_isaac_sim_with_exploration.launch.py"
+# RViz 面板去毒（坑29/32）：从 stock 配置生成去掉 TeleopPanel 的 go2w.rviz——
+# 面板发的 /joy 会关自主模式并锁死速度；操作者面板不属于 agent 产品面。
+python3 - "$NAV" <<'PYEOF'
+import sys, re
+nav = sys.argv[1]
+src = f"{nav}/src/base_autonomy/vehicle_simulator/rviz/vehicle_simulator.rviz"
+txt = open(src).read()
+# Panels 段里移除 teleop 面板条目（缩进块）；显示区不动
+txt = re.sub(r"  - Class: teleop_rviz_plugin.*?(?=  - Class: |Visualization Manager:)",
+             "", txt, flags=re.S)
+open(f"{nav}/go2w.rviz", "w").write(txt)
+print("[sync] go2w.rviz (TeleopPanel removed)")
+PYEOF
 echo "[sync] scripts/nav -> $NAV OK"

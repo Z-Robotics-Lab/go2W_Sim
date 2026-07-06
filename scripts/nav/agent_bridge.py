@@ -17,6 +17,7 @@
 TARE（探索时自动发）。二者会互抢同一话题，故桥维护 nav_owner 互斥状态机，见下。
 """
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -127,6 +128,19 @@ def ros_main():
     node.create_subscription(JointState, "/piper/cmd", on_jc, 5)
     node.create_subscription(String, "/piper/grasp_status", on_gs, 5)
     STATE["grasp_pub"] = node.create_publisher(String, "/piper/grasp_cmd", 5)
+    # 速度自愈链路（坑32）：pathFollower 的 joySpeed 会被任何 /joy 消息重写
+    # （RViz TeleopPanel 一碰就把自主速度锁死在面板残值），而栈内无人发布 /speed
+    # 恢复话题。桥以 1Hz 发布 /speed=NAV_SPEED，speedHandler 在 joy 静默 2s 后
+    # 用它恢复 joySpeed —— 面板中毒自动痊愈。
+    from sensor_msgs.msg import Joy
+    STATE["speed_pub"] = node.create_publisher(Float32, "/speed", 5)
+    STATE["joy_pub"] = node.create_publisher(Joy, "/joy", 5)
+    nav_speed = float(os.environ.get("NAV_SPEED", "0.6"))
+
+    def _pub_speed():
+        m = Float32(); m.data = nav_speed
+        STATE["speed_pub"].publish(m)
+    STATE["_speed_timer"] = node.create_timer(1.0, _pub_speed)
     node.create_subscription(Odometry, "/state_estimation", on_odom, 5)
     node.create_subscription(PoseStamped, "/ground_truth/pose", on_gt, 5)
     node.create_subscription(Float32, "/explored_volume", on_explored_volume, 5)
@@ -234,6 +248,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             req = self._read_json_body()
+            # 矫正 joy（坑32）：恢复 autonomyMode（axes[2]=-1）、退出手动（axes[5]=+1）、
+            # 清空速度轴（joySpeedRaw=0）——2s 后 speedHandler 会用桥发的 /speed 把
+            # joySpeed 恢复满值。TeleopPanel 中毒在下一次发航点时自动痊愈。
+            from sensor_msgs.msg import Joy
+            cj = Joy()
+            cj.axes = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            # buttons 必须补满：terrainAnalysis(.cpp:188)/Ext 直接索引 buttons[5]
+            # 无长度检查——空 buttons 会让地形节点 SIGSEGV（2026-07-06 实证：矫正 joy
+            # 上线后每发一个航点地形层死一次，路径消失、cmd_vel 全零）。
+            cj.buttons = [0] * 12
+            STATE["joy_pub"].publish(cj)
             wp = PointStamped()
             wp.header.frame_id = "map"
             wp.point.x, wp.point.y = float(req["x"]), float(req["y"])

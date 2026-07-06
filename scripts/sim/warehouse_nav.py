@@ -38,7 +38,7 @@ simulation_app.update()
 # 是雷达时钟正确性的硬约束，坑16），所以帧率就是实时率。关掉视觉特效对导航
 # 零影响（SLAM 吃雷达点云；D435 图像仅供 RViz 显示，画质降级可接受）。
 import os as _os  # noqa: E402
-if _os.environ.get("GO2W_FAST_RENDER", "1") != "0":
+if _os.environ.get("GO2W_FAST_RENDER", "0") == "1":  # 默认关（实测关特效连累 RTX 雷达：0.7Hz+SLAM z 漂移，坑33）
     import carb.settings  # noqa: E402
     _st = carb.settings.get_settings()
     _st.set("/rtx/reflections/enabled", False)

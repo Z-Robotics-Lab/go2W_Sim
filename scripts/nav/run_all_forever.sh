@@ -56,7 +56,7 @@ echo "[SUPERVISOR] NAV_MODE=$NAV_MODE -> $SYSTEM_LAUNCH" >> /ws/supervisor.log
   fi
   while true; do
     ros2 run rviz2 rviz2 \
-      -d /ws/src/base_autonomy/vehicle_simulator/rviz/vehicle_simulator.rviz \
+      -d /ws/go2w.rviz \
       >> /ws/rviz.log 2>&1
     echo "RVIZ-DIED exit=$? $(date)" >> /ws/rviz.log
     sleep 3
