@@ -35,4 +35,20 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
   done
 ) &
 
+# RViz 可视化（软能力，死后重生）。headless 环境（DISPLAY 空）不空转刷日志——
+# 直接 sleep infinity 挂着，让 supervisor 的 wait 不提前返回。
+(
+  if [ -z "$DISPLAY" ]; then
+    echo "[RVIZ] DISPLAY 为空，headless——不启动 RViz（sleep infinity）" >> /ws/rviz.log
+    sleep infinity
+  fi
+  while true; do
+    ros2 run rviz2 rviz2 \
+      -d /ws/src/base_autonomy/vehicle_simulator/rviz/vehicle_simulator.rviz \
+      >> /ws/rviz.log 2>&1
+    echo "RVIZ-DIED exit=$? $(date)" >> /ws/rviz.log
+    sleep 3
+  done
+) &
+
 wait
