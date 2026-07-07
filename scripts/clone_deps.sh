@@ -27,4 +27,11 @@ if [ ! -d assets/piper_ros ]; then
   git -C assets/piper_ros sparse-checkout set src/piper_description
 fi
 
+# Re-apply the tracked Go2W payload-envelope retrain config onto the pristine robot_lab
+# checkout (plan-d default + plan-a opt-in). robot_lab is git-ignored, so these edits live
+# as a patch in the main repo and must be re-applied after every fresh clone. Idempotent.
+if [ -x scripts/sim/retrain/robot_lab_patch/apply.sh ]; then
+  scripts/sim/retrain/robot_lab_patch/apply.sh
+fi
+
 echo "OK: IsaacLab v2.3.2 / robot_lab v2.3.2 / unitree_ros(go2w_description) / piper_ros(piper_description)"
