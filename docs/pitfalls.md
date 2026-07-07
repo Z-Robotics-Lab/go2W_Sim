@@ -116,3 +116,30 @@
     双栈 + GPU/内核证据落 var/evidence/freeze_watch/<ts>/ 然后停住留标本，不自动杀）。
     py-spy 判读：冻结栈在 isaaclab step():568 = PAUSED 旋；卡 :579/isaacsim.core:710
     内 = STOPPED 路径阻塞。健康基线栈 = warehouse_nav.py:351 → :579 → :710。
+40. **【坑39 修正+根治】Isaac 冻结根因=timeline STOP/PAUSE 焊死主线程，触发=外部
+    UI/输入注入 pause/stop，非"187s 确定性自停"**（2026-07-06 深夜真跑验收，
+    DEBUG.md 坑40 假设环 + var/evidence/freeze_fix/）：
+    - **坑39 两处判断被推翻**：(a) "sim≈187s 确定性自停" REFUTED——同构栈实测跑到
+      sim_t 589s（>3× 187s）零冻；本会话 idle 栈存活>2h。两具僵尸都落在步态调试员
+      xdotool windowactivate 压焦点 + 录屏活跃窗内 → 触发是**外部 X11 输入/UI 注入
+      pause/stop**（Phase2a 单次 space 注入的 PAUSE traceback 栈顶=_app.update() 事件
+      泵、无进程内 pause 调用，直证外部注入）。(b) "527% CPU=冻结签名" 是**误导**——
+      健康运行态本就 507% CPU（RTX+RL策略+传感器多线程）；冻结的真判据是**时钟停摆**
+      （/pose stamp 不推进），不是 CPU 高。凭 CPU 判冻会误诊。
+    - **机制（源码直证）**：STOP→simulation_context.py:1027 `_app_control_on_stop_
+      handle_fn` while not is_playing():render() **无 stop-break** 焊死；PAUSE→step():565
+      同款旋等；replicator orchestrator.py:327 把"到端点 PAUSE"升成 timeline.stop()
+      （仅 not is_looping 时；默认 looping=True 故此路默认关）。
+    - **根治（scripts/sim/warehouse_nav.py 应用层四件套，零 IsaacLab/kit 改动）**：
+      [1] sim.reset() 后 `sim._disable_app_control_on_stop_handle=True` 把 STOP 焊死回调
+      变 no-op（IsaacLab 自身 reset():513 同款）；[2] `set_end_time(1e9)+commit()`
+      拆升格器（**必须 commit() 落 USD stage，否则 get 读回旧值 1.0**）；[3] 主循环
+      `sim.step()` **之前**插守卫：is_stopped→[FATAL]+sys.exit(3) 干净退出（响亮死给
+      status.sh 看，不留僵尸）、else PAUSED→auto-resume(play+commit)、限速 >5/min 升
+      FATAL 防人工暂停拉锯；[4] timeline 事件监听打 PLAY/PAUSE/STOP + traceback 闭环
+      触发源。守卫**必须放 step 之前**——step():565 的旋等会先于守卫焊死。
+    - **验收**：40.4min 浸泡零冻（243 行 CSV 全 ok、age<5s、freeze_watch 零捕获、全程
+      goto 驾驶）；space 注入 35ms 内 auto-resume；快连 6 次触发 FATAL 干净退出无僵尸；
+      RTF 0.206 vs 基线 0.222（守卫每步一次 is_playing C++ 调用开销可忽略）。
+    - **回归测试**：`xdotool key --window <isaac_wid> space` 注入 pause，nav_bridge.log
+      应现 `[NAV][WARN]…auto-resume` 且 /health age 不阶跃（固化 phase2a_pause_inject.log）。
