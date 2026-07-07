@@ -597,3 +597,50 @@ UniformThreshold norm<0.2 清零):
 - 中间(0.02-0.05)=> 两侧都有份,按此拆分。
 
 **两侧修复方案均已备(见报告),但都不开火,待 E-T 判决 + 编排者决定。**
+
+## CONCLUDE(终审 2026-07-07 — E-T 已跑,判决:**训练配方**)
+**E-T 实测**(attribution_play.py,原生 robot_lab Flat env,200Hz/decim4,原生增益/obs/normalizer,
+零 shim,4 env,seed42;证据 var/evidence/retrain/attribution/et_native.jsonl + et_run_*.log):
+
+| 段 | cmd_vx | 原生 E-T(drift / body-vx) | 部署 A/B 裸机 | Δ |
+|---|---|---|---|---|
+| 零指令 30s | 0.0 | **0.0695** / 0.0695(前向) | 0.072 | -0.0025 |
+| ladder 15s | 0.15 | 0.2149 / 0.2676 | 0.2114 | +0.0035 |
+| ladder 15s | 0.30 | 0.3691 / 0.3831 | 0.3678 | +0.0013 |
+| ladder 15s | 0.60 | 0.6800 / 0.6811 | 0.6886 | -0.0086 |
+
+零指令细节:4/4 env 齐爬(pop median 0.0695/mean 0.0734,方差极小),0 摔,净位移 2.08m/30s,
+方向=+x 前向。判决矩阵:**0.0695 ≥ 0.05 ⇒ 训练配方缺口坐实**。低指令过冲同样原生复现
+(0.15→0.215、0.30→0.369、0.60→0.680,与部署 0.212/0.368/0.689 逐位一致)。
+
+**根因一句话**:策略从没学会站定——训练奖励结构让"零指令下轮子慢滚前进"几乎零代价,
+2.2% 的站定样本给不出学习压力;部署 shim/执行链忠实复现了这个被训出来的行为(全段 Δ≤0.009)。
+
+**机制链(全 file:line)**:
+1. stand_still(-2.0)只罚**腿**关节偏离 default(rough_env_cfg.py:184-185 joint_names=
+   leg_joint_names;rewards.py:93-104)——轮速不在罚域;腿保持 default 姿态慢滚即免罚。
+2. wheel_vel_penalty **训练时禁用**(rough_env_cfg.py:188 weight=0 → 出厂 env.yaml:1398
+   `wheel_vel_penalty: null`)——零指令下轮子转动完全免费。
+3. track_lin_vel_xy_exp(3.0,std²=0.25)在 v=0.07 处只损 1-exp(-0.0049/0.25)≈2% ≈0.06
+   奖励——小蠕动处梯度近乎平坦。
+4. 真零指令样本仅 ~2.2%(rel_standing_envs=0.02 env.yaml:1631 + norm<0.2 清零 commands.py:47)。
+
+**部署侧洗清(带保留项)**:obs 构造无失配(静态逐字段+行为级 Δ≤0.009 双证)。物理步率
+(200→100Hz)与 warehouse 增益重调(100/5,0/8)是**真实的保真度缺口但非蠕动主因**——
+留作次级部署项,不阻塞配方轮。
+**诚实备注**:E-T 原生 env 继承了当前检出已应用的 plan-d 加宽随机化(startup 质量/CoM,
+harness 未禁),4 env 各抽不同随机体仍齐爬 ~0.07 → 蠕动对体参数不敏感,与 A/B 裸机(标称体)
+0.072 三角互证,结论不受影响。seed42 两次 run seg1 逐位复现(0.0695)。
+
+**回归测试(配方轮预注册判据,沿用不变)**:policy_acceptance.py 四段 + ab_verdict.py,
+零指令门 drift<0.02 m/s——重训后必须过此门,并在原生 E-T(attribution_play.py)同判。
+
+**修复方向(配方轮要点,本轮不开火,CEO gate:改奖励/命令分布)**:
+- rel_standing_envs 0.02→0.25(go2w __post_init__ override `self.commands.base_velocity.
+  rel_standing_envs`,走 robot_lab_patch 机制)。
+- wheel_vel_penalty weight 0→负值(rough_env_cfg.py:188,params 已接好 :189-190)——直接罚
+  零指令/低体速下的轮转,对轮式蠕动最对症。
+- 保留 stand_still -2.0;保留已在树上的 plan-d 质量/CoM 包络加宽(带载 pitch_var 2.6× 劣化
+  是真的,一轮重训一并吃掉)。
+- 其余全冻结(执行器增益/decimation/obs57/act16/网络结构)——部署一致性红线,新 ckpt 对
+  frozen shim 保持同构 drop-in。
