@@ -1107,3 +1107,92 @@ GO2W_STANDSTILL=0,其余同 L3+L3b。
   历史,待 pathDir 振荡也解决后再促成。
 - 下一轮真解方向:pathFollower dirDiff 用**全局目标方位**而非振荡的局部 pathPointID 方向,
   或 planner 侧稳定 lookahead(需 CEO gate:触 planner 语义/红线)。
+
+---
+
+# DEBUG — pathDir 振荡"更深根因"：地形代价阈值闪烁（2026-07-07 只读诊断轮，gate 弹药）
+
+> 前置：W1-W3 已确证"到点后 stale path→pathFollower 对 stale pathDir 做 yaw 伺服→wz 饱和
+> ±1.396"的**传导机制**。本轮下探一层：**pathDir 本身为何在主动导航中振荡**（不是到点后，
+> 是导航途中就翻）。只读/只测，不改 localPlanner/pathFollower 语义（gate 后的事）。
+
+## OBSERVE（活栈 GREEN，纯上游 model_5495；工具 scripts/nav/pathdir_{sampler,analyze}.py）
+- 同步采 /state_estimation(SLAM,~25Hz sim) + /path 首0.5m方向(veh系) + /cmd_vel，三段航点各 ~18s sim。
+- 关键先验（源码实读）：
+  · localPlanner 路径重算**门控在 `newLaserCloud||newTerrainCloud`**（localPlanner.cpp:679）——
+    每来一帧传感器点云才重算一次 path。
+  · 选组是**严格 argmax 无滞后**（:914-924 `if(maxScore<score){...selectedGroupID=i;}`）——
+    无"偏向上一帧选择"的项；两组分数接近时任何微噪声都翻选。
+  · 组分数 `score=(1-sqrt(sqrt(dirWeight*dirDiff)))*rotDirW^4`（:900），dirWeight=0.02，
+    四次根把 dirDiff 项压平——不同朝向的两组分数极易接近。
+  · joyDir=目标在**vehicle 系**方位（:763，由 vehicleYaw=SLAM yaw 算）——SLAM yaw 抖会传染 joyDir。
+  · 无清障组时（selectedGroupID<0）走 pathScale/pathRange 收缩循环，仍无则发**空 1 点 path**（:1031-1039）。
+- 活参数实测：useTerrainAnalysis=**True**、checkObstacle=**True**、adjacentRange=3.5、
+  obstacleHeightThre=**0.2**、pointPerPathThre=2、twoWayDrive=True、autonomyMode=True。
+
+## HYPOTHESIZE + EXPERIMENT（一次一个证伪）
+| # | 假设 | 检验 → 结果 |
+|---|---|---|
+| H-A | SLAM 位姿抖动传染：/state_estimation 高频 yaw/pos 抖 → vehicle 系跳 → pathDir 翻 | SLAM yaw |dyaw|/帧 mean=0.6°、max=3.1°、24% 帧>1°；xy 步 mean 37mm。把 pathdir 转**世界系**（+SLAM yaw 插值）去掉 vehicle 旋转后：world 系 pathdir std 仍 43-85°、>60°跳变仍占 27-49% → **抖动不因去旋转而消失** → **贡献者但非主因，部分 REJECTED**（若 SLAM 是主因，世界系应变稳；实测未变稳）|
+| H-B | localPlanner 候选路径翻选（严格 argmax 无滞后，与 SLAM 无关的规划器内因） | world 系 pathdir 仍抖（见上）证明**方向不稳在规划器本身**。源码 :914-924 无滞后确证。但翻选的**触发源**是清障结果闪（见 H-D），argmax 无滞后是**放大器**不是点火源 → **机制 CONFIRMED（放大器）** |
+| H-C | 航点投影几何：5m 超出局部视界，目标投影在视界边缘摆 | 2m(视界内) vs 5m(视界外) 对照：2m 的 world-pathdir std=**85°** 比 5m 的 64° **更大**、vx 非零 4% vs 19%；in-horizon 并不更稳 → **REFUTED（非主因）** |
+| H-D | 地形代价阈值闪烁：terrain_map 单元代价在阈值附近闪 → 清障组反复被封/放 → 路径方向翻 | **CONFIRMED（主因）**：见下 |
+
+## H-D 决定性证据（terrain_map 时序 + 空间探针）
+- **/terrain_map 障碍单元数逐帧剧烈闪烁**：n(cost>0.2) 在连续帧间 161↔1921（12×摆动），
+  imax 0.52↔0.94；/free_paths 存活候选路径点数 **0↔2524↔0↔1851↔0** 几乎每帧翻。
+- **/path 空/实交替**：155 条 path 中 65% 为空(pathSize≤1)，E↔R 转换 **67 次/155 条**
+  （序列 RREERERREREREE...）——planner 输出在"找到组/无组"间近乎逐帧双稳翻转。
+- **空间定位=阈值边界闪**：cost>0.2 的障碍单元就在机器人正前/侧方（如 (0.37,-1.1)、
+  (0.28,-0.78)），cost 值 **0.20-0.24 恰压在 obstacleHeightThre=0.2 上**；点 z=-0.14~-0.87
+  是脚下地板点。即**空旷仓库地板被算出 ~0.2 的高度代价，逐帧噪声把它推过/退回 0.2 阈值**，
+  正前方地板在"可通行↔障碍"间闪 → 前向所有路径被反复封/放。
+- 观测端 wz 饱和 ±1.396 占 18-20%、7 次符号翻转/18s，vx 非零仅 19%（5m）——与"空路径→wz 零、
+  实路径 stale 方向→wz 饱和"交替吻合。
+
+## CONCLUDE（根因裁定）
+**根本原因 = 地形代价阈值闪烁（H-D）**：低 RTF(≈0.20) 下 Isaac 点云/地形分析产出的
+`/terrain_map` 在正前方地板给出恰在 obstacleHeightThre=0.2 的代价，逐帧点云噪声令其跨阈闪烁
+→ localPlanner 清障组 65% 帧全被封（发空 path）、存活帧里又因**严格 argmax 无滞后（H-B 放大器）**
+翻选方向 → pathFollower 对交替/跳变的 pathDir 做 yaw 伺服 → wz 饱和 ±maxYawRate=±1.396 来回翻。
+- 主因链 file:line：地形闪(输入) → localPlanner.cpp:717/824/848(用 terrain 建 clearPathList) →
+  :887-908(评分) → :914-924(**无滞后 argmax**) → :1031-1039(全封→空 path) →
+  pathFollower.cpp:355-357(pathDir=atan2 lookahead) → :381-385(yawRate 饱和)。
+- 次因：SLAM yaw 抖(H-A，0.6°/帧)喂入 joyDir 添噪；**非主因**（去旋转后仍抖）。
+- 排除：H-C 视界投影（in-horizon 并不更稳，REFUTED）。
+- **真机为何无此病**：真机 RTF=1、真 LiDAR(mid360) 点云稳定、terrain 分析在稳定点流上不跨阈闪；
+  且真机 mid360 扫描率/密度远优于 sim 的 pc2_to_livox 转换流。**病是 sim 保真度（低 RTF+点云噪声）
+  与 planner 无滞后设计的合病**，不是 planner 在真机上的缺陷 → 任何修法必须**不伤真机形态**。
+
+## 三候选修法利弊表（gate 决策弹药）
+| # | 修法 | 改动面 | 真机兼容性（gate 核心顾虑） | 预期收益 | 验证方案 |
+|---|---|---|---|---|---|
+| **a** | **planner 侧稳定**：选组加**滞后/迟滞**（偏向上一帧 selectedGroupID，加切换代价阈）+ 空 path 时**保持上一条有效 path 一小段超时**（不立刻发空 1 点） | localPlanner.cpp:914-924 加"上帧组 +bonus 或需超阈才切"；:1031 加 path 保持窗。**触 planner 语义=CEO gate/红线** | **真机 SAFE 且有益**：滞后只在两组分数接近时防抖，真机稳定点流下几乎不触发（分数差大直接切）；保持窗防瞬时空 path 误停，真机同样受益。**不改单驱动/config-as-code 形态** | 空 path 65%→显著降；world-pathdir std 40-85°→<20°；wz 饱和占比→<5% | 同 pathdir_sampler 采 2m/5m，world-pathdir std + 空 path% + wz 饱和%；叉子门 cmd.x≥70% & GT≥0.35 |
+| **b** | **follower 侧**：pathFollower dirDiff 用**全局目标方位**替振荡的局部 pathPointID 方向（dirDiff = yaw_to_goal − vehicleYaw，绕过 pathDir） | pathFollower.cpp:355-357 换算源。**触 follower 语义=CEO gate/红线** | **真机 RISK**：绕过局部 path 方向=**放弃 planner 的避障绕行**，直奔目标——真机有真障碍时会撞。**改变了 plan→follow 契约**，真机形态受损。仅在"planner 方向不可信"这个 sim 专属前提下成立 | wz 稳（直指目标），但**牺牲避障**；仅适合空旷 sim | 需在有障碍场景验证不撞（真机契约测试）——高成本 |
+| **c** | **SLAM/sim 保真**：治本于**输入**——降 terrain 噪声（提 obstacleHeightThre 留裕度 / terrain 时间滤波 / 修 pc2_to_livox 点流质量 / 提 RTF 让点云稳） | scripts/sim/warehouse_nav.py 或 terrain_analysis 参数/pc2_to_livox；**red-line pc2_to_livox 不碰**，走 obstacleHeightThre 或 terrain 滤波 | **真机 SAFEST**：只提升 sim 输入保真度，**零 planner/follower 语义改动**，真机路径完全不动（真机不加此滤波即可）。config-as-code | terrain 闪→稳则空 path% 与翻选**同时**消失（治点火源）；根治而非抑制 | 采 terrain_map n>0.2 时序方差 before/after；再采 pathdir/wz 复核 |
+
+## 推荐排序（诊断者建议，非裁决）
+1. **c（sim 保真，首选）**——治点火源、零语义风险、真机绝对不伤；最小 gate 面（可能仅
+   config/参数，甚至非红线）。先试 obstacleHeightThre 留裕度 + terrain 时间滤波。
+2. **a（planner 滞后，次选）**——真正的鲁棒性修（真机也受益于防抖），但触 planner 红线需
+   CEO gate；与 c 正交可叠加（c 治源、a 兜底残余抖）。
+3. **b（follower 全局方位，末选）**——**牺牲避障、伤真机契约**，只在证明场景恒空旷时用；
+   不推荐作为通解。
+> 组合建议：先 c 单上（可能出坑），不够再叠 a；b 除非有强约束否则弃。均需 CEO gate 后落地。
+
+---
+
+# 回归复核（2026-07-07 只读诊断轮，配合上节）
+## 1a. E0'' 120s 站定回归（过夜轮回滚后补跑）
+- 活栈 GREEN(status green:true/upright:true/l5)；/reset 回出生点(z=0.402,up_z=-1.000)后采 120s wall(≈25s sim) idle。
+- up_z：30s 独立轮询 min=-1.000/max=-0.959，**全程<-0.9=直立 PASS**；截帧 standstill_frame.png
+  （确认 Isaac Sim 5.1.0 窗，非 Chrome；俯视四轮足平身站立，未塌未翻）。
+- GT 净位移：**821mm**（>257mm 锚、>过夜轮 285mm）——**位移门 FAIL**。轨迹实测：前 ~20s sim
+  在原地摆(x -0.08~-0.53)，末 ~6s sim 出现真漂移(+y+x 共 ~500mm)。**与过夜轮 E0'' 结论一致**：
+  位移由未除的 pathFollower wz 爆发驱动（本窗恰逢强漂移相，量级偏大但同因）。**摔倒根治仍成立、
+  位移门仍待栈侧清 stale path/治 terrain 闪之后**。诚实记 FAIL-on-displacement, PASS-on-upright。
+
+## 1b. GT z"站姿下蹲塌"疑点核查（单样本 0.254 vs 健康 ~0.37）
+- **REFUTED（无持续塌陷）**：30s GT z 序列 min=0.277/max=0.401/mean=0.360/std=0.045，up_z 全<-0.9。
+- z 在 0.28↔0.40 间**周期性起伏（bobbing）**——0.254 单样本=起伏的谷底，非姿态崩塌；均值 0.36≈健康站高。
+- 截帧四轮足站立、身体水平。判为**站定自不稳抖振（已知 B 类）**在 z 上的表现，非"下蹲塌"。
