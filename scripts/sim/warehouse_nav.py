@@ -76,7 +76,12 @@ from isaaclab.sensors import ImuCfg  # noqa: E402
 from isaaclab.sim import SimulationCfg, SimulationContext  # noqa: E402
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR  # noqa: E402
 
-ROBOT_URDF = "/workspace/go2w/assets/urdf/go2w_sensored.urdf"
+# A/B body switch (OOD judgement experiment, 2026-07-07): GO2W_WITH_ARM=0 loads the BARE
+# trunk (no PiPER arm / NUC / mounts) = the body the shipped policy was TRAINED on; =1 (default)
+# loads the sensored/loaded deployment body. Bare URDF is auto-derived by make_bare_urdf.py.
+WITH_ARM = _os.environ.get("GO2W_WITH_ARM", "1") == "1"
+ROBOT_URDF = ("/workspace/go2w/assets/urdf/go2w_sensored.urdf" if WITH_ARM
+              else "/workspace/go2w/assets/urdf/go2w_bare.urdf")
 LIDAR_USD = "/workspace/go2w/assets/lidar_configs/Livox_Mid360_approx.usd"
 WAREHOUSE_USD = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/full_warehouse.usd"
 
@@ -204,6 +209,15 @@ def main():
         GO2W_NAV_CFG.actuators["wheels"].stiffness = 0.0
         GO2W_NAV_CFG.actuators["wheels"].damping = 0.5
         GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
+    if not WITH_ARM:
+        # 裸机 A/B 对照：bare URDF 无 piper 关节，去掉臂/夹爪执行器与臂 init_state
+        # （IsaacLab 对零匹配的 actuator 正则会报 ValueError；对不存在关节的 init_state 同理）。
+        GO2W_NAV_CFG.actuators.pop("arm", None)
+        GO2W_NAV_CFG.actuators.pop("gripper", None)
+        GO2W_NAV_CFG.init_state.joint_pos = {
+            k: v for k, v in GO2W_NAV_CFG.init_state.joint_pos.items()
+            if not k.startswith("piper_joint")
+        }
     robot = Articulation(GO2W_NAV_CFG)
     box = RigidObject(BOX_CFG)
     imu = IsaacImu(ImuCfg(
@@ -270,9 +284,16 @@ def main():
           f"looping={_tl.is_looping()}", flush=True)
 
     # PiPER 抓取控制器（臂 8 关节目标的唯一属主；README 抓取管线见 sim-plan M5）
-    from piper_grasp import PiperGraspController
-    grasp = PiperGraspController(robot, args_cli.device or "cuda:0")
-    arm_ids_t = grasp.all_ids
+    # A/B 判决实验（GO2W_WITH_ARM=0，裸机对照）：裸机 URDF 无臂关节，跳过抓取控制器
+    # 与臂目标写入——臂/抓取管线全程 None-guarded，其余导航链一字不动。
+    if WITH_ARM:
+        from piper_grasp import PiperGraspController
+        grasp = PiperGraspController(robot, args_cli.device or "cuda:0")
+        arm_ids_t = grasp.all_ids
+    else:
+        grasp = None
+        arm_ids_t = None
+        print("[NAV] GO2W_WITH_ARM=0: bare trunk, PiPER grasp controller SKIPPED (A/B control)", flush=True)
 
     # rclpy: IMU 发布 + cmd_vel 订阅（桥扩展已带 jazzy 内部库）
     rclpy.init()
@@ -536,14 +557,16 @@ def main():
                 vel_t[:, i] = wr
             robot.set_joint_velocity_target(vel_t)
         # 抓取：指令接收 -> 状态机启动；50Hz 伺服；臂目标最后写覆盖 default 保持
-        if grasp_req["pending"]:
-            grasp_req["pending"] = False
-            box.update(physics_dt)
-            grasp.start(box.data.root_pos_w[0])
-        if step % 2 == 0:
-            grasp.step(2 * physics_dt)
-        robot.set_joint_position_target(
-            grasp.q_tgt.unsqueeze(0), joint_ids=arm_ids_t)
+        # 裸机 A/B 对照（grasp is None）跳过全部臂/抓取写入。
+        if grasp is not None:
+            if grasp_req["pending"]:
+                grasp_req["pending"] = False
+                box.update(physics_dt)
+                grasp.start(box.data.root_pos_w[0])
+            if step % 2 == 0:
+                grasp.step(2 * physics_dt)
+            robot.set_joint_position_target(
+                grasp.q_tgt.unsqueeze(0), joint_ids=arm_ids_t)
         robot.write_data_to_sim()
         # 【3】自愈守卫：必须在 sim.step() 之前——step():565 的 PAUSE 旋等会先于守卫焊死主线程。
         if not sim.is_playing():
@@ -598,12 +621,13 @@ def main():
             (bo.twist.twist.linear.x, bo.twist.twist.linear.y,
              bo.twist.twist.linear.z) = bv
             box_pub.publish(bo)
-            gs = String()
-            gs.data = f"{grasp.status};aperture={grasp.aperture():.4f};" \
-                      f"cmd_closed={int(grasp.cmd_closed())}"
-            gs_pub.publish(gs)
+            if grasp is not None:
+                gs = String()
+                gs.data = f"{grasp.status};aperture={grasp.aperture():.4f};" \
+                          f"cmd_closed={int(grasp.cmd_closed())}"
+                gs_pub.publish(gs)
 
-        if step % 5 == 0:  # 臂状态 20Hz：EE GT 位姿（=夹持中心）+ 关节实测/目标
+        if grasp is not None and step % 5 == 0:  # 臂状态 20Hz：EE GT 位姿（=夹持中心）+ 关节实测/目标
             ep = grasp.grip_center().tolist()
             _, eq = grasp.ee_pose()
             eq = eq.tolist()

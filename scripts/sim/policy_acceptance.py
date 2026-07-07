@@ -45,9 +45,11 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser()
 parser.add_argument("--policy", type=str, required=True, help="Go2W velocity ckpt (.pt)")
 parser.add_argument("--out", type=str, default=None, help="append JSONL result rows here")
-parser.add_argument("--urdf", type=str,
-                    default="/workspace/go2w/assets/urdf/go2w_sensored.urdf",
-                    help="robot URDF (default: sensored/payload deployment form)")
+parser.add_argument("--body", choices=["loaded", "bare"], default="loaded",
+                    help="loaded=go2w_sensored.urdf (deployment payload); bare=go2w_bare.urdf "
+                         "(trained trunk, A/B control). Sets --urdf if that is left default.")
+parser.add_argument("--urdf", type=str, default=None,
+                    help="robot URDF (default: chosen by --body)")
 parser.add_argument("--drift-thresh", type=float, default=0.02, help="seg1 PASS drift m/s")
 parser.add_argument("--track-tol", type=float, default=0.35, help="seg2/4 PASS rel speed error")
 parser.add_argument("--fall-deg", type=float, default=60.0, help="fall if |roll|or|pitch|>this")
@@ -68,35 +70,22 @@ PHYS_DT = 1.0 / 100.0          # 100 Hz physics (matches warehouse_nav.py)
 POLICY_EVERY = 2              # act every 2 physics steps -> 50 Hz policy
 SPAWN_Z = 0.42               # match warehouse_nav.py init height
 
-# Robot cfg — same spawn/actuators as warehouse_nav.py --policy path, on flat ground.
-ROBOT_CFG = ArticulationCfg(
-    prim_path="/World/Robot",
-    spawn=sim_utils.UrdfFileCfg(
-        asset_path=args_cli.urdf,
-        fix_base=False,
-        merge_fixed_joints=False,
-        activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False,
-            solver_position_iteration_count=4,
-            solver_velocity_iteration_count=1,
-        ),
-        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
-        ),
-    ),
-    init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, SPAWN_Z),
-        joint_pos={
-            ".*_hip_joint": 0.0, ".*_thigh_joint": 0.8, ".*_calf_joint": -1.5,
-            ".*_foot_joint": 0.0,
-            "piper_joint2": 0.8, "piper_joint3": -1.2,
-            "piper_joint[1456]": 0.0, "piper_joint[78]": 0.0,
-        },
-        joint_vel={".*": 0.0},
-    ),
-    actuators={
+URDF_LOADED = "/workspace/go2w/assets/urdf/go2w_sensored.urdf"
+URDF_BARE = "/workspace/go2w/assets/urdf/go2w_bare.urdf"
+URDF_PATH = args_cli.urdf or (URDF_LOADED if args_cli.body == "loaded" else URDF_BARE)
+HAS_ARM = args_cli.body == "loaded"
+
+
+def build_robot_cfg():
+    """Build the go2w cfg for the chosen body. bare = no arm/gripper actuators or piper init.
+
+    Same spawn + TRAINING actuator gains as warehouse_nav.py --policy path, on flat ground.
+    """
+    joint_pos = {
+        ".*_hip_joint": 0.0, ".*_thigh_joint": 0.8, ".*_calf_joint": -1.5,
+        ".*_foot_joint": 0.0,
+    }
+    actuators = {
         # TRAINING gains (robot_lab UNITREE_GO2W_CFG): legs 25/0.5, wheels 0/0.5.
         "legs": ImplicitActuatorCfg(
             joint_names_expr=["(FL|FR|RL|RR)_(hip|thigh|calf)_joint"],
@@ -104,14 +93,40 @@ ROBOT_CFG = ArticulationCfg(
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*_foot_joint"],
             effort_limit_sim=23.5, velocity_limit_sim=30.0, stiffness=0.0, damping=0.5),
-        "arm": ImplicitActuatorCfg(
+    }
+    if HAS_ARM:
+        joint_pos.update({
+            "piper_joint2": 0.8, "piper_joint3": -1.2,
+            "piper_joint[1456]": 0.0, "piper_joint[78]": 0.0,
+        })
+        actuators["arm"] = ImplicitActuatorCfg(
             joint_names_expr=["piper_joint[1-6]"],
-            effort_limit_sim=30.0, velocity_limit_sim=5.0, stiffness=100.0, damping=5.0),
-        "gripper": ImplicitActuatorCfg(
+            effort_limit_sim=30.0, velocity_limit_sim=5.0, stiffness=100.0, damping=5.0)
+        actuators["gripper"] = ImplicitActuatorCfg(
             joint_names_expr=["piper_joint[78]"],
-            effort_limit_sim=50.0, velocity_limit_sim=1.0, stiffness=800.0, damping=20.0),
-    },
-)
+            effort_limit_sim=50.0, velocity_limit_sim=1.0, stiffness=800.0, damping=20.0)
+    return ArticulationCfg(
+        prim_path="/World/Robot",
+        spawn=sim_utils.UrdfFileCfg(
+            asset_path=URDF_PATH,
+            fix_base=False,
+            merge_fixed_joints=False,
+            activate_contact_sensors=True,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=1.0),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=False,
+                solver_position_iteration_count=4,
+                solver_velocity_iteration_count=1,
+            ),
+            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
+            ),
+        ),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=(0.0, 0.0, SPAWN_Z), joint_pos=joint_pos, joint_vel={".*": 0.0},
+        ),
+        actuators=actuators,
+    )
 
 
 def quat_to_rp(q):
@@ -169,6 +184,7 @@ def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duratio
     fell = False
     max_tilt = 0.0
     speeds = []
+    pitches = []
     for i in range(n_steps):
         if i % POLICY_EVERY == 0:
             apply_policy(robot, policy, default_pos, (cmd_vx, cmd_vy, cmd_wz))
@@ -179,6 +195,7 @@ def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duratio
         speeds.append(float(torch.linalg.norm(v).item()))
         q = robot.data.root_quat_w[0].tolist()
         roll, pitch = quat_to_rp(q)
+        pitches.append(pitch)
         tilt = max(abs(roll), abs(pitch))
         max_tilt = max(max_tilt, tilt)
         if tilt > math.radians(fall_deg):
@@ -186,11 +203,15 @@ def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duratio
     p1 = robot.data.root_pos_w[0, :2].clone()
     disp = float(torch.linalg.norm(p1 - p0).item())
     mean_speed = sum(speeds) / len(speeds) if speeds else 0.0
+    # pitch variance (rad^2): body-pitch instability discriminator for the OOD A/B judgement.
+    pmean = sum(pitches) / len(pitches) if pitches else 0.0
+    pitch_var = sum((p - pmean) ** 2 for p in pitches) / len(pitches) if pitches else 0.0
     return {
         "disp_m": round(disp, 4),
         "mean_speed_mps": round(mean_speed, 4),
         "displacement_speed_mps": round(disp / duration_s, 4),
         "max_tilt_deg": round(math.degrees(max_tilt), 2),
+        "pitch_var_rad2": round(pitch_var, 6),
         "fell": fell,
     }
 
@@ -201,7 +222,7 @@ def main():
     ground = sim_utils.GroundPlaneCfg(); ground.func("/World/Ground", ground)
     light = sim_utils.DomeLightCfg(intensity=2000.0); light.func("/World/Light", light)
 
-    robot = Articulation(ROBOT_CFG)
+    robot = Articulation(build_robot_cfg())
     sim.reset()
 
     import sys, os  # noqa: E402
@@ -214,7 +235,7 @@ def main():
     birth_jvel = robot.data.default_joint_vel.clone()
     default_pos = robot.data.default_joint_pos.clone()  # arm/gripper hold target
 
-    meta = {"ckpt": args_cli.policy, "urdf": args_cli.urdf,
+    meta = {"ckpt": args_cli.policy, "body": args_cli.body, "urdf": URDF_PATH,
             "drift_thresh": args_cli.drift_thresh, "track_tol": args_cli.track_tol,
             "fall_deg": args_cli.fall_deg}
 
