@@ -73,3 +73,33 @@
     逐点时戳，此坑仅存在于仿真侧。
 35. 策略小指令特性（非坑，特征记录）：hip scale 修复后 vx 指令 0.15/0.30/0.60 跟踪
     171%/128%/107%——存在 ~0.25 m/s 输出地板；“训练死区 0.2”假设已证伪。
+36. **Isaac "杀不死" 其实是"没发对信号 + 不复核"**（2026-07-06 活体僵尸取证）：用户
+    报 GUI-quit / zeno-stop / rosm 都杀不死 Isaac。真因**不是** -9 无效、**不是** D 态、
+    **不是** 模式失配（取证：kit-python STAT=Rl 活锁可被 -9 收割，实测一发 SIGTERM 就死；
+    宿主 `pgrep -f "kit/pytho[n]"` 命中它）。真因链：
+    - **GUI-quit 无效**：sim 逻辑冻结时渲染循环不服务窗口输入，quit 设不了
+      `simulation_app.is_running()=False`，clean-shutdown 路径永不触发。
+    - **zeno "stop" 无操作**：go2w 世界 `disable("sim")` 禁掉了内核 `stop_simulation`
+      （见 z-agent go2w.py），"stop" 在此世界无 tool 可路由。唯一能发容器级 -9 的路径
+      是 `go2w_bringup(action="teardown")` → `bringup.sh teardown`。
+    - **那条唯一路径旧版不复核 + 静默假成功**：`pkill…||true` 恒 0 退出、status.sh 退出
+      码被 `||true` 吞、zeno 层不读 returncode——"工具说关了实际没关"。
+    **正确姿势**：拆栈只走 `bash scripts/nav/bringup.sh teardown`（或 zeno
+    `go2w_bringup(teardown)`）。加固后它：先 `docker rm -f navstack` → kit-python
+    TERM→KILL→仍活(D 态兜底)则 `docker restart go2w-isaac`（容器级重启终结整个 PID
+    namespace，**保留容器**满足重建代价高）→ 逐级复核，判据 = 宿主 `pgrep -f
+    "kit/pytho[n]"` 为空 且 status.sh l0=false，失败退非零 + 打印残留表。杀灭矩阵见
+    `scripts/nav/teardown_matrix.md`。
+37. **`rosm clean` / `rosm nuke` 对 go2w 栈无效——别用**：rosm 是 vector_os_nano 时代的
+    **宿主**进程清理器，目标模式是宿主上的 MuJoCo/ROS 进程；Isaac 跑在 go2w-isaac 容器
+    **内部**，navstack 跑在 navstack 容器内部（ROS_DOMAIN_ID=42、`--user 0`）。rosm 既
+    定位不到容器内 kit-python（不是它的目标模式），非 root 清理器对 root 容器进程还
+    EPERM。历史上 rosm 对本栈的唯一效果是**跨命名空间误伤** navstack 里同 uid 的 ROS
+    进程（坑 23）——是要防的对象，不是清理工具。正确姿势同坑 36：走 `bringup.sh
+    teardown`（scoped 容器内 exec / 容器级 docker，绝不宿主无差别 pkill）。
+38. **手动关掉的 RViz 会被 supervisor 拉回，是自愈设计不是 bug**：RViz 挂在 navstack
+    容器 PID-1 的 `run_all_forever.sh` supervisor 下、崩溃后自动重生（软能力保活）。
+    直接 `docker exec navstack pkill rviz2` 或点窗口关闭 → supervisor 3s 内把它拉回。
+    要真正关掉 RViz，必须走 teardown（`bringup.sh teardown` 先 `docker rm -f navstack`
+    整体移除容器，supervisor 随之消亡，RViz 无处可回弹）。teardown 的 step [1/3] 先杀
+    navstack 就是为此——先杀 supervisor 再动 Isaac，窗口不再弹回。
