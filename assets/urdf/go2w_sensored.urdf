@@ -1087,10 +1087,14 @@
     <child link="piper_base_link" />
   </joint>
   <link name="nuc_weight">
+    <!-- 2026-07-07 保真修复(载荷轮, CEO 指示): 0.5kg 占位 -> 1.8kg 实测值(vx-audit).
+         审计口径载荷 = PiPER 4.653 + NUC 1.8 = 6.45kg(0.5 占位时仅 5.16kg).
+         惯量按盒体公式(0.11x0.10x0.05)随质量重算. 依据: scripts/sim/retrain_runbook.md
+         payload-fidelity 注 + docs/sim-plan.md 载荷表. -->
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0" />
-      <mass value="0.5" />
-      <inertia ixx="0.000520833" iyy="0.000608333" izz="0.000920833" ixy="0" ixz="0" iyz="0" />
+      <mass value="1.8" />
+      <inertia ixx="0.001875" iyy="0.00219" izz="0.003315" ixy="0" ixz="0" iyz="0" />
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0" />
