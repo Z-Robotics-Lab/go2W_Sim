@@ -253,13 +253,19 @@ def main():
     sim._disable_app_control_on_stop_handle = True
     print("[NAV] anti-wedge armed: _disable_app_control_on_stop_handle=True", flush=True)
 
-    # 【2】拆升格器 + 取证默认值：把 end_time 推到不可达，任何 PAUSE 不再被升格成 STOP。
+    # 【2】拆升格器（防御纵深）+ 取证默认值。orchestrator.py:327 的升格条件是
+    #   `current>=end AND NOT is_looping()`——实测默认 looping=True，故升格本就不触发；
+    #   但外部输入可能 set_looping(False)，故仍把 end_time 推到不可达兜住。
+    #   注：set_end_time 写 USD stage，需 commit() 落盘才生效（否则 get 读回旧值）。
+    #   即便本项失效，守卫【3】在 step 前对任何 PAUSE/STOP 已兜底，不依赖本项。
     import omni.timeline  # noqa: E402
     _tl = omni.timeline.get_timeline_interface()
     print(f"[NAV] timeline defaults: end_time={_tl.get_end_time()} "
           f"looping={_tl.is_looping()} start={_tl.get_start_time()}", flush=True)
     _tl.set_end_time(1.0e9)  # orchestrator.py 的 current>=end 永假
-    print(f"[NAV] timeline de-promoted: end_time={_tl.get_end_time()}", flush=True)
+    _tl.commit()             # 落盘 USD stage 写入
+    print(f"[NAV] timeline de-promoted: end_time={_tl.get_end_time()} "
+          f"looping={_tl.is_looping()}", flush=True)
 
     # PiPER 抓取控制器（臂 8 关节目标的唯一属主；README 抓取管线见 sim-plan M5）
     from piper_grasp import PiperGraspController
