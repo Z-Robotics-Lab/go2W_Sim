@@ -1,6 +1,6 @@
 # STATUS — go2W_Sim 会话恢复锚点（覆盖式，≤40 行）
 
-更新：2026-07-07。仓库：github.com/Z-Robotics-Lab/go2W_Sim（main，与远端同步）。
+更新：2026-07-07（低 RTF 轮 FAIL 已回滚）。仓库：github.com/Z-Robotics-Lab/go2W_Sim（main，与远端同步）。
 姐妹仓：github.com/Z-Robotics-Lab/z-agent（agent 运行时，fork 自 vector-os-nano）。
 
 ## CEO 任务序列
@@ -28,13 +28,20 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 【训练线关账 2026-07-07】载荷策略 **model_5495 已落地**(⑤门形裁定后全门过:
-   ①0.0112/③零摔/④0.0603+0.0367/⑤abs 2.3e-5≤5e-5;E-T 随机体群 0.0157 全域收敛)。
-   E0'' 收官:瞬态侧倾 0/1200(r3 是 50/1200)、净位移 257mm、waypoint 回归全程直立
-   +末 15s 静立 0mm。**栈留 ALL-GREEN 移交 CEO 产品测试**(green/upright/pose 新鲜已核;
-   回滚=bringup.sh 注释换回 model_3497)。nuc_weight 1.8kg 保真已修。残余:栈侧 wz 爆发
-   根除、arc 软瑕疵、RTF 优化轮。全档:DEBUG.md 关账节+docs/sim-plan.md+payload_round/。
-2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
+1. 【低 RTF 时域适配轮 2026-07-07 FAIL·门未达标·已回滚】叉子实验门(cmd.x 非零占比≥70%
+   +GT实速≥0.35 m/s(sim))**未达标**。剥出三层病灶(DEBUG.md 完整假设环+定量表):
+   ①控制时钟错配(wall Rate(100) vs RTF 0.17→积分器过激)已用 sim 钟修;②非对称刹车清零
+   已软化;③死区被 sim 钟放大误伤已加活跃导航守卫。三者叠加(死区关)达 64.4% 占比、
+   dis 真降 3.6m 但仍不达门。**真绑定=pathDir 振荡**(wz±1.396 翻转,twoWayDrive已False)——
+   局部路径前瞻点方向本身不稳,病在 planner/SLAM 侧(触红线,超 pathFollower 范围)。
+   **活栈已回滚到 model_5495 接受基线**(warehouse_nav L2守卫撤、pathFollower C++ 重建纯上游、
+   参数纯上游;GREEN/upright/params 已核)。L3/L3b/L2 补丁存 git 历史(commit 15d681a..44b4813)
+   待 pathDir 稳定后续接。真解方向:pathFollower dirDiff 用全局目标方位替振荡的局部
+   pathPointID 方向(需 CEO gate:触 planner 语义)。工具留:scripts/nav/fork_{experiment.sh,
+   analyze.py}、var/evidence/lowrtf_round/。
+2. 【训练线关账 2026-07-07】载荷策略 **model_5495 已落地**(全门过);栈 ALL-GREEN 移交 CEO
+   产品测试(回滚=bringup.sh 注释换回 model_3497)。残余:栈侧 wz 爆发根除、arc 软瑕疵。
+3. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
 4. P5.4 真机（等 CEO 三决策）；SLAM z 漂移观察项（本次会话 -0.5m，真机标定时一并看）
