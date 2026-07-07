@@ -28,13 +28,14 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 【判决已出，等 CEO 开火令】归因 E-T 终审=**训练配方**（部署 shim 洗清，全段 Δ≤0.009）：
-   出厂 ckpt 在 robot_lab 原生环境零指令也爬 0.0695 m/s（≈部署 0.072）；机制=stand_still
-   只罚腿关节+wheel_vel_penalty 训练时为 null+站定样本仅 2.2%。配方轮要点已备（DEBUG.md
-   终审节）：rel_standing 0.02→0.25 + 启用 wheel_vel_penalty + 保留 plan-d 包络，其余冻结。
-   证据 var/evidence/retrain/attribution/。改奖励/命令分布=CEO gate，未开火。
-   run_retrain.sh 的 systemd-run 路径 declare -f 空变量 bug 已修（同型 c38e83f；
-   fix/go2w-retrain-launcher 分支，echo 干跑双分支验证，未合入）。
+1. 【最高优先】配方轮已开火并被 §4b 中途硬检查点判 **FAIL**（2026-07-07）：配置三项核验
+   全过（rel_standing 0.25 / wheel_vel_penalty -0.01 / +8kg±10cm 真生效于 env.yaml），但
+   真实跟踪误差 900+ iter 零收敛（error_vel_xy 平线 ~1.2 vs 旧 run 0.59@1000）——策略掉进
+   "站定+省惩罚"退化盆，iter 1035/2000 停训；未跑验收、未切部署、判据门柱未动。
+   post-mortem 假设（H1 站定压力过冲 / H2 plan-d 包络太狠 / H3 轮税误伤滚动）与全量
+   证据见 DEBUG.md 配方轮实录节 + var/evidence/retrain/（run 目录 2026-07-07_05-53-47
+   全量保留）。下一步待决策：单变量消融（patch 机制现成）或调参再训（=CEO gate）。
+   出厂 ckpt 与 bringup GO2W_POLICY 未动。launcher bug 已修并合入 main（608fb6e）。
 2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
