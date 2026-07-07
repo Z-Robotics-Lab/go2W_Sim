@@ -20,17 +20,6 @@ sed -i "s/SetParameter(name='use_sim_time', value='false')/SetParameter(name='us
 sed -i 's/data: \[0.0, 0.0, 0.0\] #\[0.0, 0.5, 0.0\]/data: [0.0, 20.0, 0.0] # lidar pitched 20 deg vs level imu/' \
   "$NAV"/src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml
 
-# 1c. 低 RTF 时域适配（pathFollower 蹭行根治，DEBUG.md 低 RTF 轮）。
-# 病根：wall-clock Rate(100) 指挥 RTF~0.17 慢动作 plant → 转向过冲振荡 → dirDiff 长期
-# 超阈 → pathFollower.cpp:404 加速门落到 else 刹车支 → cmd.x on/off chatter（基线占空比
-# 5.9%）。低 RTF 松绑：降 yawRateGain/stopYawRateGain（减转向过冲，dirDiff 更快收敛回
-# 阈内）+ 放宽 dirDiffThre（更宽的加速门容忍带）。改 config yaml（pathFollower 启动读，
-# 无需 colcon 重建）。锚定干净克隆值（yawRate 3.0/dirDiffThre 0.3），幂等。
-_LP_CFG="$NAV"/src/base_autonomy/local_planner/config/omniDir.yaml
-sed -i 's/^\( *\)yawRateGain: 3.0/\1yawRateGain: 1.5/'         "$_LP_CFG"
-sed -i 's/^\( *\)stopYawRateGain: 3.0/\1stopYawRateGain: 1.5/' "$_LP_CFG"
-sed -i 's/^\( *\)dirDiffThre: 0.3/\1dirDiffThre: 0.45/'        "$_LP_CFG"
-
 # 2. XML launch 注入（只对非自闭合 <node ...> 块）
 python3 - "$NAV" <<'PYEOF'
 import re, sys

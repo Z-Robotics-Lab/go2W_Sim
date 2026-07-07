@@ -939,3 +939,45 @@ up_z -0.953 fresh。回滚一行注释换回 model_3497。
 ### H4 部分成立但非主因
 omniDirGoalThre=0.5>0 → line 429 `lin.x=cos(dirDiff)*v`。dirDiff=0.3 时 cos=0.955(仅
 -4.5%);dirDiff 大时才明显缩水。是 dirDiff 驻留的**放大器**,不是独立病因。
+
+### L1a 实测 → REFUTED(反而更差,方向性反驳 H1)
+group-a: yawRateGain/stopYawRateGain 3.0→1.5 + dirDiffThre 0.3→0.45(活栈实测已生效)。
+| 指标 | 基线 | **L1a** | 门 | 裁定 |
+|---|---|---|---|---|
+| cmd.x 非零占比 | 5.9% | **2.7%** | ≥70% | FAIL(更差) |
+| GT 实速 mean | 0.159 | 0.164 | ≥0.35 | FAIL |
+| GT 净位移(sim) | 0.442 | **0.160** | — | 更差 |
+| 直立 | 100% | 100% | ≥99% | PASS |
+- **数据形态**:开局纯 yaw 爆发(wz=-1.396=maxYawRate 满幅,lin.x=0)转头对准远目标 →
+  转完落到全零(pathFollower 停发)→ 死区 enter/exit 11/11 平衡跟随。机器人 30s 只转了
+  ~45°(yaw -0.08→-0.87),净推进 0.16m。**降 yaw 增益 → 转向更慢 → dirDiff 长期超阈更久
+  → line 404 刹车支驻留更久**,与 H1 假设方向相反。
+- **暴露真机制(强化 H2)**:RTF 0.17 下**朝向对准本身**是瓶颈——wall Rate(100) 让控制器
+  以 6× plant 响应速度积分朝向误差 → 转向必过冲振荡 → dirDiff 永不稳定落阈 → 永远卡在
+  "转头 vs 停"而进不了前进相。参数(yaw 增益/dirDiffThre)治不了错误的控制时钟。
+- **裁定**:L1a REFUTED 且更差 → 回滚。H1(参数轮可达门)整体存疑;下一步在 L1 内试
+  反方向(**升** yaw 增益快对准)一组作对照,再判是否直接上 L3。
+
+### L1 结论 + 决定上 L3(预注册:C++ 方案+风险先写)
+- L1a(降 yaw+宽 dirDiffThre)REFUTED 且更差;方向性反驳 H1。数据显示机器人整窗口卡在
+  "转头(yaw 满幅爆发)⟺停",从不进入前进相——**朝向控制在 RTF 0.17 下过冲振荡**是真病根。
+  升 yaw 增益(反方向)在低 RTF 只会加剧过冲,不测(已从 L1a 推断)。判 L1 整体不达门 → L3。
+- **L3 根因(H2 CONFIRMED)**:main loop `rclcpp::Rate rate(100)`(:324)是 **wall 钟**;
+  use_sim_time=true 不改 rclcpp::Rate。RTF 0.17 下每 sim 秒跑 ~590 次循环,但控制律
+  (`vehicleSpeed += maxAccel/100` :405、`vehicleYawRate = -gain*dirDiff` 每拍直接施加)
+  是按固定 1/100 **sim** 秒离散化的。odom(:120 odomTime=sim 时间)只 ~50-100Hz sim 更新,
+  多数迭代复用陈旧 odom 却重复积分 → **积分器每 sim 秒推进 590 步而非 100 步** →
+  ~6× 过激 → 转向过冲振荡 + 加速门 chatter。
+- **L3 方案(Option A,最小侵入,保留原 100Hz 控制律不动)**:把 `rclcpp::Rate rate(100)`
+  换成**按 sim 钟节拍**的 sleep,使每次迭代=10ms **sim** 时间。这样 `spin_some` 每拍拿到
+  新 odom,`+=maxAccel/100`/yaw 施加对齐真实 sim-dt,与原控制律的 100Hz 假设一致。
+  实现:`nh->get_clock()`(use_sim_time 下=sim 钟)`->sleep_for(10ms)`替代 wall Rate;
+  或 `rclcpp::Rate`(clock) 版本。
+- **风险**:①真机(realRobot=true)靠 wall Rate 定时——但本 sim 栈 realRobot 分支不走
+  (仿真无串口);且改用 node clock 在真机(use_sim_time=false)自动退回系统钟,行为不变。
+  ②sim 钟暂停(/clock 停发)时 sleep_for 会阻塞——但 sim 跑起来就正常;加超时兜底。
+  ③cmd_vel 发布频率从 wall-100Hz 降到 sim-100Hz(=wall ~17Hz@RTF0.17)——warehouse_nav
+  的 cmd_vel 看门狗 0.5s(sim)无新指令才停(:467),sim-100Hz 远快于此,不误触。
+- **回滚**:git revert C++ + 重建 local_planner;或环境变量守卫(下述实现留 fallback)。
+- **重建流程(铁律)**:改 refs/.../pathFollower.cpp → docker run navstack:ready colcon
+  build --packages-select local_planner → 配对重启 → 叉子实验复测。
