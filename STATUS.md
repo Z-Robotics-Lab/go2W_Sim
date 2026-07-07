@@ -28,7 +28,18 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-0. 【产品脸验收 2026-07-07 晨·Tune+RTF 落地形态 = 基线】活栈=纯上游 pathFollower(rate(100)
+0. 【pathDir 振荡更深根因裁定 2026-07-07·只读诊断轮·gate 弹药已备·待 CEO 决策】
+   **根因=地形代价阈值闪烁(H-D,主因)**:低RTF(0.20)下 /terrain_map 正前方地板 cost 0.20-0.24
+   压 obstacleHeightThre=0.2,点云噪声令其跨阈闪(障碍单元 161↔1921/帧、free_paths 存活 0↔2524
+   翻)→localPlanner 65% 帧发空 path、存活帧因**严格 argmax 无滞后(H-B 放大器,:914-924)**翻选→
+   pathFollower 伺服跳变 pathDir→wz 饱和±1.396。H-A(SLAM yaw)次因(去旋转后 pathdir 仍抖),
+   H-C(视界)REFUTED。真机无此病(RTF1+真mid360点云稳)→修法须不伤真机形态。
+   **三候选修法利弊表+推荐排序在 DEBUG.md 终节**:c(sim保真/terrain滤波,零语义风险,首选)>
+   a(planner选组滞后,触CEO gate,次选)>b(follower全局方位,牺牲避障伤真机,末选)。
+   **CEO gate**:a/b 触 planner/follower 语义(红线);c 或仅 config(可能非红线)。等 CEO 选修法。
+   工具 scripts/nav/pathdir_{sampler,analyze}.py;证据 var/evidence/pathdir_diag/。活栈 GREEN/留绿。
+   回归:1a E0'' 120s 直立PASS/位移821mm FAIL(同前因);1b GT z 下蹲塌 REFUTED(0.28↔0.40 起伏)。
+1. 【产品脸验收 2026-07-07 晨·Tune+RTF 落地形态 = 基线】活栈=纯上游 pathFollower(rate(100)
    wall 钟,无 cruiseFloor/sim 钟)+model_5495+RTF 渲染旋钮(默认全 0)。**Tune 补丁未落地(已回滚)**。
    实测(green+upright 全程,活栈 var/evidence/lowrtf_round/accept_am/):
    ·5m 航点(0.2,4.5): cmd.x 占空 1.9%、GT 0.093 m/s、净位移 0.087m、末距 4.89m — FAIL(叉在纯偏航,
