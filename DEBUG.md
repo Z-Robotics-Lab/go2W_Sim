@@ -1,97 +1,89 @@
-# DEBUG — Isaac Sim "杀不死" / teardown 不可靠（2026-07-06）
+# DEBUG — Go2W 数字孪生"步态蠕动/无明显前进"定量根因（2026-07-06 晚）
 
-活体僵尸样本取证 → 加固 teardown → 杀灭矩阵实测 → 成对重启验绿。
+## 第一轮作废声明
+21:30-21:40 的第一轮取证全部作废：撞上僵尸仿真（用户 quit 尝试遗留，pose/gt 停更
+866s+，/clock 无发布）。僵尸已由 teardown 修复员结案并成对重启（其假设环见
+git 历史中上一版 DEBUG.md）。本轮从全新全绿栈（pose age 0.02s，单 Isaac PID
+94623，可用内存 45G）重新开始。
+铁律（本轮起）：所有 ros2 topic echo/hz 套 timeout；实验前 status.sh green +
+/health age_s<5 双闸；途中数据异常先查僵尸再查病灶。
 
-## OBSERVE（21:48 活体僵尸取证，编排者已确认步态实验被污染，可解剖）
+## OBSERVE
+- CEO 实测：Isaac + 导航栈 + RViz 全绿，点云实时，explore 后 local planner 正常跑，
+  但步态观感"非常 struggle、像蠕动、没有明显前进"。
+- 已知背景（前一轮马拉松已结案，不重查）：四病已修（joy 毒化/空 buttons 段错误/
+  FAST_RENDER/fullScan 点序）；修复后 cmd_vel 0.47-0.48 连续、直线 30s z 稳定；
+  开环基线（sim 时间测速）0.15→0.257、0.30→0.383、0.60→0.644 m/s。
+- RTF 已知 0.12-0.2（render_interval=1 是雷达时钟正确性约束，hazard，不许改）。
+- 新栈初读（sim-t=87s，静止）：SLAM pose z=-0.484 而 GT z=+0.386——"z 缓沉"观察项
+  在新栈依然存在（待确认是漂移还是 SLAM z 原点差）；nav_owner=idle；
+  explored_volume=10089（单点扫掠即得，仓库大开间）。
+- 部署侧执行链（代码实读）：cmd_vel(TwistStamped) → 0.5 sim-s 看门狗 → 策略 50Hz
+  （sim 100Hz 每 2 步）→ 腿=位置目标(default+scale*a, hip 0.125/其余 0.25)、
+  轮=速度目标(5.0*a[12:16])；增益策略模式=训练态（腿 25/0.5，轮 stiffness 0/
+  damping 0.5/effort 23.5，warehouse_nav.py:199-204）。轮半径 0.086m（:81）。
 
-现场（用户 GUI-quit / zeno-stop 尝试后残留的"杀不死"形态）：
-- 桥 `/health`: `ok:true`，但 `pose age_s=957.962`、`gt age_s=958.479`（仿真循环冻结 ~16min）。
-- `/pose` 被陈旧守卫 503（坑 31 守卫尽职）。phase 文件谎报 `up (green)  21:24:03`。
-- 宿主 `pgrep -fc "kit/pytho[n]"` = 1（kit 进程活着）。go2w-isaac Up 27m、navstack Up 25m。
-
-Isaac 三进程树（容器命名空间 PID / STAT）——与阶段 1 健康态同构：
-```
-623  Ss  bash -c ... /isaac-sim/python.sh warehouse_nav.py ...   # 会话组长, cmdline 无 kit/python
-629  S   /bin/bash /isaac-sim/python.sh warehouse_nav.py ...     # python.sh 启动器, 无 kit/python
-634  Rl  /isaac-sim/kit/python/bin/python3 warehouse_nav.py ...  # 真 sim, 有 kit/python  ← 目标
-```
-关键：**634 STAT=Rl（Running），wchan=0，232 线程全扫 D=0 Z=0** —— 不是 D 态不可中断挂起，
-是**逻辑活锁/冻结**（主循环 `while simulation_app.is_running()` 还在转，但仿真时钟冻死）。
-残留僵尸子（已被 PID-1 收养或挂 634）：`[carb.tasking5/23] [omni.telemetry.]` ×4 —— Z 态，无害噪音。
-
-GPU：nvidia-smi `82059(=容器634) 5279MiB`，类型 C+G（CUDA+GL/X11，GUI 窗口归它）。
-
-`/isaac-sim/python.sh` L72 `$python_exe "${args[@]}"` —— spawn-and-wait 非 exec。
-warehouse_nav.py：收尾 `simulation_app.close()`(L508) 仅当 is_running()→False 走；**全文件无 signal handler**。
-
-teardown 模式 DRY-RUN（容器内 cmdline 扫 `*kit/python*`）：**只 634 命中 → WOULD-KILL pid=634**。
-宿主侧 `pgrep -f "kit/pytho[n]"` 也只 82059 命中。→ 模式对真 sim 有效。
-
-## HYPOTHESIZE（"用户为什么杀不死"）
-
+## HYPOTHESIZE
 | # | 假设 | 类别 | 证据 |
-|---|------|------|------|
-| H1 | 模式失配，-9 打不中 kit 进程 | 模式 | 证伪：DRY-RUN 命中 634；634=Rl 可被 -9 |
-| H2 | D 态不可中断，-9 无效 | GPU/X | 证伪：634=Rl wchan=0，232 线程 0 个 D |
-| H3 | 用户的 GUI-quit / zeno-stop 根本没发出容器级 -9 | 路径 | GUI 窗口冻结不服务输入→quit 设不了 is_running=False；zeno "stop"→stop_simulation 在 go2w 世界被 disable("sim") 禁用=无操作 |
-| H4 | 唯一有效路径(go2w_bringup teardown)不可信 | 复核缺失 | pkill\|\|true 恒成功；status.sh 退出码被 \|\|true 丢；zeno L149 不读 returncode 不设 is_error |
-| H5 | rosm 打不中容器内 kit | 工具错配 | rosm 目标宿主进程；且坑23 记录 rosm 跨命名空间"误伤"navstack，非"清 Isaac" |
+|---|---|---|---|
+| H1 | 观感=慢动作税：sim-time 前进速度正常(≈0.4-0.6)，RTF 0.12-0.2 使 wall-clock 仅 0.05-0.1 m/s，人眼=蠕动 | 渲染性能 | RTF 实测 0.12-0.2；开环基线 sim-time 达标；0.4 m/s×0.15=0.06 m/s 目视 |
+| H2 | 轮子未有效滚动、腿在刨：轮驱动模式/增益与训练 ImplicitActuator(0/0.5/23.5) 不一致，前进靠腿蹭 | 部署一致性 | 轮足 vs 点足关键差异；但代码实读增益已对齐训练态（:202-204），证据弱化 |
+| H3 | pathFollower yaw 门 + 低 RTF 慢转身：大部分 wall 时间在低速对准，前进窗口稀碎 | 导航参数 | 探索路径多转弯；dirDiff 大减前速（已知特性）；转弯段 z 下探 watch item |
+| H4 | 走走停停：z 漂移/地形窗重算致 path 间歇断供，cmd_vel 周期性归零 | 病理④残余 | 新栈静止 SLAM z 已 -0.48（新证据，权重上调）|
+| H5 | 策略 0.3-0.5 指令区步态退化（训练分布边缘），蠕动是 gait 质量问题 | 策略质量 | 0.15 指令 171% 粗跟踪（坑35）；但 0.6 开环 107% 良好，证据弱 |
 
-## EXPERIMENT / 结果
+## EXPERIMENT
+（一次证伪一个；全部数据 var/evidence/gait_debug/；录屏 x11grab 1440x900+1087+637）
 
-- H1 REJECTED：容器 dry-run WOULD-KILL 634；宿主 pgrep 命中 82059。
-- H2 REJECTED：634=Rl、wchan=0、232 线程 D=0 Z=0 —— 非 D 态，-9 能收割。
-- H3 CONFIRMED：GUI 冻结→quit 无效；`disable("sim")` 使 zeno "stop" 无 tool 可路由（go2w.py L615-617）。
-- H4 CONFIRMED：读码 bringup.sh L44/L48 + go2w.py L149。
-- H5 CONFIRMED：rosm 宿主向；坑 23。
+### E0（意外基线，waypoint POST 因脚本 quoting bug 未发出 → 120s 无目标窗口）
+数据：e0_idle_pose.csv（1199 行 10Hz 全 200）、e0_idle_cmdvel.csv（5938 行 50.0Hz）、
+e0_idle.mp4【作废：x11grab 抓到覆盖 Isaac 的 Chrome 窗口——下轮录前必须先
+xdotool windowactivate 确认 Isaac 在最上层】。
+结果（数字全部有效）：
+- RTF = 0.222（sim 26.6s / wall 119.9s，含转向+爬行负载）。
+- cmd_vel：vx 全程精确 0.0000（5938/5938）；wz 间歇爆发 ±1.396 rad/s
+  （wall 0-8s、30-35s、115s+），其余 wall 35-115s 严格 (0,0,0)@50Hz。
+- 【新病理，实锤】零指令前进爬行：cmd(0,0,0) 连续 80s 窗口内，GT 位移 1.16m /
+  sim 15.5s = 0.075 m/s（sim 时间），运动方向与机体 yaw 完全一致（0°差），
+  GT z 平（0.385→0.383）→ 是策略主动向前爬，不是坡滑/侧滑。
+  墙钟视速 = 0.075×0.222 ≈ 0.017 m/s —— 人眼即"蠕动、没有明显前进"。
+- 轮转观感自洽推算：0.075/0.086=0.87 rad/s(sim) ×0.222 = 0.19 rad/s 墙钟
+  ≈ 每 33 秒一圈 —— 轮子看起来就是"不转"，腿部微调成为唯一可见运动。
+- 低指令前向偏置谱系更新（并入坑35）：cmd 0→0.075、0.15→0.257、0.30→0.383、
+  0.60→0.644 m/s —— 部署策略在零/小指令区永不真正站定。
+- SLAM 质量旁证：净位移 SLAM 2.34m vs GT 2.21m（OK），但 SLAM 积分路径 10.0m
+  vs GT 2.3m（4 倍抖动膨胀）；SLAM z 静漂 -0.465→-0.535（GT z 平）。
+- H2 证据再弱化：部署轮增益=训练态已代码实证（warehouse_nav.py:199-204）；
+  轮 ω 直接测量仍缺（E2 未完成）。
 
-## CONCLUDE — 用户"杀不死"的真因（复合）
+### E1 直线受控 rollout —— 【被僵尸 #2 阻断，未跑】
+预检失败：green=False，pose_age=94.8s（22:12）。
 
-**不是** -9 无效、**不是** D 态、**不是** 模式失配。真因链：
-1. **用户试的两条路本就发不出容器级 -9**：GUI-quit（窗口活锁不响应）+ zeno "stop"
-   （stop_simulation 被 go2w 世界禁用，无操作）。唯一能发 -9 的是 `go2w_bringup(teardown)`。
-2. **那条唯一路径不可信 + 静默假成功**（CEO 抱怨核心）：`pkill…||true` 恒 0 退出；
-   status.sh 退出码被 `||true` 吞；zeno 层不读 returncode/不设 is_error → "说关了"实为"发了信号没复核"。
-3. **rosm 是宿主工具**，打不进容器内 kit，且历史上只会误伤 navstack（坑 23）。
+### E2 轮滚 vs 腿刨（H2）—— 未跑（仅留自洽推算，见 E0）
+### E3 开环对照 0.3/0.6/0.8（H5）—— 未跑
+### E4 多转弯段（H3/H4）—— 未跑
 
-死法附注：本例是 sim 逻辑冻结（Rl 活锁）非内核 D 态；但 -9 跳过 simulation_app.close()
-→ GL/CUDA 上下文不释放，是 Isaac 公认的 D-态-on-teardown 风险 → 故 teardown 必须有
-**容器级兜底升级**（docker restart go2w-isaac，终结整个 PID namespace，保留容器）。
+## 僵尸 #2 取证（22:11:32 冻结，hands-off 期间——自发，非用户 quit）
+- pose/gt/grasp/volume 四路 age 同步增长（109.6→114.6/5s，volume_stamp
+  1783390292.52=22:11:32），Isaac 全话题一瞬同冻 = sim 主循环冻结。
+- kit PID 94623 STAT=Rl 527% CPU（活锁同构：循环在转、sim 钟死）；
+  日志 22:11:04 后零输出、无 traceback（step=18000 / sim-t 180s 戛然而止）。
+- navstack 无恙：/cmd_vel 仍 50.017Hz；双容器 Up；可用内存 45G。
+- 时间线：bringup ~21:57 绿 → 存活 ~19min → 冻结。冻结前 63s（wall 115s）
+  pathFollower 恰重启 wz 爆发（机器人开始原地转）。本席实验最后一次触 sim 为
+  22:10:40（docker exec 结束），其后仅宿主侧 CSV 分析 —— 非本席诱发。
+- 与僵尸 #1 对比：#1 归因用户 quit 尝试；#2 hands-off 自发 → "自发冻结"
+  假设权重大增，teardown 修复员的杀灭矩阵之外还需冻结根因排查（GUI/RTX/
+  X11 事件泵？转向段物理？）。
 
-## FIX（加固，见下游提交）
-
-- bringup.sh teardown()：精确打击 + 分级升级(TERM→KILL→docker restart)+ 逐级复核；
-  判据 = 宿主 pgrep -f "kit/pytho[n]" 空 且 status.sh l0=false；失败退非零 + 打印残留表。先杀 navstack（RViz 不回弹）。
-- status.sh：新增 L4b pose 新鲜度探针（/health age_s < 阈值），green 不再被冻结僵尸骗（本次它误导了所有人）。
-- zeno Go2WBringupTool teardown：读 returncode，非零 → is_error=True 带残留表。
-- docs/pitfalls.md：rosm 无效原因+正确姿势 + RViz 自愈说明。
-
-## 杀灭矩阵实测结果（2026-07-06 21:56-21:59，活体僵尸 + 成对重启）
-
-前置（M2 冻结僵尸现场）：host `pgrep -fc kit/pytho[n]`=1、GPU 82059=5279MiB、
-`/health` pose age_s=1167、`/pose` 503、phase 文件谎报 `up(green)`、status.sh green=false、
-可用内存 46-53G。
-
-| 用例 | 执行 | 结果 | 判据 |
-|------|------|------|------|
-| **M2 冻结僵尸杀灭** | `bringup.sh teardown` | **PASS** exit 0 | [1/3]rm navstack→[2/3a]SIGTERM→**TERM 即生效无需 KILL**→SUCCESS |
-| 杀后复核（宿主） | `pgrep -af kit/pytho[n]` | **空** | 无真实残留（前测 count=1 是 pgrep 自匹配伪影，-af 证空） |
-| 杀后复核（GPU） | nvidia-smi | **kit 消失** | GL/CUDA 上下文已释放，5279MiB 归还 |
-| 杀后复核（容器） | `docker exec go2w-isaac ps` | **无 kit/warehouse** | 容器内干净 |
-| 容器保留 | `docker ps` | **go2w-isaac 仍 Up** | 只杀 sim 进程，容器未重建（满足重建代价高） |
-| status.sh | — | **l0=false green=false** | 达"拆净"判据 |
-| **M5 成对重启** | `bringup.sh`(waypoint) | **PASS** ~70s green | l0-l5 全 true、green=true、exit 0 |
-| 新栈新鲜度 | `/health` | **pose age_s=0.147** | <5 新鲜（freshness 闸放行 live sim） |
-| 新栈 /pose | curl | **HTTP 200** | SLAM 有位姿 |
-| **M7 green 假象防护** | freshness 闸单测 | **PASS** | age 0.147/4.9→FRESH；5.0/958.4→STALE 挡 green |
-
-关键实测结论：
-1. **僵尸一发 SIGTERM 就死**（Rl 活锁非 D 态）——彻底证实"用户杀不死"= 他走的 GUI-quit /
-   zeno-stop 根本没发容器级信号，**非** -9/pattern/D 态问题。加固 teardown 一次拆净。
-2. **容器全程保留**：go2w-isaac 从 21:24 起连续 Up 38min 跨越 teardown+bringup 未重建，
-   重建代价高约束满足；docker restart 兜底本轮未触发（TERM 已够）。
-3. **freshness 闸有效**：僵尸 age=1167s→green:false（拒僵尸）；新栈 age=0.147s→green:true
-   （放行 live）——green 假象已堵。
-4. 离线单测全绿：zeno 17 passed（含 2 个新 teardown 保真单测）；bash -n 双脚本 OK。
-
-**阶段 2 完成**：杀灭矩阵实测通过，新栈已 green（/pose 200, age<1s），可交付步态实验续用。
+## CONCLUDE（部分——E1/E3/E4 被僵尸 #2 阻断）
+已可定论的部分：
+1. 【实锤】零指令前进爬行 0.075 m/s(sim)：数字孪生保真度缺口——真机宇树步态
+   零指令=站定，sim 策略零指令=永动蠕动。凡 nav 不在发有效指令的时刻（到点、
+   yaw 门压制 vx、路径间隙），CEO 看到的就是这个。
+2. 【实锤】慢动作税放大：RTF 0.222 把一切 sim 运动打 4.5 折——爬行 0.017 m/s、
+   轮转 33s/圈，"struggle 蠕动"观感 = 爬行漂移 × 慢动作税 的乘积。
+3. H2（轮增益失配）证据显著弱化：代码已实证增益=训练态；待轮 ω 直测收尾。
+4. 指令区步态质量（H5）与受控直线/转弯定量（H1 全谱/H3/H4）待复跑 E1/E3/E4。
+5. 新增独立病理：Isaac sim 循环自发冻结（僵尸 #2，19min 寿命）——移交
+   teardown/稳定性线；步态实验依赖"栈存活 >10min"，此病不除 E1-E4 无法安全跑完。
