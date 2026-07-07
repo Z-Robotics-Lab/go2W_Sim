@@ -206,6 +206,7 @@ up() {
   docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
+    -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
     go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
     /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
     --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
