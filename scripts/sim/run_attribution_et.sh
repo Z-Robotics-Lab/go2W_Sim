@@ -53,19 +53,21 @@ RUN_CMD="cd /workspace/go2w/robot_lab && \
     --zero_secs $ZERO_SECS --ladder_secs $LADDER_SECS \
     --out $OUT --headless"
 
-run_exec() { docker exec -u 0 "$CONTAINER" bash -lc "$RUN_CMD"; }
-
 TS="$(date +%Y-%m-%d_%H-%M-%S)"
 HOST_LOG="var/evidence/retrain/attribution/et_run_${TS}.log"
 mkdir -p "$(dirname "$HOST_LOG")"
 echo "[E-T] host log -> $HOST_LOG"
 
+# NOTE: pass docker exec as systemd-run's direct argv so $CONTAINER/$RUN_CMD are expanded by
+# THIS shell. (The previous `bash -c "$(declare -f run_exec); run_exec"` pattern serialized the
+# function body with UNEXPANDED variables into a child bash where they were empty ->
+# "invalid container name or ID". run_retrain.sh carries the same latent bug.)
 if command -v systemd-run >/dev/null 2>&1; then
   systemd-run --scope --user -p "MemoryMax=$MEM_MAX" -p "MemorySwapMax=0" \
-    bash -c "$(declare -f run_exec); run_exec" 2>&1 | tee "$HOST_LOG"
+    docker exec -u 0 "$CONTAINER" bash -lc "$RUN_CMD" 2>&1 | tee "$HOST_LOG"
 else
   echo "[E-T] WARN: systemd-run unavailable — relying on container --memory cap only." >&2
-  run_exec 2>&1 | tee "$HOST_LOG"
+  docker exec -u 0 "$CONTAINER" bash -lc "$RUN_CMD" 2>&1 | tee "$HOST_LOG"
 fi
 
 echo "[E-T] DONE. Verdict rows in $OUT — read segment 1_zero_cmd env0_drift_speed_mps:"
