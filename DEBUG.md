@@ -397,4 +397,45 @@ GT 不漂（迟滞兜底）。
 - 回归：POST 4m waypoint 起步/到达/回站定全程 up_z<-0.9。
 - /reset：POST 后 pose 回出生点、upright、可再导航。
 
-## 验证真跑（待回填）
+## 验证真跑（成对重启加载新码后，2026-07-07）
+成对重启：teardown(SIGTERM 干净退)→bringup ALL-GREEN(status 首现 `"upright":"true"`)。
+证据全在 var/evidence/gait_debug/：e0pp_v2.csv(120s cmd+GT+up_z) · reg_v2.csv(60s 回归) ·
+e0pp_v2_upright.png / reg_midnav.png(import 抓真 Isaac 窗，WM_CLASS=Isaac Sim 5.1.0 核对，
+非 Chrome id=88080388)。
+
+### 运行时先验（新码加载即证，非事后测）
+- /gt 返回 up_z（-0.965）+ up_z_age_s：**up_z 观测链上线**。
+- STANDSTILL v2 **真 enter/exit**（v1 count=0 → v2 大量 enter，日志 `enter (blend 10)` /
+  `exit cmd_norm=1.40 (reset+ramp 10)`）：迟滞让死区在 idle 真零段进得去，柔性过渡在跑。
+- POST /reset：x 0.205→0.039、up_z→-1.000、z→0.382，且复位后可再导航（yaw 变、up_z 保持
+  直立）：**运维复位通道验证**。
+
+### E0''：120s 无目标（PARTIAL — 摔倒根治，位移未达标，诚实分离）
+| 判据 | 结果 | 判定 |
+|---|---|---|
+| up_z 全程 <-0.9 | min -1.000 / max -0.939 / mean -0.990，**0/5299 违规** | **PASS**（全程直立，未摔） |
+| 熬过 ≥2 次 wz 爆发不摔 | 熬过 **46** 次 |wz|≥0.9 爆发全程直立 | **PASS**（远超 2） |
+| GT 净位移 <0.05m | net **285mm** / maxdev 336mm | **FAIL** |
+
+- **摔倒根治成立**（本轮头号目标）：上一轮实拍翻车(win_b 前塌劈叉)，本轮 120s + 46 次
+  满幅自转爆发全程 up_z<-0.94、截帧四脚站立(e0pp_v2_upright.png)。**机器人不再摔。**
+- **位移未达标——诚实归因**（e0pp_zerowin.py 分窗实测）：|wz|≥0.9 爆发仍占 **30.9%**（栈侧
+  root cause A 未除）。分窗：死区零指令窗(norm<0.15，24 窗共 65.2s)漂移 16.4mm/s，爆发窗
+  (42 窗共 35.7s)漂移 37.4mm/s——**位移主要由未除的 pathFollower 爆发驱动**，死区正确放行
+  这些真自转(G2)。但零指令窗仍 16mm/s、gt_z std **0.045**(≈v1 0.046 未改善)——因每个零窗
+  只 ~1s 就被下一次爆发踹出(enter→~1s→burst exit 循环)，站姿**没有足够长的安静期沉降**。
+- **结论**：<50mm 判据的前置条件是"爆发根除"（任务原文亦写明"若第1步根除爆发则改
+  10min 无爆发+站定"）。爆发根除=栈侧清 stale path=navstack C++ 改动，本轮范围外 → E0''
+  记 **PARTIAL**，位移门顺延到栈侧修 path 之后。**不谎报 PASS。**
+
+### 回归：POST 4m waypoint（PASS）
+- 机器人起步(nav cmd 占 25% 拍、有前向 vx)、GT 朝 WP 移 max 370mm、**up_z 全程 min -1.000/
+  max -0.937，0 违规=全程直立**(reg_midnav.png 导航中四脚站立)。死区不吃正常导航起步/自转。
+
+## 遗留 / frontier（下一轮）
+- **根治 wz 爆发（栈侧清 stale path）**：pathFollower.cpp pathInit 单调置位永不复位
+  (W1-W3)。修法候选：到点后桥/planner 发空 path 令 pathSize≤1；或 pathFollower 加 goal
+  超时清零。走 scripts/nav 单一真源 + sync_navstack_files.sh + navstack C++ 重建。爆发除净
+  后 E0'' 位移门(<50mm)方可复验达标。
+- 站姿自稳性（B）：即便无爆发，default_pos 硬钉 std≈4.6cm 仍偏抖，可考虑站姿用轻量
+  平衡控制器或降 default 重心，但需先除爆发拿到干净长安静期再量化。

@@ -12,6 +12,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, TwistStamped
+from std_msgs.msg import Float32
 
 
 class ABSampler(Node):
@@ -19,18 +20,24 @@ class ABSampler(Node):
         super().__init__("ab_cmdgt_sampler")
         self.duration_s = duration_s
         self.gt = (float("nan"), float("nan"), float("nan"), 0.0)
+        self.up_z = float("nan")  # 直立度 GT（摔倒可观测性）；缺失=nan
         self.create_subscription(TwistStamped, "/cmd_vel", self._on_cmd, 50)
         self.create_subscription(PoseStamped, "/ground_truth/pose", self._on_gt, 10)
+        self.create_subscription(Float32, "/ground_truth/up_z", self._on_up_z, 10)
         self.f = open(out_csv, "w", newline="")
         self.w = csv.writer(self.f)
+        # up_z 为加性末列（沿用旧 A/B schema，向后兼容旧解析脚本）。
         self.w.writerow(["wall", "cmd_stamp", "vx", "vy", "wz",
-                         "gt_stamp", "gt_x", "gt_y", "gt_z"])
+                         "gt_stamp", "gt_x", "gt_y", "gt_z", "up_z"])
         self.n = 0
         self.t0 = time.time()
 
     def _on_gt(self, m: PoseStamped):
         st = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
         self.gt = (m.pose.position.x, m.pose.position.y, m.pose.position.z, st)
+
+    def _on_up_z(self, m: Float32):
+        self.up_z = float(m.data)
 
     def _on_cmd(self, m: TwistStamped):
         now = time.time()
@@ -45,7 +52,8 @@ class ABSampler(Node):
         self.w.writerow([f"{now:.3f}", f"{st:.3f}",
                          f"{m.twist.linear.x:.4f}", f"{m.twist.linear.y:.4f}",
                          f"{m.twist.angular.z:.4f}",
-                         f"{g[3]:.3f}", f"{g[0]:.5f}", f"{g[1]:.5f}", f"{g[2]:.5f}"])
+                         f"{g[3]:.3f}", f"{g[0]:.5f}", f"{g[1]:.5f}", f"{g[2]:.5f}",
+                         f"{self.up_z:.5f}"])
         self.n += 1
 
 
