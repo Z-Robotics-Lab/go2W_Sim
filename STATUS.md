@@ -28,17 +28,20 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-0. 【pathDir 振荡更深根因裁定 2026-07-07·只读诊断轮·gate 弹药已备·待 CEO 决策】
-   **根因=地形代价阈值闪烁(H-D,主因)**:低RTF(0.20)下 /terrain_map 正前方地板 cost 0.20-0.24
-   压 obstacleHeightThre=0.2,点云噪声令其跨阈闪(障碍单元 161↔1921/帧、free_paths 存活 0↔2524
-   翻)→localPlanner 65% 帧发空 path、存活帧因**严格 argmax 无滞后(H-B 放大器,:914-924)**翻选→
-   pathFollower 伺服跳变 pathDir→wz 饱和±1.396。H-A(SLAM yaw)次因(去旋转后 pathdir 仍抖),
-   H-C(视界)REFUTED。真机无此病(RTF1+真mid360点云稳)→修法须不伤真机形态。
-   **三候选修法利弊表+推荐排序在 DEBUG.md 终节**:c(sim保真/terrain滤波,零语义风险,首选)>
-   a(planner选组滞后,触CEO gate,次选)>b(follower全局方位,牺牲避障伤真机,末选)。
-   **CEO gate**:a/b 触 planner/follower 语义(红线);c 或仅 config(可能非红线)。等 CEO 选修法。
-   工具 scripts/nav/pathdir_{sampler,analyze}.py;证据 var/evidence/pathdir_diag/。活栈 GREEN/留绿。
-   回归:1a E0'' 120s 直立PASS/位移821mm FAIL(同前因);1b GT z 下蹲塌 REFUTED(0.28↔0.40 起伏)。
+0. 【修法 c 达门·蹭行在验收面根治 2026-07-07·CEO 裁定 c 先行已执行】
+   **改动=local_planner.launch:31 obstacleHeightThre 0.05→0.20**(掐灭地形代价阈值闪烁点火源)。
+   **前提改判(冷启动实测)**:真门=**localPlanner** obstacleHeightThre 活值 **0.05**(非上节记的 0.2
+   =C++默认误抄);活栈噪声带实测 **0.05-0.15**(非 0.20-0.24);门抬 0.20 恰越噪声顶、保真障碍(>0.20)。
+   **叉子门 PASS**(c1b 远点纯巡航):cmd.x 占空 5.5%→**91.4%**、GT 实速 0.16→**0.377 m/s**、
+   直立 100%、能到点(c1 到点 0.169m)。**火源熄灭**:前扇 cost>0.20 cell 恒 0、/path 空帧 65%→0。
+   **避障反证 PASS**:真障碍簇(8.4-9,-3.6)cost>0.25>0.20 门下仍判障碍,驱近未穿、全程直立=未调聋。
+   **残余未达门(诚实)**:world-pathdir std 仍~60°=H-B argmax 无滞后选组内因,属 **fix-a(CEO gate)**
+   正交残余,不阻塞验收面。**c1 单上即达门,无需 c2/c3。**
+   **铁律副产**:navstack 单独重启在低 RTF 毁 SLAM(imu isam2 underconstrained)→必须配对重启(已实证)。
+   改动只在 refs 克隆(容器/ws 挂载,gitignore);回滚=cp var/evidence/terrain_fix/local_planner.launch.orig
+   +配对重启。零 planner/follower C++ 语义改动。证据 var/evidence/terrain_fix/。活栈 ALL-GREEN 留绿。
+   **下一步(待令,不自行开火)**:fix-a(planner 选组滞后,CEO gate)灭残余 argmax 抖 → E0'' 位移门
+   (<50mm,idle wz 爆发系 stale-path W1-W3,navstack C++,亦 CEO gate)。
 1. 【产品脸验收 2026-07-07 晨·Tune+RTF 落地形态 = 基线】活栈=纯上游 pathFollower(rate(100)
    wall 钟,无 cruiseFloor/sim 钟)+model_5495+RTF 渲染旋钮(默认全 0)。**Tune 补丁未落地(已回滚)**。
    实测(green+upright 全程,活栈 var/evidence/lowrtf_round/accept_am/):

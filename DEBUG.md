@@ -1277,4 +1277,72 @@ quantileZ=0.25、useSorting=true、minRelZ=-1.5/maxRelZ=0.3、disRatioZ=0.2、ve
 6. 不达门：如实报数停手；下一步=修法 a（planner 滞后，CEO gate，不自行开干）。
 
 ## EXPERIMENT（逐条落数，此处追加）
-（基线火源已采，见 OBSERVE 改判②；c1 改后复测在下追加）
+
+### 基线（c0，改前，5m 航点叉子，栈 GREEN model_5495）
+fork_analyze：cmd.x 非零 **5.5%** FAIL / GT 实速 **0.16** m/s FAIL / 直立 100% PASS /
+净位移 0.113m / 末距目标 3.67m（未到点）。证据 var/evidence/terrain_fix/fork_terrain_c0_baseline.csv。
+= 复现已知蹭行基线（历史 5.9%）。
+
+### 栈事故：navstack 单独重启使 SLAM 发散（与 fix-c 无关，铁律实证）
+- 改 local_planner.launch:31 obstacleHeightThre 0.05→0.20 后，只重跑 navstack ROS launch
+  （run_navstack.sh，不动 Isaac）。参数生效（live `ros2 param get /localPlanner
+  obstacleHeightThre = 0.2` 实证），但 **SLAM(arise_slam) 发散**：imu_preintegration isam2
+  "underconstrained/failureDetected" 持续 ~3/s，/pose age 锯齿（每 ~60s wall 才鲜一次），
+  SLAM 位姿偏 GT ~4m/0.8rad。**两次 navstack 单独重启均不能让 SLAM 干净收敛**（低 RTF 下
+  IMU/scan 时间戳错配）——坐实铁律"配对重启"：navstack 单独重启在低 RTF 会毁 SLAM。
+- 修复=**配对 teardown+up**（bringup.sh；teardown SIGTERM 干净退 kit-python 无 527% 残留=坑40
+  修有效；up 重启 warehouse_nav 新 sim 原点 + 新 SLAM）→ **ALL-GREEN(l5/upright:true)**，
+  SLAM 收敛（pose age 0.07-0.13s 稳、SLAM vs GT 位置<0.3m/yaw<0.01rad）。obstacleHeightThre=0.20
+  **配对重启后仍在**（launch 走容器 /ws 挂载=host refs，不被 sync 脚本改）。
+
+### c1 复测（obstacleHeightThre 0.05→0.20，配对重启后健康栈）
+**火源熄灭（terrain 层，probe_terrain_map 健康栈 idle 40帧，c1_terrainmap_healthy.txt）**：
+- 前扇区(veh+x0.2-2m,|y|<1m) max-intensity 顶到 **0.097-0.100**（地板噪声天花板≈0.10）；
+  **前扇 cells cost>0.10 = 0（std 0）、cost>0.20 = 0（std 0，恒定）**。
+- 旧门 0.05 坐在噪声带（0.05-0.10 band 前扇几百 cell 逐帧闪）→ 前向 path 被反复封=蹭行；
+  新门 0.20 **远在噪声带之上→前向永不误封**。这直接解释 5.5%→95.7% 占空跳变。
+
+**path 层（pathdir_sampler 导航中）**：
+- /path 空帧率(pathSize<=1)：基线 **65% → c1 0%（对准直行段 pd_c1_straight，pathSize 恒 100-101）
+  / 5.7%（含转向 pd_c1）** → **PASS（门<10%）**。核心 fix-c 目标达成：terrain 闪不再饿死前向 path。
+- world-pathdir std：基线 43-85° → c1 **61°（直行段）/135°（含大转向段）** → **NOT MET（门<15°）**。
+  诚实归因：这是 **H-B 严格 argmax 无滞后选组** 的规划器内因残余抖（诊断已定=fix-a 的靶,非 c）。
+  c 治点火源(terrain 闪)、a 治放大器(argmax)——c 熄了点火源(空 path 65%→0)，argmax 残余抖(≈60°)
+  仍在，属 fix-a（CEO gate）正交残余。wz 符号翻转 7次/18s → **2次/18s**（直行段），大幅缩。
+
+**叉子实验门（核心验收面）**：
+| 指标 | c0 基线 | c1(5m,到点减速混淆) | **c1b(4.5m 远点,纯巡航)** | 门 |
+|---|---|---|---|---|
+| cmd.x 非零占比 | 5.5% | 95.7% | **91.4%** | ≥70% **PASS** |
+| GT 实速 mean | 0.16 | 0.3449(差0.005) | **0.3774** | ≥0.35 **PASS** |
+| GT 净位移(sim) | 0.113m | 1.925m | **2.150m** | — |
+| 直立占比 | 100% | 100% | **100%** | ≥99% **PASS** |
+| 末距目标 | 3.67m | **0.169m(到点)** | 5.25m | — |
+- c1 首测 GT 实速差 0.005 是**到点减速混淆**（robot 5m 内到点停，均速被减速相拉低，末5帧位移
+  0.108m=在停）；远点 c1b 无到点减速 → **三门齐 PASS**（cruise 0.377 m/s、峰 0.49）。
+- **蹭行在验收面根治**：占空 5.5%→91-96%、位移 0.11→2.15m、**能到点**（c1 到点 0.169m）。
+
+**避障不失能反证（防"调聋"）**：
+- find_obstacles 实采：仓库有**稳定真障碍簇 (8.4-9.0, -3.2~-4.2)**，cost>0.25、逐帧 240-576 次
+  （非闪，真结构，~6.4m）。**cost>0.25 > 门 0.20 → 门 0.20 下仍判为障碍**（噪声带 0.08-0.15<0.20
+  被剔，真障碍 >0.20 保留）——门只削噪声不聋真障碍，**定义性保证**。
+- 朝障碍中心(9,-3.7)发航点驱近 40s：robot 从(1.28,0.16)推进到(4.19,-0.09)、净位移 2.84m、
+  **全程直立 100%、未穿障碍**（末距目标 6.0m，止步于障碍前，不能到达障碍内部的目标点）。
+- 反证成立：**未把真障碍调聋**。
+
+**产品脸帧**：var/evidence/terrain_fix/c1_nav_frame.png（xprop 核 WM_CLASS="IsaacSim"/"Isaac Sim
+5.1.0"，非 Chrome）——带臂 Go2W 四轮足直立于仓库地面，导航姿态。
+
+## CONCLUDE（修法 c 达门，火源熄灭；残余 argmax 抖属 fix-a）
+**c1（localPlanner obstacleHeightThre 0.05→0.20）达叉子核心门**：占空 5.5%→91-96%、GT 实速
+0.16→0.377 m/s、能到点、全程直立。**terrain 阈值闪烁点火源已熄**（前扇 cost>0.20 cell 恒 0、
+/path 空帧 65%→0）。**c1 单上即达门，无需 c2/c3。**
+- 根因确证修正：真门=**localPlanner obstacleHeightThre**(local_planner.launch:31, 活值 **0.05** 非
+  上节记的 0.2)；上节"0.2"=C++ 默认误抄。噪声带活栈实测 **0.05-0.15**（非 0.20-0.24），门抬到
+  0.20 恰越噪声顶、保真障碍(>0.20 稳留)。
+- **残余未达门项(诚实)**：world-pathdir std 仍 ~60°（H-B argmax 无滞后选组内因），属 **fix-a
+  (planner 滞后, CEO gate)** 的正交残余，非 c 能治——但已不阻塞验收面（path 不饿死后蹭行消失）。
+- **铁律副产**：navstack 单独重启在低 RTF 毁 SLAM（imu isam2 underconstrained），必须配对重启。
+- file:line：refs/.../local_planner/launch/local_planner.launch:31（0.05→0.20，带注释+回滚指引）。
+  回滚：cp var/evidence/terrain_fix/local_planner.launch.orig 覆写 + 配对重启。
+- 零 planner/follower C++ 语义改动；仅 launch 数值参数（fix-c config 范畴，非红线）。
