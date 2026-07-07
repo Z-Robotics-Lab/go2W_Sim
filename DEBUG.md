@@ -439,3 +439,48 @@ e0pp_v2_upright.png / reg_midnav.png(import 抓真 Isaac 窗，WM_CLASS=Isaac Si
   后 E0'' 位移门(<50mm)方可复验达标。
 - 站姿自稳性（B）：即便无爆发，default_pos 硬钉 std≈4.6cm 仍偏抖，可考虑站姿用轻量
   平衡控制器或降 default 重心，但需先除爆发拿到干净长安静期再量化。
+
+---
+
+# A/B 载荷判决 — 重训前提被证伪（2026-07-07，POLICY_SUSPECT）
+
+runbook §0.5 强制首实验：同一出厂 ckpt `model_1999.pt` 在两身体各跑 policy_acceptance
+四段套件（离线 ab_verdict.py 判决）。开火前 §10 清单全绿（slot 空、free 52G、GPU ~0.8G、
+容器 Up）。证据：var/evidence/retrain/{ab_bare,ab_loaded}.jsonl + ab_verdict.json + *_run.log。
+
+## 判决：POLICY_SUSPECT（exit 2）→ **不重训，停手上报**
+```
+ab_verdict.py --bare ab_bare.jsonl --loaded ab_loaded.jsonl  → exit 2
+bare_healthy=False（seg1 零指令漂移 FAIL）; n_discriminators_worse=1（需≥2）
+```
+
+## 关键数字（新旧同套件并排）
+| seg | 判据 | BARE(A,裸躯干,策略训练态) | LOADED(B,~5.16kg载荷) |
+|---|---|---|---|
+| 1 零指令漂移 | <0.02 m/s | **0.072** FAIL | **0.0876** FAIL |
+| 2 vx0.15 跟踪 | rel_err | 0.415（过冲 0.212）| 0.689（过冲 0.253）|
+| 2 vx0.30 | rel_err | 0.233 | 0.336 |
+| 2 vx0.60 | rel_err | 0.163 | 0.183 |
+| 3 wz±1.4×5 | 摔倒率 | 0.0 | 0.0 |
+| 4 arc | rel_err_vs_vx | 0.625 | (类似) |
+| — pitch_var 均值 | rad² | 6.78e-5 | 1.76e-4（B>1.5×A，唯一显著劣化项）|
+
+## 结论（与上文 E0 CONCLUDE #1 互证，红队已过）
+1. **零指令蠕动是策略内生，非载荷 OOD**：裸躯干（策略正是在此训练）零指令即爬行
+   0.072 m/s——3.6× 超阈，达载荷态 0.0876 的 96%。载荷仅追加 +0.016 m/s 边际。审计
+   把 0.075 m/s 蠕动归因于 ~6.5kg 前偏载荷的 OOD 假设，就此段症状而言被证伪。
+2. **前向过冲同样内生**：裸机 ladder 也过冲（0.15→0.212、0.6→0.698），与审计归给载荷
+   CoM 前移的方向偏置同构——过冲与蠕动都在裸躯干上复现。
+3. **判决门双路触发 POLICY_SUSPECT**：(a) A 不健康（seg1 FAIL）；(b) 三判据仅 pitch_var
+   一项 B 显著劣于 A（tracking 0.480<1.5×0.359=0.538 不计，摔倒率并列 0）。
+4. **红队排除伪影**：裸机确以 16 关节（无臂）加载、可控行走（0.37/0.70 m/s@cmd0.3/0.6、
+   max_tilt<2°、零摔），seg1 蠕动是真实策略行为而非崩塌/加载回退；工具 exit(2) 与手算一致。
+
+## 后果 / next
+- **plan-d/plan-a 均不宜开火**：两者都只拓宽/中心化 base 质量·CoM 随机化包络，而病根在
+  策略零指令不站定——同配方重训（含拓宽包络）不针对此内生缺口，预期无效或边际。runbook
+  §0.5 明写此路：POLICY_SUSPECT → 先诊断策略，别同配方重训。
+- 诊断方向（下一轮，非本轮定论）：零指令站定属奖励/终止/指令分布问题（stand_still 项权重、
+  零指令样本占比、或部署 obs/增益与训练态的残余差），非质量包络问题。需 CEO 决策是否
+  改训练配方（奖励/命令分布=部署一致性红线内的动作，属 CEO gate）。
+- 出厂 ckpt 与 bringup 默认保持不动（未达 §8 切换前提，本就不该动）。

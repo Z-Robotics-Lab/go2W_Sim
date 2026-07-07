@@ -28,10 +28,14 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
-2. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
+1. 【新，最高优先】策略重训被 A/B 判决拦下=POLICY_SUSPECT：出厂 ckpt 裸躯干零指令即
+   蠕动 0.072 m/s（3.6× 超阈），病根内生非载荷 OOD → plan-d/a（拓宽质量·CoM 包络）均
+   不对症，runbook §0.5 判决：先诊断策略再重训。证据 var/evidence/retrain/、诊断入
+   DEBUG.md 末节。需 CEO 决策：是否改训练奖励/命令分布（部署一致性红线内=CEO gate）。
+2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
+3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
-3. P5.4 真机（等 CEO 三决策）；SLAM z 漂移观察项（本次会话 -0.5m，真机标定时一并看）
+4. P5.4 真机（等 CEO 三决策）；SLAM z 漂移观察项（本次会话 -0.5m，真机标定时一并看）
 
 ## 裁决项（待 CEO）
 - 真机 verify 语义 / NUC vs Orin 拓扑 / unitree_sdk2_python 依赖（P5.4 前）
