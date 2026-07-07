@@ -28,14 +28,12 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 【最高优先】配方轮已开火并被 §4b 中途硬检查点判 **FAIL**（2026-07-07）：配置三项核验
-   全过（rel_standing 0.25 / wheel_vel_penalty -0.01 / +8kg±10cm 真生效于 env.yaml），但
-   真实跟踪误差 900+ iter 零收敛（error_vel_xy 平线 ~1.2 vs 旧 run 0.59@1000）——策略掉进
-   "站定+省惩罚"退化盆，iter 1035/2000 停训；未跑验收、未切部署、判据门柱未动。
-   post-mortem 假设（H1 站定压力过冲 / H2 plan-d 包络太狠 / H3 轮税误伤滚动）与全量
-   证据见 DEBUG.md 配方轮实录节 + var/evidence/retrain/（run 目录 2026-07-07_05-53-47
-   全量保留）。下一步待决策：单变量消融（patch 机制现成）或调参再训（=CEO gate）。
-   出厂 ckpt 与 bringup GO2W_POLICY 未动。launcher bug 已修并合入 main（608fb6e）。
+1. 【最高优先】配方 v2 两轮微调完毕(2026-07-07):③零摔④跟踪(3-5×改善)②过冲消除
+   全过,**①零指令漂移差之毫厘 FAIL**(最佳 model_2498:部署 0.0277/原生 0.0218,门
+   0.02;旧 ckpt 0.0876/0.0695)。加压轮(税-0.01)回退证明税已到顶。两轮用尽按令停手,
+   bringup 未切(仍指出厂 ckpt)。下一步三选一待 CEO:rel_standing 0.12→0.20 单变量 /
+   更长微调 / 接受 0.0277(墙钟观感≈0.006 m/s 近静止)。全量数据 DEBUG.md v2 实录节 +
+   var/evidence/retrain/。载荷包络(pitch_var 2.6×劣化)仍是独立待办(sim-plan)。
 2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
