@@ -345,6 +345,31 @@ def main():
         policy = Go2WPolicy(args_cli.policy, robot, args_cli.device or "cuda:0")
     vy_cmd = {"v": 0.0}
 
+    # ===== 零指令死区（孪生保真度补丁，CEO 已批）=====
+    # 病理（DEBUG.md E0 实锤）：部署策略在零/小指令区永不真正站定——cmd(0,0,0) 下
+    #   仍以 0.075 m/s(sim) 向机头爬行；nav 到点/yaw 门压制 vx/路径间隙的每一刻，
+    #   CEO 看到的就是"蠕动、没有明显前进"。真机宇树步态零指令本就站定。
+    # 修复：策略喂入路径加死区——命令范数连续 N 拍低于阈值 → 不喂策略，改站姿保持
+    #   （腿=default_pos、轮速=0）；命令回升即恢复喂策略。
+    # 阈值对齐训练：robot_lab UniformThresholdVelocityCommand(_resample):47 用
+    #   `norm(vel_command_b[:2]) > 0.2` 把小的 (vx,vy) 归零（wz 另计）；训练还有
+    #   rel_standing_envs=0.02 把 2% 环境全维置零逼策略学"站定"。故策略本会站定，
+    #   部署却爬行=分布边缘/观测失配。这里用 CEO 批的 3D 范数 norm(vx,vy,wz)<0.2：
+    #   ①比训练 2D 阈值对 (vx,vy) 更严（3D≥2D）；②额外兜住 wz，纯自转指令
+    #   (vx=vy=0,wz=1.4，pathFollower 转弯爆发) 范数=1.4>0.2 不触发死区 → 正常导航
+    #   的原地转/起步段一律不被吃掉（回归硬约束）。
+    STANDSTILL_ENABLE = _os.environ.get("GO2W_STANDSTILL", "1") == "1"
+    STANDSTILL_THRESH = 0.2   # 命令 3D 范数阈值（与训练 UniformThreshold 0.2 同值）
+    STANDSTILL_DEBOUNCE = 25  # 连续低命令的策略拍数（25 拍 @50Hz = 0.5s，防抖）
+    standstill_low_count = 0  # 连续低命令计数（策略拍，非物理步）
+    standstill_active = False # 当前是否处于站姿保持
+    # 站姿目标：腿=default（前 12 关节），轮速=0（后 4 关节）。用 policy 的 id/序对齐。
+    if policy is not None:
+        _stand_leg_ids = policy.leg_ids
+        _stand_leg_tgt = policy.default_pos[:1, :12].clone()
+        _stand_wheel_ids = policy.wheel_ids
+        _stand_wheel_vel = torch.zeros(1, len(policy.wheel_ids), device=policy.device)
+
     step = 0
     imu_msg = Imu()
     clock_msg = Clock()
@@ -367,9 +392,34 @@ def main():
         if policy is not None:
             vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
             if step % 2 == 0:  # 策略 50Hz（sim 100Hz）
-                leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(vx, vy, wz)
-                policy_cache["legs"] = (leg_ids, leg_tgt)
-                policy_cache["wheels"] = (wheel_ids_p, wheel_vel)
+                # 零指令死区：命令 3D 范数连续 N 拍低于阈值 → 站姿保持，不喂策略。
+                cmd_norm = math.sqrt(vx * vx + vy * vy + wz * wz)
+                if STANDSTILL_ENABLE and cmd_norm < STANDSTILL_THRESH:
+                    standstill_low_count += 1
+                    if standstill_low_count >= STANDSTILL_DEBOUNCE:
+                        if not standstill_active:
+                            standstill_active = True
+                            print(f"[NAV][STANDSTILL] enter at sim_t={sim_t['now']:.2f} "
+                                  f"cmd_norm={cmd_norm:.4f}", flush=True)
+                else:
+                    # 命令回升（或死区关闭）：退出站姿并复位策略记忆。
+                    standstill_low_count = 0
+                    if standstill_active:
+                        standstill_active = False
+                        # last_action 是策略唯一携带态（MLP 无隐藏态）：站定期间未执行
+                        # 策略动作（腿=default⟺a[:12]=0、轮速=0⟺a[12:]=0），故复位为 0 是
+                        # 物理诚实的"上一拍我在默认站姿"，避免用死区前的爬行动作污染恢复。
+                        policy.last_action = torch.zeros_like(policy.last_action)
+                        print(f"[NAV][STANDSTILL] exit at sim_t={sim_t['now']:.2f} "
+                              f"cmd_norm={cmd_norm:.4f} (last_action reset)", flush=True)
+                if standstill_active:
+                    # 站姿保持：腿目标=default_pos、轮速目标=0（不推进策略）。
+                    policy_cache["legs"] = (_stand_leg_ids, _stand_leg_tgt)
+                    policy_cache["wheels"] = (_stand_wheel_ids, _stand_wheel_vel)
+                else:
+                    leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(vx, vy, wz)
+                    policy_cache["legs"] = (leg_ids, leg_tgt)
+                    policy_cache["wheels"] = (wheel_ids_p, wheel_vel)
             robot.set_joint_position_target(default_pos)  # 臂/夹爪保持
             if "legs" in policy_cache:
                 robot.set_joint_position_target(policy_cache["legs"][1],

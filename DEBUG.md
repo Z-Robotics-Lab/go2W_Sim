@@ -199,3 +199,58 @@ Phase4 回归（PASS）：WP 导航正常（SLAM 逼近目标）；/registered_s
 （RTX+策略+传感器多线程）；冻结的判据是**时钟停摆**（stamp 不推进）而非 CPU 高。
   验尸把 CPU 高当冻结特征是误导，正确特征是 /pose stamp 冻结。
 验证命令：40min soak_health.csv 全绿 + Phase2a/2b 注入日志 + RTF 0.206。
+
+---
+
+# DEBUG — 部署侧零指令死区（孪生保真度补丁，CEO 已批，2026-07-07）
+
+上一轮 gait CONCLUDE 第 1 条【实锤】：部署策略在零/小指令区永不真正站定——
+cmd(0,0,0) 下仍以 0.075 m/s(sim) 向机头爬行（E0 数字全有效）。真机宇树步态零指令
+本就站定 → 数字孪生保真度缺口。CEO 批准部署侧死区修复（不动策略/训练，只在
+仿真喂入路径把"有效零指令"拦成站姿保持）。本环=已批规格的实现+真跑验收。
+
+## OBSERVE（源码取证，非推测）
+- 病灶路径：scripts/sim/warehouse_nav.py 策略喂入——每 2 物理步（50Hz）
+  `policy.act(vx,vy,wz)` → 腿位置目标 + 轮速目标；cmd_vel 0.5s 看门狗已把无指令
+  归零，但归零后策略仍输出爬行动作（E0 实锤）。
+- 训练侧阈值真相（robot_lab commands.py:47，逐行读）：
+  `vel_command_b[:,:2] *= (norm(vel_command_b[:,:2]) > 0.2)`——**只对 (vx,vy) 2D 范数**
+  设阈，wz 不入范数；且只在 resample（回合级）触发，非每步。
+- 训练侧"站定"的地面真相：velocity_env_cfg.py:109 `rel_standing_envs=0.02`——2% 环境
+  全维置零 `vel_command_b[:]=0`（velocity_command.py:163），逼策略学会零指令站定。
+  → 策略**本会**站定；部署却爬行 = 分布边缘/观测失配，死区是被批的对症补丁。
+- 策略携带态审计（go2w_policy.py）：唯一跨拍状态是 `self.last_action`（MLP，无 RNN
+  隐藏态）；obs 第 42-57 维=last_action。站定期间若不复位，恢复首拍会带入死区前的
+  爬行动作污染观测。
+
+## HYPOTHESIZE（本环=已批规格的实现，非探因）
+| # | 假设 | 类别 | 证据 |
+|---|---|---|---|
+| G1 | 3D 范数 norm(vx,vy,wz)<0.2 连续 25 拍→站姿保持，可消零指令爬行 | 机制 | E0 爬行发生在 cmd(0,0,0)；站姿=腿 default+轮速 0 与训练站定环一致 |
+| G2 | 3D 范数天然保住纯自转导航（wz=1.4 范数=1.4>0.2 不触发） | 回归 | pathFollower 转弯 wz=±1.396（DEBUG E0）；3D 范数≥2D，wz 入范数即兜住 |
+| G3 | 恢复时 last_action 复位 0=物理诚实（站姿⟺a=0），不污染恢复 | 一致性 | 腿 target=default+scale·a[:12]、轮速=5·a[12:]，站姿⟺a≡0 |
+
+## FIX（warehouse_nav.py 策略喂入路径，零红线改动）
+- 常量/态（:~348 policy 实例化后）：`GO2W_STANDSTILL=0` 关（默认开，沿用
+  GO2W_FAST_RENDER 约定）；THRESH=0.2、DEBOUNCE=25 拍（0.5s@50Hz 防抖）；
+  low_count/active 计数；站姿目标 _stand_* 用 policy.leg_ids/wheel_ids/default_pos
+  预取（id 与序对齐 policy.act 返回）。
+- 主循环 50Hz 分支（:~394）：cmd_norm=√(vx²+vy²+wz²)；<阈值累加 low_count，达
+  DEBOUNCE 置 active；命令回升清 low_count、退 active 并 `last_action=0`；active 时
+  写站姿 cache（腿=default、轮速=0），否则 policy.act。奇数步沿用上拍 cache（与既有
+  50Hz 设计一致）。
+- 阈值选型理由（红队记录）：CEO 批文写 norm(vx,vy,wz)<0.2；训练真相是 2D
+  norm(vx,vy)>0.2。选 3D 范数因：①对 (vx,vy) 比训练更严（3D≥2D，安全侧）；
+  ②额外把 wz 纳入 → 纯自转指令(vx=vy=0,wz=1.4)范数 1.4>0.2 **不**被吃掉，正常导航
+  的原地转/起步段全保住（回归硬约束 G2）。用 2D 范数反而会把纯自转误判站定=错。
+- 红线全不碰：render_interval=1、fullScan、pc2_to_livox、vector_sim.lock、不 push。
+
+## 验证计划（真跑，证据入 var/evidence/gait_debug/）
+- E0'：新栈 green 后 120s 无目标窗口，10Hz 采 /gt+/pose→csv。判据：GT 位移 <0.05m
+  （对照修前 1.16m/120s）+ 站姿无抖振（z 方差小）。录 ffmpeg 前 60s（xdotool 置顶
+  Isaac）。
+- 回归：POST 4m waypoint——必须照常起步、到达（死区不吃正常导航起步段）；到达后
+  回站定。
+- 观测 nav_bridge.log 的 [NAV][STANDSTILL] enter/exit 事件时序与命令一致。
+
+## CONCLUDE（待真跑回填）
