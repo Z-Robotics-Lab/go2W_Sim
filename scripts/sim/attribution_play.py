@@ -240,12 +240,18 @@ def main(env_cfg, agent_cfg):
           "note": "native robot_lab env, ZERO deployment shim; cmd forced via vel_command_b pin"},
          out_path)
 
-    for label, cmd, secs in segments:
-        # native reset for a fresh episode each segment
-        env.reset()
-        forced = _force_command(env.unwrapped, cmd[0], cmd[1], cmd[2], device)
-        _measure(env, robot, policy, policy_nn, device, forced, secs, dt,
-                 args_cli.settle_secs, label, out_path, cmd)
+    # One inference_mode context over ALL segments (incl. the mid-run env.reset()s): step()
+    # inside inference_mode turns sim state tensors (e.g. joint_acc) into inference tensors,
+    # and a subsequent reset() OUTSIDE the context then fails with "Inplace update to
+    # inference tensor outside InferenceMode" (hit on the 1st run, log et_run_*_01-35-55.log;
+    # play.py never resets mid-run so it never trips this).
+    with torch.inference_mode():
+        for label, cmd, secs in segments:
+            # native reset for a fresh episode each segment
+            env.reset()
+            forced = _force_command(env.unwrapped, cmd[0], cmd[1], cmd[2], device)
+            _measure(env, robot, policy, policy_nn, device, forced, secs, dt,
+                     args_cli.settle_secs, label, out_path, cmd)
 
     env.close()
 
