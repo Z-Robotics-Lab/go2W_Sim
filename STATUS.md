@@ -28,10 +28,11 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 【新，最高优先】策略重训被 A/B 判决拦下=POLICY_SUSPECT：出厂 ckpt 裸躯干零指令即
-   蠕动 0.072 m/s（3.6× 超阈），病根内生非载荷 OOD → plan-d/a（拓宽质量·CoM 包络）均
-   不对症，runbook §0.5 判决：先诊断策略再重训。证据 var/evidence/retrain/、诊断入
-   DEBUG.md 末节。需 CEO 决策：是否改训练奖励/命令分布（部署一致性红线内=CEO gate）。
+1. 【判决已出，等 CEO 开火令】归因 E-T 终审=**训练配方**（部署 shim 洗清，全段 Δ≤0.009）：
+   出厂 ckpt 在 robot_lab 原生环境零指令也爬 0.0695 m/s（≈部署 0.072）；机制=stand_still
+   只罚腿关节+wheel_vel_penalty 训练时为 null+站定样本仅 2.2%。配方轮要点已备（DEBUG.md
+   终审节）：rel_standing 0.02→0.25 + 启用 wheel_vel_penalty + 保留 plan-d 包络，其余冻结。
+   证据 var/evidence/retrain/attribution/。改奖励/命令分布=CEO gate，未开火。
 2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
