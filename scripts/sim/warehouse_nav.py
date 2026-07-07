@@ -429,7 +429,10 @@ def main():
     # （隔离实验实锤：关死区 lin.x 占比 12.5%→64.4%）。守卫：最近一次高命令爆发(cmd_norm>
     # EXIT_THRESH)后 RECENT_ACTIVE_S sim 秒内，不许进入站姿——机器人在导航则不冻结。真 idle
     # 是持续零(无爆发)，守卫超时后照常进入，站定语义不变（E0' 回归验证）。
-    STANDSTILL_RECENT_ACTIVE_S = 2.0  # 最近爆发后多久内视为"活跃导航"，禁入站姿（sim 秒）
+    STANDSTILL_RECENT_ACTIVE_S = 8.0  # 最近爆发后多久内视为"活跃导航"，禁入站姿（sim 秒）
+    # 注：低 RTF 下 pathFollower 导航中零相可长达 2-3s sim（转向/重规划间隙），2s 窗过期后
+    # 死区再触发→冻结→机器人不动→pathFollower 无进展（反馈耦合，DEBUG.md L2L3 实测）。8s
+    # 覆盖最长零相：导航中每几秒必有 yaw/前进爆发刷新守卫；真 idle 无爆发 8s 后照常进站姿。
     _standstill_last_active_t = -1e9  # 最近一次高命令爆发的 sim 时刻（初始远古=允许首次进入）
     standstill_low_count = 0        # 连续低命令计数（策略拍）
     standstill_high_count = 0       # 连续高命令计数（退出迟滞用）
