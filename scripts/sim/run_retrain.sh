@@ -91,13 +91,16 @@ TRAIN_CMD="cd /workspace/go2w/robot_lab && \
 # systemd-run scope is a HOST backstop around the docker exec; the container itself is capped
 # at --memory=40g (setup_container.sh). If systemd-run is unavailable, fall back to a bare
 # docker exec (container cap still applies).
-run_exec() { docker exec -u 0 "$CONTAINER" bash -lc "$TRAIN_CMD"; }
+# NOTE: pass docker exec as systemd-run's direct argv so $CONTAINER/$TRAIN_CMD are expanded by
+# THIS shell. (The previous `bash -c "$(declare -f run_exec); run_exec"` pattern serialized the
+# function body with UNEXPANDED variables into a child bash where they were empty ->
+# "invalid container name or ID". Same bug fixed in run_attribution_et.sh, c38e83f.)
 if command -v systemd-run >/dev/null 2>&1; then
   systemd-run --scope --user -p "MemoryMax=$MEM_MAX" -p "MemorySwapMax=0" \
-    bash -c "$(declare -f run_exec); run_exec" 2>&1 | tee "$HOST_LOG"
+    docker exec -u 0 "$CONTAINER" bash -lc "$TRAIN_CMD" 2>&1 | tee "$HOST_LOG"
 else
   echo "[retrain] WARN: systemd-run unavailable — relying on container --memory=40g cap only." >&2
-  run_exec 2>&1 | tee "$HOST_LOG"
+  docker exec -u 0 "$CONTAINER" bash -lc "$TRAIN_CMD" 2>&1 | tee "$HOST_LOG"
 fi
 
 echo "[retrain] DONE. Newest ckpt dir:"

@@ -6,11 +6,16 @@
 # script re-applies them idempotently from a patch tracked in the go2w main repo. Called by
 # clone_deps.sh after the robot_lab checkout; also safe to run by hand.
 #
-# WHAT IT DOES (plan-d = default retrain; plan-a = opt-in fallback):
+# WHAT IT DOES (plan-d envelope + recipe-round; plan-a = opt-in fallback):
 #   plan-d  rough_env_cfg.py : base mass-add +3kg->+8kg, base CoM +/-5cm->+/-10cm
+#   recipe  rough_env_cfg.py : rel_standing_envs 0.02->0.25 + wheel_vel_penalty 0->-0.01
+#           (CEO fire order 2026-07-07 after attribution E-T verdict "training recipe";
+#           weight provenance: ddtrobot_tita rough_env_cfg.py:198, the only wheeled
+#           config in robot_lab v2.3.2 that enables the term)
 #   plan-a  payload_env_cfg.py + __init__.py : opt-in Go2W-Payload-v0 task (fixed ~6.5kg
-#           front-offset payload) — trained only if plan-d misses the envelope.
-# Everything else (rewards, commands, actuator gains, decimation, obs57/act16) is UNTOUCHED.
+#           front-offset payload) — inherits the recipe via Flat->Rough.
+# Everything else (other rewards, actuator gains, decimation, obs57/act16) is UNTOUCHED —
+# the new ckpt stays isomorphic to the frozen scripts/sim/go2w_policy.py shim.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
