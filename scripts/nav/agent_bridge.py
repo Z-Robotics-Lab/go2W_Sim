@@ -3,15 +3,19 @@
 
 让 vector_os_nano（无 ROS 依赖的进程）通过 localhost HTTP 操控/感知 Go2W：
   GET  /pose            -> SLAM 位姿 {x,y,z,yaw,stamp}（机器人自己的估计）
-  GET  /gt              -> 地面真值位姿（来自 SIM 的 /ground_truth/pose——verify 谓词
-                           专用，执行者无法伪造；仅 sim 有此话题，real 无）
+  GET  /gt              -> 地面真值位姿 {x,y,z,yaw,stamp} + 直立度 {up_z,up_z_age_s}
+                           （来自 SIM /ground_truth/pose + /ground_truth/up_z——verify 谓词
+                           专用，执行者无法伪造；仅 sim 有；up_z 站立≈-1，翻倒偏离，加性字段）
   GET  /health          -> 聚合状态 {pose/gt/grasp 各自 present + age_s（墙钟秒）}，始终 200
   GET  /explore_progress-> {explored_volume, volume_stamp, finished, nav_owner}
   POST /waypoint {x,y}  -> 发布 /way_point 手动导航目标（互斥：explore 占用时 409）
   POST /explore  {}     -> 发布 /start_exploration(Bool true) 触发 TARE 探索（互斥见下）
   POST /explore_stop {} -> 发布 /start_exploration(Bool false) + owner 归 idle
                            （注意：当前 TARE 忽略 Bool false，这是 best-effort，见文件末注）
-监听 127.0.0.1:8042。schema 只增不改——P5.1 的 /pose /gt /health /waypoint 行为完全不动。
+  POST /reset    {}     -> 发布 /sim/reset(Bool true)：warehouse_nav 把 root 传送回出生
+                           位姿+清零速度（仿真运维专属，真机无此语义）；owner 归 idle
+监听 127.0.0.1:8042。schema 只增不改——P5.1 的 /pose /gt /health /waypoint 行为完全不动；
+  /gt 的 up_z 与 POST /reset 为 2026-07-07 加性演进（摔倒可观测性 + 运维复位）。
 
 单一生产者冲突 —— /way_point 有两个生产者：localPlanner（手动 waypoint 经桥）与
 TARE（探索时自动发）。二者会互抢同一话题，故桥维护 nav_owner 互斥状态机，见下。
@@ -76,6 +80,12 @@ def ros_main():
         STATE["gt"] = {"x": p.x, "y": p.y, "z": p.z, "yaw": _yaw(m.pose.orientation),
                        "stamp": m.header.stamp.sec + m.header.stamp.nanosec * 1e-9}
         STATE["gt_recv"] = time.time()
+
+    def on_up_z(m: Float32):
+        # 直立度 GT（摔倒可观测性）：机体系重力 z（站立≈-1，翻倒偏离）。独立话题，
+        # 收到即缓存；do_GET 的 /gt 把它并进返回体（加性字段，旧 x/y/z/yaw/stamp 不动）。
+        STATE["gt_up_z"] = float(m.data)
+        STATE["gt_up_z_recv"] = time.time()
 
     def on_explored_volume(m: Float32):
         # visualization_tools 发 /explored_volume(Float32)：已探索体积 m^3，独立裁判
@@ -143,12 +153,16 @@ def ros_main():
     STATE["_speed_timer"] = node.create_timer(1.0, _pub_speed)
     node.create_subscription(Odometry, "/state_estimation", on_odom, 5)
     node.create_subscription(PoseStamped, "/ground_truth/pose", on_gt, 5)
+    node.create_subscription(Float32, "/ground_truth/up_z", on_up_z, 5)
     node.create_subscription(Float32, "/explored_volume", on_explored_volume, 5)
     node.create_subscription(Bool, "/exploration_finish", on_exploration_finish, 5)
     STATE["wp_pub"] = node.create_publisher(PointStamped, "/way_point", 5)
     # 启动话题真名 /start_exploration —— indoor_small.yaml 的 sub_start_exploration_topic_
     # 覆盖了 C++ 里的 code default /exploration_start；运行时 TARE 订阅的是 yaml 里这个。
     STATE["explore_pub"] = node.create_publisher(Bool, "/start_exploration", 5)
+    # 运维复位通道（仿真专属）：POST /reset -> /sim/reset(Bool true) -> warehouse_nav
+    # 把 root 传送回出生位姿+清零速度。真机无此语义（zeno 侧不用动）。
+    STATE["reset_pub"] = node.create_publisher(Bool, "/sim/reset", 5)
     rclpy.spin(node)
 
 
@@ -192,6 +206,14 @@ class Handler(BaseHTTPRequestHandler):
                 if age is None or age > STALE_S:
                     self._json(503, {"error": f"{key} stale", "age_s": age})
                     return
+            if v and key == "gt":
+                # 加性合并直立度：up_z（新鲜才带，陈旧/缺失=null）。不改旧 x/y/z/yaw/stamp。
+                uz = STATE.get("gt_up_z")
+                uz_recv = STATE.get("gt_up_z_recv")
+                uz_age = None if uz_recv is None else time.time() - uz_recv
+                v = dict(v)
+                v["up_z"] = uz if (uz_age is not None and uz_age <= STALE_S) else None
+                v["up_z_age_s"] = uz_age
             self._json(200 if v else 503, v or {"error": f"no {key} yet"})
         elif key == "health":
             # 聚合桥自己可见的状态；始终 200（探针要能读到"各话题多久没数据"）。
@@ -238,8 +260,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "object": msg.data})
             except Exception as e:  # noqa: BLE001 — 桥边界
                 self._json(400, {"error": str(e)})
+        elif path == "/reset":
+            self._post_reset()
         else:
             self._json(404, {"error": "unknown"})
+
+    def _post_reset(self):
+        # 运维复位（仿真专属）：发 /sim/reset(Bool true) → warehouse_nav 把 root 传送回
+        # 出生位姿+清零速度。真机无此语义。best-effort：Isaac 侧异步执行，200 即已发出请求，
+        # 调用方随后轮询 GET /gt 的 up_z/z 确认已复位直立。
+        try:
+            self._read_json_body()  # 无参，容错解析（畸形 body -> 400）
+            msg = Bool()
+            msg.data = True
+            STATE["reset_pub"].publish(msg)
+            STATE["nav_owner"] = "idle"  # 复位后归 idle，解锁互斥
+            self._json(200, {"ok": True, "note": "reset requested; poll GET /gt up_z to confirm"})
+        except Exception as e:  # noqa: BLE001 — 桥边界
+            self._json(400, {"error": str(e)})
 
     def _post_waypoint(self):
         # 互斥：探索占用 /way_point 时，手动 waypoint 会与 TARE 互抢——拒绝。

@@ -62,15 +62,39 @@ if [ "$l3" = true ] && curl -sf --max-time 3 127.0.0.1:8042/pose >/dev/null 2>&1
 # 仅在 L0 起时才 docker exec 探（容器没起时 exec 会报错刷噪音）。
 if [ "$l0" = true ] && docker exec navstack pgrep -x rviz2 >/dev/null 2>&1; then l5=true; else l5=false; fi
 
+# --- upright: 机器人是否直立（摔倒可观测性，2026-07-07）----------------------
+# 系统盲区根治：上次翻车时 status 全绿、桥照常、位移门照过——因为没有任何探针看
+# "机器人有没有倒"。读 /gt 的 up_z（机体系重力 z）：站立≈-1，翻倒/前塌明显偏离。
+# 判据：up_z < -UPRIGHT_THRESH（默认 -0.9，即 |偏离| < 0.1）算直立。缺 up_z（旧 Isaac
+# 未升级/话题未发）→ unknown（不参与 green 判定，向后兼容不误红旧栈）。
+UPRIGHT_THRESH="${GO2W_UPRIGHT_THRESH:-0.9}"
+upright="unknown"
+if [ "$l3" = true ]; then
+  gt="$(curl -sf --max-time 3 127.0.0.1:8042/gt 2>/dev/null)" || gt=""
+  # 抠 "up_z": <浮点或 null>；null/缺失 → unknown。
+  uz="$(printf '%s' "$gt" | grep -oE '"up_z"[[:space:]]*:[[:space:]]*-?[0-9.]+' \
+        | grep -oE '\-?[0-9.]+$' | head -1)"
+  if [ -n "$uz" ]; then
+    # 直立: up_z < -THRESH（awk 浮点比较）。否则倒/塌。
+    if awk -v u="$uz" -v t="$UPRIGHT_THRESH" 'BEGIN{ exit !(u < -t) }'; then
+      upright=true
+    else
+      upright=false
+    fi
+  fi
+fi
+
 # --- phase: 最高"连续"已达层（遇到第一个 false 即停）--------------------------
 phase="none"
 for lvl in l0 l1 l2 l3 l4 l5; do
   if [ "${!lvl}" = true ]; then phase="$lvl"; else break; fi
 done
 
-green="$l4"   # green == L4（SLAM 收敛）
+# green == L4（SLAM 收敛）**且** 机器人未确证翻倒。upright=false（确证倒了）→ 非 green；
+# upright=unknown（旧栈无 up_z）→ 不拦（保持 L4 语义向后兼容，不误红未升级的旧栈）。
+if [ "$l4" = true ] && [ "$upright" != false ]; then green=true; else green=false; fi
 
-printf '{"l0":%s,"l1":%s,"l2":%s,"l3":%s,"l4":%s,"l5":%s,"phase":"%s","green":%s}\n' \
-  "$l0" "$l1" "$l2" "$l3" "$l4" "$l5" "$phase" "$green"
+printf '{"l0":%s,"l1":%s,"l2":%s,"l3":%s,"l4":%s,"l5":%s,"upright":"%s","phase":"%s","green":%s}\n' \
+  "$l0" "$l1" "$l2" "$l3" "$l4" "$l5" "$upright" "$phase" "$green"
 
 [ "$green" = true ] && exit 0 || exit 1

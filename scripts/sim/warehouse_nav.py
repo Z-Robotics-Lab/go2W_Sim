@@ -61,6 +61,8 @@ from rosgraph_msgs.msg import Clock  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
+from std_msgs.msg import Bool  # noqa: E402
+from std_msgs.msg import Float32  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
@@ -279,6 +281,12 @@ def main():
     # 地面真值位姿：来自 SIM 而非任何执行者——vector_os_nano verify 谓词的 GT 源
     gt_pub = node.create_publisher(PoseStamped, "/ground_truth/pose", 10)
     gt_msg = PoseStamped()
+    # 直立度 GT（摔倒可观测性，2026-07-07）：projected_gravity_b 的 z 分量——机体系
+    # 重力方向的 z。站立时 body-z 朝上、重力沿 -body-z → up_z≈-1；翻倒/前塌则明显
+    # 偏离 -1（劈叉/侧翻 up_z→0，四脚朝天 up_z→+1）。独立 Float32 话题=加性演进，
+    # /ground_truth/pose 的 PoseStamped schema 一字不动（桥与旧订阅者全兼容）。
+    up_z_pub = node.create_publisher(Float32, "/ground_truth/up_z", 10)
+    up_z_msg = Float32()
     rgb_pub = node.create_publisher(Image, "/camera/image", 5)
     depth_pub = node.create_publisher(Image, "/camera/depth", 5)
     clock_pub = node.create_publisher(Clock, "/clock", 10)
@@ -325,6 +333,23 @@ def main():
 
     node.create_subscription(TwistStamped, "/cmd_vel", on_cmd, 10)
 
+    # 运维复位通道（仿真专属，真机无此语义——真机没有"传送回出生点"）：桥 POST /reset
+    # → /sim/reset(Bool true) → 主循环把 root 状态写回出生位姿 + 清零所有速度。用于摔倒/
+    # 失稳后无需成对重启即可复位机器人再验证。回调只置 flag，真正写状态在主循环做
+    # （与物理步同线程，避免回调里改物理态的竞态）。
+    reset_req = {"pending": False}
+
+    def on_reset(msg: Bool):
+        if msg.data:
+            reset_req["pending"] = True
+            print("[NAV][RESET] request received -> will teleport to birth pose", flush=True)
+
+    node.create_subscription(Bool, "/sim/reset", on_reset, 5)
+    # 出生态锁存（reset 目标）：root 13 维=pos3+quat4+linvel3+angvel3；关节=default 位/零速。
+    _birth_root = robot.data.default_root_state.clone()
+    _birth_jpos = robot.data.default_joint_pos.clone()
+    _birth_jvel = robot.data.default_joint_vel.clone()
+
     default_pos = robot.data.default_joint_pos.clone()
     wheel_ids, wheel_names = robot.find_joints(".*_foot_joint")
     # 轮向符号：左侧(FL/RL)与右侧(FR/RR)前进同向性由 URDF 轴向决定，先全 +1，自检校准
@@ -358,11 +383,32 @@ def main():
     #   ①比训练 2D 阈值对 (vx,vy) 更严（3D≥2D）；②额外兜住 wz，纯自转指令
     #   (vx=vy=0,wz=1.4，pathFollower 转弯爆发) 范数=1.4>0.2 不触发死区 → 正常导航
     #   的原地转/起步段一律不被吃掉（回归硬约束）。
+    # ---- 死区 v2（迟滞 + 柔性过渡）----
+    # v1 病理（DEBUG 2026-07-07 A/B 实锤）：单阈值 0.2 + 单向 25 拍 debounce，被
+    #   pathFollower 无目标 |wz|=1.396 爆发 chatter 每拍清零 → 25 连拍永远凑不满 →
+    #   死区在 idle 下 enter 计数=0（等于没开）；且站姿硬钉 default_pos std=4.6cm 抖振
+    #   （非自稳点），切换处满幅突变 → 失稳劈叉（win_b）。
+    # v2 三件套：
+    #   ① 迟滞双阈值——进入 norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍；退出 norm>EXIT_THRESH
+    #      连续 EXIT_DEBOUNCE 拍。0.15/0.25 分离带 0.10 → 0.2 附近抖动不再来回切。
+    #      注：真实持续自转爆发（norm=1.4，非 chatter）仍会满足退出 → 正常导航放行（G2）。
+    #   ② 柔性进入——腿目标从"进入拍的当前腿位"线性混合到 default，BLEND_TICKS 拍到位，
+    #      杜绝站姿硬钉的瞬时突跳。
+    #   ③ 柔性退出——喂给策略的 cmd 从 0 斜坡到实际值，RAMP_TICKS 拍到位，杜绝满幅突变。
+    #   站姿保持期间轮速目标恒 0（不变）。
     STANDSTILL_ENABLE = _os.environ.get("GO2W_STANDSTILL", "1") == "1"
-    STANDSTILL_THRESH = 0.2   # 命令 3D 范数阈值（与训练 UniformThreshold 0.2 同值）
-    STANDSTILL_DEBOUNCE = 25  # 连续低命令的策略拍数（25 拍 @50Hz = 0.5s，防抖）
-    standstill_low_count = 0  # 连续低命令计数（策略拍，非物理步）
-    standstill_active = False # 当前是否处于站姿保持
+    STANDSTILL_ENTER_THRESH = 0.15  # 进入迟滞下阈（比 v1 0.2 更严，只有真近零才进）
+    STANDSTILL_EXIT_THRESH = 0.25   # 退出迟滞上阈（分离带 0.10，抗 0.2 边界抖动）
+    STANDSTILL_ENTER_DEBOUNCE = 25  # 连续低命令拍数才进入（0.5s@50Hz）
+    STANDSTILL_EXIT_DEBOUNCE = 5    # 连续高命令拍数才退出（0.1s，真自转/起步立即放行）
+    STANDSTILL_BLEND_TICKS = 10     # 进入：腿 当前位→default 线性混合拍数（0.2s）
+    STANDSTILL_RAMP_TICKS = 10      # 退出：喂策略 cmd 0→实际 斜坡拍数（0.2s）
+    standstill_low_count = 0        # 连续低命令计数（策略拍）
+    standstill_high_count = 0       # 连续高命令计数（退出迟滞用）
+    standstill_active = False       # 当前是否处于站姿保持
+    standstill_blend = 0            # 进入混合剩余拍（BLEND..0 递减；0=已到 default）
+    standstill_ramp = 0             # 退出斜坡剩余拍（RAMP..0 递减；0=已喂满幅）
+    _blend_from = None              # 进入拍锁存的当前腿位（混合起点）
     # 站姿目标：腿=default（前 12 关节），轮速=0（后 4 关节）。用 policy 的 id/序对齐。
     if policy is not None:
         _stand_leg_ids = policy.leg_ids
@@ -382,6 +428,21 @@ def main():
         rclpy.spin_once(node, timeout_sec=0.0)
         sim_t["now"] += physics_dt
         sec, nsec = sim_stamp()
+        # 运维复位：把 root 传送回出生位姿 + 清零所有速度（仿真专属通道）。写在 step 前。
+        if reset_req["pending"]:
+            reset_req["pending"] = False
+            robot.write_root_state_to_sim(_birth_root.clone())
+            robot.write_joint_state_to_sim(_birth_jpos.clone(), _birth_jvel.clone())
+            robot.reset()
+            if policy is not None:
+                policy.last_action = torch.zeros_like(policy.last_action)
+            # 清死区态：复位后从"刚落地站姿"重新起算迟滞，避免带入摔倒前的计数/斜坡。
+            standstill_low_count = standstill_high_count = 0
+            standstill_active = False
+            standstill_blend = standstill_ramp = 0
+            _blend_from = None
+            print(f"[NAV][RESET] done at sim_t={sim_t['now']:.2f} "
+                  f"root->birth (0,0,0.42), vel=0", flush=True)
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
@@ -392,32 +453,70 @@ def main():
         if policy is not None:
             vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
             if step % 2 == 0:  # 策略 50Hz（sim 100Hz）
-                # 零指令死区：命令 3D 范数连续 N 拍低于阈值 → 站姿保持，不喂策略。
+                # ---- 死区 v2 迟滞状态机：命令 3D 范数 + 双阈值 + 柔性过渡 ----
                 cmd_norm = math.sqrt(vx * vx + vy * vy + wz * wz)
-                if STANDSTILL_ENABLE and cmd_norm < STANDSTILL_THRESH:
-                    standstill_low_count += 1
-                    if standstill_low_count >= STANDSTILL_DEBOUNCE:
-                        if not standstill_active:
+                if STANDSTILL_ENABLE:
+                    # 进入迟滞：norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍。
+                    if cmd_norm < STANDSTILL_ENTER_THRESH:
+                        standstill_low_count += 1
+                        standstill_high_count = 0
+                        if standstill_low_count >= STANDSTILL_ENTER_DEBOUNCE \
+                                and not standstill_active:
                             standstill_active = True
+                            # 柔性进入：锁存当前腿位为混合起点，BLEND 拍内 →default。
+                            _blend_from = robot.data.joint_pos[:1, _stand_leg_ids].clone()
+                            standstill_blend = STANDSTILL_BLEND_TICKS
+                            standstill_ramp = 0
                             print(f"[NAV][STANDSTILL] enter at sim_t={sim_t['now']:.2f} "
-                                  f"cmd_norm={cmd_norm:.4f}", flush=True)
+                                  f"cmd_norm={cmd_norm:.4f} (blend {STANDSTILL_BLEND_TICKS})",
+                                  flush=True)
+                    # 退出迟滞：norm>EXIT_THRESH 连续 EXIT_DEBOUNCE 拍（真自转/起步放行）。
+                    elif cmd_norm > STANDSTILL_EXIT_THRESH:
+                        standstill_high_count += 1
+                        standstill_low_count = 0
+                        if standstill_high_count >= STANDSTILL_EXIT_DEBOUNCE \
+                                and standstill_active:
+                            standstill_active = False
+                            # 柔性退出：last_action 复位（站姿⟺a=0，物理诚实）+ 起 cmd 斜坡。
+                            policy.last_action = torch.zeros_like(policy.last_action)
+                            standstill_ramp = STANDSTILL_RAMP_TICKS
+                            standstill_blend = 0
+                            print(f"[NAV][STANDSTILL] exit at sim_t={sim_t['now']:.2f} "
+                                  f"cmd_norm={cmd_norm:.4f} (reset+ramp "
+                                  f"{STANDSTILL_RAMP_TICKS})", flush=True)
+                    else:
+                        # 分离带内（0.15~0.25）：既不累进入也不累退出，维持当前态（迟滞核心）。
+                        standstill_low_count = 0
+                        standstill_high_count = 0
                 else:
-                    # 命令回升（或死区关闭）：退出站姿并复位策略记忆。
-                    standstill_low_count = 0
+                    # 死区关闭：确保退出并清态。
                     if standstill_active:
                         standstill_active = False
-                        # last_action 是策略唯一携带态（MLP 无隐藏态）：站定期间未执行
-                        # 策略动作（腿=default⟺a[:12]=0、轮速=0⟺a[12:]=0），故复位为 0 是
-                        # 物理诚实的"上一拍我在默认站姿"，避免用死区前的爬行动作污染恢复。
                         policy.last_action = torch.zeros_like(policy.last_action)
-                        print(f"[NAV][STANDSTILL] exit at sim_t={sim_t['now']:.2f} "
-                              f"cmd_norm={cmd_norm:.4f} (last_action reset)", flush=True)
+                    standstill_low_count = standstill_high_count = 0
+                    standstill_blend = standstill_ramp = 0
+
                 if standstill_active:
-                    # 站姿保持：腿目标=default_pos、轮速目标=0（不推进策略）。
-                    policy_cache["legs"] = (_stand_leg_ids, _stand_leg_tgt)
+                    # 站姿保持：腿目标（柔性进入混合）、轮速目标恒 0（不推进策略）。
+                    if standstill_blend > 0 and _blend_from is not None:
+                        # 线性混合：alpha 从 (1-1/BLEND) 递减到 0（0=纯 default）。
+                        alpha = standstill_blend / STANDSTILL_BLEND_TICKS
+                        leg_tgt = (alpha * _blend_from
+                                   + (1.0 - alpha) * _stand_leg_tgt)
+                        standstill_blend -= 1
+                        policy_cache["legs"] = (_stand_leg_ids, leg_tgt)
+                    else:
+                        policy_cache["legs"] = (_stand_leg_ids, _stand_leg_tgt)
                     policy_cache["wheels"] = (_stand_wheel_ids, _stand_wheel_vel)
                 else:
-                    leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(vx, vy, wz)
+                    # 柔性退出斜坡：喂策略的 cmd 从 0 线性升到实际值，杜绝满幅突变。
+                    if standstill_ramp > 0:
+                        scale = 1.0 - standstill_ramp / STANDSTILL_RAMP_TICKS
+                        standstill_ramp -= 1
+                    else:
+                        scale = 1.0
+                    leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(
+                        vx * scale, vy * scale, wz * scale)
                     policy_cache["legs"] = (leg_ids, leg_tgt)
                     policy_cache["wheels"] = (wheel_ids_p, wheel_vel)
             robot.set_joint_position_target(default_pos)  # 臂/夹爪保持
@@ -480,6 +579,9 @@ def main():
             (gt_msg.pose.orientation.w, gt_msg.pose.orientation.x,
              gt_msg.pose.orientation.y, gt_msg.pose.orientation.z) = q
             gt_pub.publish(gt_msg)
+            # 直立度：机体系重力 z 分量（站立≈-1，翻倒偏离）。同 5Hz 与 GT 位姿同步。
+            up_z_msg.data = float(robot.data.projected_gravity_b[0, 2].item())
+            up_z_pub.publish(up_z_msg)
             # 箱子 GT（pose+twist，verify oracle 的 get_object_positions/velocities 源）
             box.update(physics_dt)
             bp = box.data.root_pos_w[0].tolist()
