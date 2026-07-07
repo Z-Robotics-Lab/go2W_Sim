@@ -8,7 +8,9 @@ set -e
 GO2W="$(cd "$(dirname "$0")/../.." && pwd)"
 NAV="$GO2W/refs/Navigation-Physical-Experiment"
 # RL locomotion 策略（robot_lab 训练；差速在 Go2W 上物理不可行——README 坑 26）
-POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt}"
+# 旧默认(出厂 ckpt,回滚即换回): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt
+# 切换记录: 2026-07-07 配方 v2 Round-3(model_3497)产品裁定落地,见 docs/sim-plan.md
+POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_06-51-14/model_3497.pt}"
 
 bash "$GO2W/scripts/nav/sync_navstack_files.sh" "$NAV"  # 真相源同步（防旧拷贝）
 echo "[1/4] navstack supervisor 重启"

@@ -28,12 +28,12 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 【最高优先】配方 v2 两轮微调完毕(2026-07-07):③零摔④跟踪(3-5×改善)②过冲消除
-   全过,**①零指令漂移差之毫厘 FAIL**(最佳 model_2498:部署 0.0277/原生 0.0218,门
-   0.02;旧 ckpt 0.0876/0.0695)。加压轮(税-0.01)回退证明税已到顶。两轮用尽按令停手,
-   bringup 未切(仍指出厂 ckpt)。下一步三选一待 CEO:rel_standing 0.12→0.20 单变量 /
-   更长微调 / 接受 0.0277(墙钟观感≈0.006 m/s 近静止)。全量数据 DEBUG.md v2 实录节 +
-   var/evidence/retrain/。载荷包络(pitch_var 2.6×劣化)仍是独立待办(sim-plan)。
+1. 【已收官】策略重训线(2026-07-07,三轮):Round-3(r1 配方 +1000 iter)→ model_3497
+   **产品裁定落地**(编排者代 CEO,可复议,记录在 sim-plan):①部署绑定面 0.0101 PASS
+   (8.7×);原生随机体群中位 0.0343 照实 FAIL;③零摔④0.050/0.010 最佳②轻过冲。
+   bringup/restart_all 默认已切(旧路径注释回滚一行)。E0'' 收官:120s 直立(单次瞬态
+   侧倾恢复)+4m WP 回归全程直立、推进优于旧策略;帧证据+全数据 var/evidence/retrain/。
+   残余风险与载荷包络待办见 DEBUG.md 收官节。栈已拆,复现 bringup.sh 一条命令。
 2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
