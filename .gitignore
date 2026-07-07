@@ -16,3 +16,6 @@ outputs/
 *.log
 __pycache__/
 refs/
+
+# 冻结哨兵证据（freeze_watch.sh 落盘；帧/栈证据不入库）
+var/

@@ -103,3 +103,16 @@
     要真正关掉 RViz，必须走 teardown（`bringup.sh teardown` 先 `docker rm -f navstack`
     整体移除容器，supervisor 随之消亡，RViz 无处可回弹）。teardown 的 step [1/3] 先杀
     navstack 就是为此——先杀 supervisor 再动 Isaac，窗口不再弹回。
+39. **Isaac 会在 sim 时间 ≈187s 自发冻结（timeline 无声停 + isaaclab step() 卡死）**
+    （2026-07-06 僵尸 #1/#2 验尸，var/evidence/freeze_watch/zombie{1,2}_kit.log）：
+    两具僵尸均在 **sim ≈187s / step ≈18.6k** 全话题一瞬同冻，kit 日志唯一签名 =
+    `Replicator Stop`（timeline 停）且前 13 分钟零 Error、无人交互——确定性累积触发。
+    机制：IsaacLab `simulation_context.py step()` L567 `while not self.is_playing():
+    self.render()` —— timeline 一停/暂停，主循环在此**热旋**（527% CPU、不发布、不
+    spin rclpy），且循环判 `is_playing` 而非 `is_running` → **GUI quit 都解不开**；
+    SIGTERM 反而能秒杀（信号中断 render 旋 → close() 1s 走完，两具实测）。
+    首要嫌疑：timeline endTime 自动停（待冻结 #3 哨兵取证一锤定音）。
+    哨兵：`scripts/nav/freeze_watch.sh`（nohup 部署守栈；age>15s 自动抓 py-spy/gdb
+    双栈 + GPU/内核证据落 var/evidence/freeze_watch/<ts>/ 然后停住留标本，不自动杀）。
+    py-spy 判读：冻结栈在 isaaclab step():568 = PAUSED 旋；卡 :579/isaacsim.core:710
+    内 = STOPPED 路径阻塞。健康基线栈 = warehouse_nav.py:351 → :579 → :710。
