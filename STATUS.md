@@ -28,12 +28,13 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
-1. 【已收官】策略重训线(2026-07-07,三轮):Round-3(r1 配方 +1000 iter)→ model_3497
-   **产品裁定落地**(编排者代 CEO,可复议,记录在 sim-plan):①部署绑定面 0.0101 PASS
-   (8.7×);原生随机体群中位 0.0343 照实 FAIL;③零摔④0.050/0.010 最佳②轻过冲。
-   bringup/restart_all 默认已切(旧路径注释回滚一行)。E0'' 收官:120s 直立(单次瞬态
-   侧倾恢复)+4m WP 回归全程直立、推进优于旧策略;帧证据+全数据 var/evidence/retrain/。
-   残余风险与载荷包络待办见 DEBUG.md 收官节。栈已拆,复现 bringup.sh 一条命令。
+1. 【载荷轮已执行,未落地】plan-a 载荷训练(CEO 指示)两轮(model_4496/5495):①③④全过
+   (5495:漂移 0.0112/零摔/0.0603+0.0367;E-T 随机体群 0.0157 首次收敛过 0.02),
+   **⑤ pitch_var 比值门 FAIL(4.23×>1.5×)→ 按预注册停手**。但绝对值塌一个量级
+   (带载 pitch std 0.76°→0.27°),比值门在噪声级失效——**待 CEO 裁定⑤改绝对门
+   (≤5e-5,两候选 2× 裕度过),裁定即 model_5495 可落地(补 E0'')**。nuc_weight 已修
+   1.8kg(载荷 6.46kg 对齐);现任 model_3497 在新体重锚①④更好,产品基线无恙,默认未动。
+   全量证据 var/evidence/retrain/payload_round/;实录 DEBUG.md 载荷轮节。
 2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
