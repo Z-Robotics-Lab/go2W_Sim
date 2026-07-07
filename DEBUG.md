@@ -1067,3 +1067,43 @@ GO2W_STANDSTILL=0,其余同 L3+L3b。
   方向本身在振荡**(SLAM/planner 侧,非控制器)。机器人来回转追一个不稳定的路径方向。
 - run-to-run 方差大:死区关那次 64.4% 部分是干净朝向轨迹的运气;pathFollower yaw 振荡是
   更深的绑定约束,控制器参数/时钟都治不了 pathDir 不稳。
+
+## CONCLUDE(诚实结案:门 NOT MET,三层病灶剥出但第三层未根治)
+预注册门(cmd.x 非零占比≥70% 且 GT 实速≥0.35 m/s(sim),到点停,直立)——**任何配置均未达门**。
+诚实报数,FAIL 照实写。
+
+### 剥出的三层病灶(逐层证伪确认)
+1. **[已修]控制时钟错配(H2/L3)**:`rclcpp::Rate rate(100)` wall 钟指挥 RTF~0.17 plant,
+   积分器每 sim 秒推进 ~590 步而非 100。改 sim 钟节拍(sleep_for)后 cmd_vel 率正确掉到
+   sim-100Hz(实锤 316 行/30s wall)。**必要非充分**。
+2. **[已缓解]非对称刹车清零(L3b)**:line 418 else 支 dirDiff 超阈即拖 vehicleSpeed 归零。
+   软化为 cruiseFloor=joySpeed3*cos(dirDiff)(非掉头且离目标远时)后,叠加 sim 钟,死区关下
+   cmd.x 占比 0→64.4%、dis 真降到 3.6m。
+3. **[已缓解]死区误伤(L2,与 L3 耦合)**:sim 钟把 pathFollower 零相拉长,25 拍 enter 门被
+   导航零相凑满 → 冻结机器人 → 物理反馈拖死 pathFollower。加"活跃导航守卫"(最近爆发 8s 内
+   禁入站姿)后 enter 从 ~11 压到 1,idle 站定语义保留(真 idle 无爆发 8s 后照常进)。
+4. **[未根治·真绑定]pathDir 振荡**:死区基本抑制后,机器人仍只 15-22% 占比。cmd 时间线
+   wz 在 ±1.396 反复翻转(twoWayDrive=False,排除 navFwd 翻转)——**局部路径首个前瞻点方向
+   本身在振荡**。病在 planner/SLAM 侧(pathPointID 每次重规划归零 + lookAheadDis 0.5m 下
+   近点 atan2 噪声),超出 pathFollower 控制器范围,且触及红线(planner/pc2 时序语义)。
+
+### 定量全表(叉子实验 wp=(4.5,-0.5) ~4.5m,30s wall≈6s sim)
+| 配置 | cmd.x 非零% | GT实速 mean/max | dis末 | 直立 | 门 |
+|---|---|---|---|---|---|
+| 基线 | 5.9 | 0.159/0.382 | 5.4 | 100% | FAIL |
+| L1a(降yaw+宽dirDiff) | 2.7 | 0.164/— | 5.0 | 100% | FAIL(更差,REFUTED) |
+| L3-rate 单独 | 0.0 | 0.158/— | 4.7 | 100% | FAIL |
+| L3+L3b(死区关) | **64.4** | **0.185/0.498** | **3.6** | 100% | 接近但 FAIL |
+| L2(2s)+L3+L3b | 0.3 | 0.100/— | 4.5 | 100% | FAIL(反馈耦合) |
+| L2(8s)+L3+L3b | 15-22 | 0.069/0.242 | 4.3-4.5 | 100% | FAIL |
+> 注:死区关 64.4% 只单跑一次,疑为干净朝向轨迹的运气;死区抑制后可复现地板是 15-22%。
+> 真绑定=pathDir 振荡,非控制器可解。run-to-run 方差大(6s sim 窗样本小)。
+
+### 落地状态(provisional,不促成正式规则)
+- 活栈:L3(sim钟)+L3b(软刹车)+L2(8s守卫)全在跑,GREEN/upright,均 env 守卫可关
+  (GO2W_SIMRATE/SOFTBRAKE=0 退 pathFollower 原样;GO2W_STANDSTILL=0 关死区)。
+- **C++/warehouse_nav 改动是净改善(5.9%→15-22%,直立不变)但未达门**;故**不并入
+  patch_navstack.sh 的追踪复现**——clean clone 重建=纯上游(内置回滚)。改动仅存活栈+git
+  历史,待 pathDir 振荡也解决后再促成。
+- 下一轮真解方向:pathFollower dirDiff 用**全局目标方位**而非振荡的局部 pathPointID 方向,
+  或 planner 侧稳定 lookahead(需 CEO gate:触 planner 语义/红线)。
