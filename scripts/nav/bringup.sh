@@ -25,7 +25,9 @@ ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 # RL locomotion 策略（容器内路径；README 坑 26：差速在 Go2W 物理不可行，必须 RL 策略）
 # 旧默认(出厂 ckpt,回滚即换回): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt
 # 切换记录: 2026-07-07 配方 v2 Round-3(model_3497)产品裁定落地,见 docs/sim-plan.md
-POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_06-51-14/model_3497.pt}"
+# 回滚点(2026-07-07 载荷轮前默认;已在 6.46kg 新体重锚验证 ①0.0049/④0.0337+0.0063): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_06-51-14/model_3497.pt
+# 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
+POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_07-53-57/model_5495.pt}"
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
