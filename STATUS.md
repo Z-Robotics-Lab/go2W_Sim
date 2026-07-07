@@ -1,6 +1,6 @@
 # STATUS — go2W_Sim 会话恢复锚点（覆盖式，≤40 行）
 
-更新：2026-07-06。仓库：github.com/Z-Robotics-Lab/go2W_Sim（main，与远端同步）。
+更新：2026-07-07。仓库：github.com/Z-Robotics-Lab/go2W_Sim（main，与远端同步）。
 姐妹仓：github.com/Z-Robotics-Lab/z-agent（agent 运行时，fork 自 vector-os-nano）。
 
 ## CEO 任务序列
@@ -33,6 +33,8 @@
    只罚腿关节+wheel_vel_penalty 训练时为 null+站定样本仅 2.2%。配方轮要点已备（DEBUG.md
    终审节）：rel_standing 0.02→0.25 + 启用 wheel_vel_penalty + 保留 plan-d 包络，其余冻结。
    证据 var/evidence/retrain/attribution/。改奖励/命令分布=CEO gate，未开火。
+   run_retrain.sh 的 systemd-run 路径 declare -f 空变量 bug 已修（同型 c38e83f；
+   fix/go2w-retrain-launcher 分支，echo 干跑双分支验证，未合入）。
 2. 恢复任务③抓取（feat/grasp-wip 60%，迁 z-agent 体系收尾）
 3. TARE 软停缺口（源码只认 start=true）：产品要软停需改栈源码（CEO gate）或接受
    NAV_MODE=waypoint 重启作为硬停
