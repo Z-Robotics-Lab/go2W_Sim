@@ -22,6 +22,11 @@ SEED="${GO2W_RETRAIN_SEED:-42}"
 MEM_MAX="${GO2W_RETRAIN_MEMMAX:-45G}"             # host-side systemd scope backstop
 CONTAINER="${GO2W_ISAAC_CONTAINER:-go2w-isaac}"
 MIN_FREE_G="${GO2W_RETRAIN_MIN_FREE_G:-30}"       # require >= this many GB free before launch
+# Fine-tune from an existing ckpt (recipe v2): set GO2W_RETRAIN_RESUME_RUN to the run dir
+# name (e.g. 2026-07-04_15-52-42). rsl_rl load() restores model+optimizer+iteration count;
+# learn() then trains a FURTHER $MAX_ITER iterations into a NEW timestamped run dir.
+RESUME_RUN="${GO2W_RETRAIN_RESUME_RUN:-}"
+RESUME_CKPT="${GO2W_RETRAIN_RESUME_CKPT:-model_1999.pt}"
 
 case "$PLAN" in
   d) TASK="RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-v0" ;;
@@ -29,7 +34,13 @@ case "$PLAN" in
   *) echo "[retrain] ERROR: GO2W_RETRAIN_PLAN must be 'd' or 'a' (got '$PLAN')" >&2; exit 2 ;;
 esac
 
-echo "[retrain] plan=$PLAN task=$TASK envs=$NUM_ENVS iters=$MAX_ITER seed=$SEED"
+RESUME_ARGS=""
+if [ -n "$RESUME_RUN" ]; then
+  RESUME_ARGS="--resume --load_run $RESUME_RUN --checkpoint $RESUME_CKPT"
+  echo "[retrain] FINE-TUNE mode: resuming from $RESUME_RUN/$RESUME_CKPT (+$MAX_ITER iters)"
+fi
+
+echo "[retrain] plan=$PLAN task=$TASK envs=$NUM_ENVS iters=$MAX_ITER seed=$SEED resume='${RESUME_RUN:-none}'"
 
 # --------------------------------------------------------------- preflight: ONE sim
 echo "[retrain] preflight: checking for a live sim (ONE-sim rule)..."
@@ -86,7 +97,8 @@ echo "[retrain] to monitor from another shell: tail -f $HOST_LOG   (reward: grep
 
 TRAIN_CMD="cd /workspace/go2w/robot_lab && \
   /isaac-sim/python.sh scripts/reinforcement_learning/rsl_rl/train.py \
-    --task $TASK --headless --num_envs $NUM_ENVS --max_iterations $MAX_ITER --seed $SEED"
+    --task $TASK --headless --num_envs $NUM_ENVS --max_iterations $MAX_ITER --seed $SEED \
+    $RESUME_ARGS"
 
 # systemd-run scope is a HOST backstop around the docker exec; the container itself is capped
 # at --memory=40g (setup_container.sh). If systemd-run is unavailable, fall back to a bare

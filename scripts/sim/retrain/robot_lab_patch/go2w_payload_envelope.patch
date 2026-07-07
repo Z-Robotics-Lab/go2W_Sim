@@ -20,10 +20,10 @@ index d2b18e7..1a5b125 100644
 +    },
 +)
 diff --git a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
-index b0d5051..27578c8 100644
+index b0d5051..2829d31 100644
 --- a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
 +++ b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
-@@ -131,6 +131,25 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+@@ -131,6 +131,28 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
          self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
          self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
  
@@ -35,21 +35,24 @@ index b0d5051..27578c8 100644
 +        # CoM range (+/-5cm -> +/-10cm) so the payload sits inside training. Trained value
 +        # per ckpt params/env.yaml. Deployment-consistency RED LINE: actuator gains,
 +        # decimation, obs57/act16 unchanged -> new ckpt stays isomorphic to the
-+        # go2w_policy.py shim. (Recipe-round 2026-07-07 additionally moves exactly TWO
-+        # reward/command items — wheel_vel_penalty and rel_standing_envs, see below —
-+        # under CEO fire order after the attribution E-T verdict "training recipe";
-+        # every other reward-table entry stays frozen.)
-+        self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = (-1.0, 8.0)
-+        self.events.randomize_com_positions.params["com_range"] = {
-+            "x": (-0.10, 0.10),
-+            "y": (-0.10, 0.10),
-+            "z": (-0.10, 0.10),
-+        }
++        # go2w_policy.py shim.
++        # RECIPE v2 (2nd fire order 2026-07-07): plan-d envelope WITHDRAWN this round to
++        # isolate post-mortem H2 — the from-scratch recipe-v1 run collapsed into a lazy
++        # basin (tracking error flat ~1.2 for 900+ iters, run 2026-07-07_05-53-47) and
++        # +8kg=2.2x trunk from scratch is one suspect. Envelope reverts to the parent
++        # defaults (-1..+3 kg, ±5 cm); the payload-envelope fix gets its own later round
++        # (docs/sim-plan.md todo). v1 values kept commented for ablation traceability:
++        # self.events.randomize_rigid_body_mass_base.params["mass_distribution_params"] = (-1.0, 8.0)
++        # self.events.randomize_com_positions.params["com_range"] = {
++        #     "x": (-0.10, 0.10),
++        #     "y": (-0.10, 0.10),
++        #     "z": (-0.10, 0.10),
++        # }
 +
          # ------------------------------Rewards------------------------------
          # General
          self.rewards.is_terminated.weight = 0
-@@ -169,7 +188,20 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+@@ -169,7 +191,22 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
          self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
          self.rewards.joint_pos_penalty.weight = -1.0
          self.rewards.joint_pos_penalty.params["asset_cfg"].joint_names = self.leg_joint_names
@@ -61,17 +64,19 @@ index b0d5051..27578c8 100644
 +        # Semantics (mdp/rewards.py:132-153): when cmd<=command_threshold(0.1) AND
 +        # body_vel<=velocity_threshold(0.5) it penalizes sum|wheel joint_vel| (standing
 +        # mode); when driving it only penalizes airborne wheel spin. This is the most
-+        # targeted term against wheeled creep. Weight -0.01 provenance: ddtrobot_tita is
++        # targeted term against wheeled creep. Weight provenance: ddtrobot_tita is
 +        # the ONLY wheeled config in robot_lab v2.3.2 that enables this term
 +        # (ddtrobot_tita/rough_env_cfg.py:198, weight=-0.01, same default thresholds).
-+        # Magnitude sanity: at the observed 0.07 m/s creep, wheel omega ~0.81 rad/s x4
-+        # wheels -> penalty ~0.033/step vs the ~0.06 tracking loss at that speed — same
-+        # order, tipping the zero-cmd optimum toward true standing without dominating.
-+        self.rewards.wheel_vel_penalty.weight = -0.01
++        # RECIPE v2 (2nd fire order 2026-07-07): -0.005 = HALF the tita value — the
++        # recipe-v1 from-scratch run (-0.01 + rel_standing 0.25) collapsed into a lazy
++        # basin (post-mortem H1: standing pressure overshoot); v2 fine-tunes FROM the
++        # shipped ckpt whose tracking is healthy, so start conservative.
++        # v1 (from-scratch, FAILED §4b): self.rewards.wheel_vel_penalty.weight = -0.01
++        self.rewards.wheel_vel_penalty.weight = -0.005
          self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = [self.foot_link_name]
          self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
          self.rewards.joint_mirror.weight = -0.05
-@@ -232,3 +264,9 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+@@ -232,3 +269,14 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
          # self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
          # self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
          # self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
@@ -79,5 +84,10 @@ index b0d5051..27578c8 100644
 +        # Zero-cmd creep mechanism #4: true standing targets (||cmd||<0.06, the stand_still
 +        # trigger) were only ~2.2% of training samples (parent rel_standing_envs=0.02,
 +        # velocity_env_cfg.py:109, plus UniformThreshold norm<0.2 lin clearing) — far too
-+        # sparse to learn standing. Raise to 0.25 so standing is a first-class trained mode.
-+        self.commands.base_velocity.rel_standing_envs = 0.25
++        # sparse to learn standing.
++        # RECIPE v2 (2nd fire order 2026-07-07): 0.12 — v1's 0.25 (from scratch, together
++        # with wheel tax -0.01) made the zero-velocity basin globally attractive (§4b FAIL,
++        # run 2026-07-07_05-53-47); v2 fine-tunes from the shipped ckpt, so a moderate
++        # share suffices to teach standing without drowning the tracking gradient.
++        # v1 (from-scratch, FAILED §4b): self.commands.base_velocity.rel_standing_envs = 0.25
++        self.commands.base_velocity.rel_standing_envs = 0.12

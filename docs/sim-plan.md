@@ -177,6 +177,15 @@ shim 的同构；改用"base 附加前偏载荷"等价事件项（`payload_env_c
 审计 ~6.5kg）；若验收仅勉强通过，把 nuc_weight 提到 ~1.8kg 复验真实部署质量（属硬件建模改动，
 需显式处理）。
 
+**配方轮沿革（2026-07-07 两次开火）**：
+- v1（从零训：rel_standing 0.25 + wheel_tax -0.01 + plan-d 包络）：§4b FAIL——策略掉进
+  "站定+省惩罚"退化盆，跟踪误差 900+ iter 零收敛（run 2026-07-07_05-53-47 全量保留作消融）。
+- v2（第二轮开火令）：**从出厂 ckpt 微调 500 iter**（rsl_rl --resume，optimizer 一并续上），
+  减压 rel_standing 0.12 / wheel_tax -0.005（tita 出处减半），**撤下 plan-d 包络隔离 H2**。
+  ①未达但④过 → 授权自主加压一档（0.12→0.20 或 -0.005→-0.01，单变量）至多两轮。
+- 【待办·后续轮】**载荷包络修复另开一轮**：原 plan-d 的 +8kg/±10cm（或 plan-a 定向载荷）
+  在蠕动配方收口后单独训——带载 pitch_var 2.6× 劣化（A/B 判决实锤）仍未解决，勿忘。
+
 **部署切换规程**（验收过后 = go-live）：
 1. 验收全段 pass → 把 `GO2W_POLICY` 指向新 ckpt，或改 `scripts/nav/bringup.sh` +
    `restart_all.sh` 默认（当前 `.../2026-07-04_15-52-42/model_1999.pt`）。

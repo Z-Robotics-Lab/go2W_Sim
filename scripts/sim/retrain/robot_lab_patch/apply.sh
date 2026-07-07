@@ -6,14 +6,17 @@
 # script re-applies them idempotently from a patch tracked in the go2w main repo. Called by
 # clone_deps.sh after the robot_lab checkout; also safe to run by hand.
 #
-# WHAT IT DOES (plan-d envelope + recipe-round; plan-a = opt-in fallback):
-#   plan-d  rough_env_cfg.py : base mass-add +3kg->+8kg, base CoM +/-5cm->+/-10cm
-#   recipe  rough_env_cfg.py : rel_standing_envs 0.02->0.25 + wheel_vel_penalty 0->-0.01
-#           (CEO fire order 2026-07-07 after attribution E-T verdict "training recipe";
-#           weight provenance: ddtrobot_tita rough_env_cfg.py:198, the only wheeled
-#           config in robot_lab v2.3.2 that enables the term)
-#   plan-a  payload_env_cfg.py + __init__.py : opt-in Go2W-Payload-v0 task (fixed ~6.5kg
-#           front-offset payload) — inherits the recipe via Flat->Rough.
+# WHAT IT DOES (recipe v2, 2nd fire order 2026-07-07; plan-a = opt-in fallback):
+#   recipe v2  rough_env_cfg.py : rel_standing_envs 0.02->0.12 + wheel_vel_penalty
+#              0->-0.005 (half the ddtrobot_tita provenance value :198 — conservative for
+#              fine-tuning FROM the shipped ckpt). v1 (0.25/-0.01, from-scratch) FAILED
+#              §4b — lazy-basin collapse, run 2026-07-07_05-53-47 — kept as comments in
+#              the cfg for ablation traceability.
+#   plan-d     WITHDRAWN this round (post-mortem H2 isolation): mass/CoM envelope back to
+#              parent defaults (-1..+3kg, ±5cm); kept as comments. Payload envelope gets
+#              its own later round (docs/sim-plan.md todo).
+#   plan-a     payload_env_cfg.py + __init__.py : opt-in Go2W-Payload-v0 task (fixed
+#              ~6.5kg front-offset payload) — inherits the recipe via Flat->Rough.
 # Everything else (other rewards, actuator gains, decimation, obs57/act16) is UNTOUCHED —
 # the new ckpt stays isomorphic to the frozen scripts/sim/go2w_policy.py shim.
 set -euo pipefail
