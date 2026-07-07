@@ -854,3 +854,63 @@ up_z -0.953 fresh。回滚一行注释换回 model_3497。
 1. 栈侧 stale-path wz 爆发根除(navstack C++,既有待办)——除净后 E0'' 位移门(<50mm)复验。
 2. arc 段软瑕疵(全候选 0.12-0.38 波动,5495=0.1213 最佳,非判据)。
 3. RTF 优化轮(render_interval=1 为雷达时钟约束,慢动作税 0.12-0.22 待专轮)。
+
+---
+
+# 导航栈低 RTF 时域适配轮 — dirDiff 蹭行根治 + RTF 时钟(2026-07-07)
+
+预注册门(先写后动):同一 5m 长航点叉子实验(POST /waypoint 远点 + 30s 采 cmd_vel + GT
+前后差)达到 **cmd.x 非零占比 ≥70%、GT 实速 ≥0.35 m/s(sim)**,到点能停、全程直立。
+
+## OBSERVE(冷启动实测,非编排者转述)
+- 栈 green(status l5/upright:true),robot GT (-1.44,-3.19) up_z=-0.96(本 sim 直立约定
+  up_z≈-0.96),pose age 0.05s,策略 model_5495 活栈。
+- **实测活栈 pathFollower 参数(ros2 param dump /pathFollower,ground truth)——推翻编排者
+  转述的 C++ 默认值:**
+  | 参数 | 编排者转述 | **活栈实测(真源=config/omniDir.yaml)** |
+  |---|---|---|
+  | dirDiffThre | 0.1(建议放宽到 0.3-0.4) | **0.3**(已在建议区间顶) |
+  | yawRateGain | 未读 | **3.0**(非 C++ 默认 7.5) |
+  | stopYawRateGain | 未读(建议降,防过冲) | **3.0**(非 7.5,已是低值) |
+  | maxYawRate | 45.0 | **80.0** |
+  | stopDisThre | — | **0.1**(非 0.2) |
+  | omniDirGoalThre | — | **0.5**(omni 模式开,line 428-430 走 cos/sin 分解) |
+  | maxSpeed/autonomySpeed | 0.875/0.6 | **0.6/0.6** |
+  | maxAccel/lookAheadDis/slowDwnDisThre | 2.0/0.5/0.875 | 一致 |
+- **真源链**:launch 的 `<param from=config/omniDir.yaml>`(local_planner.launch:67)
+  覆写 C++ 默认;install/ 下 yaml 是指向 src 的 symlink(host 侧断链,容器内解析)。
+  yawRate/dirDiffThre **不经 launch_arguments 传**,只在 yaml 里——改它们必须改
+  src/base_autonomy/local_planner/config/omniDir.yaml(容器挂载 $NAV:/ws 直读,无需重建)。
+
+## 机制(读码确证 pathFollower.cpp)
+- **line 404 加速门(非对称刹车)**:`(|dirDiff|<dirDiffThre || (dis<omniDirGoalThre &&
+  |dirDiff|<omniDirDiffThre)) && dis>stopDisThre` → vehicleSpeed 朝 joySpeed3 加速
+  (+maxAccel/100=+0.02/拍);**否则(line 407-410)vehicleSpeed 朝 0 减速**。这是蹭行的
+  刹车支:只要 dirDiff 出阈,速度就被拖回 0。
+- **line 381-382 转向门**:低速(|v|<0.04)用 stopYawRateGain,否则 yawRateGain(都=3.0);
+  wall-clock Rate(100)(line 324)指挥 RTF 0.17 慢动作 plant → 转向指令超前于实际转身 →
+  dirDiff 长期驻留 → 加速门 line 404 长期落到 else 刹车支 → 14% 占空比。
+- **line 427 输出门**:`|vehicleSpeed|>maxAccel/100`(=0.02)才写 lin.x,否则 lin.x=0。
+- **line 324 `rclcpp::Rate rate(100)`**:wall 钟,use_sim_time 不改 rclcpp::Rate。RTF 0.17
+  下主循环仍 100Hz 墙钟跑,但 plant 只推进 0.17× → 每墙钟拍 plant 动 1/6,转向控制在
+  plant 时间尺度上等效 600Hz 过激。这是低 RTF 病根(编排者机制判断成立)。
+
+## HYPOTHESIZE(每条附证据,按证据强度+证伪易度排序)
+| # | 假设 | 类别 | 证据 | 证伪检查 |
+|---|---|---|---|---|
+| H1 | dirDiffThre 已 0.3,再放宽(0.3→0.5)+降 yawRate(3.0→1.5)减过冲,可提占空比到 70% | 参数(L1) | line 404 门宽=dirDiffThre;yaw 过冲驱动 dirDiff 驻留 | 跑叉子实验,占空比/实速对比基线 |
+| H2 | 病根是 wall Rate 不随 sim 钟(line 324);任何参数只治标,真解是 Rate→sim 钟或减速支不清零(L3) | 时钟(L3) | RTF 0.17 + Rate(100) 结构性错配;L1 若不达门则 H2 | L1 全组不达门 ⇒ H2 CONFIRMED,动 C++ |
+| H3 | 死区 v2 退出防抖 5 拍在真 cmd 脉冲下唤不醒,机器人被死区钉住 | 死区(L2) | 退出需 norm(vx,vy,wz)>0.25 连 5 拍;短脉冲可能凑不满 | docker 日志 STANDSTILL enter/exit 计数;若 exit≈enter 则死区非病因 → H3 REJECTED |
+| H4 | omniDir 模式(omniDirGoalThre=0.5>0)line 429 cos(dirDiff)*v 把 lin.x 随 dirDiff 打折,dirDiff 大时 lin.x 进一步缩水 | 几何 | line 428-430 仅 omni 分支;dirDiff=0.3 时 cos=0.955(仅 -4.5%),非主因 | 数据里核 lin.x vs vehicleSpeed 比 |
+
+## 修法阶梯(预注册,每级实测叉子实验,达门即止)
+- **L1 参数轮**(改 config/omniDir.yaml + sync + 重启 navstack 容器,不碰 C++):
+  一次一组,叉子实验定量对比。候选组:(a)dirDiffThre 0.3→0.45;(b)+yawRateGain/
+  stopYawRateGain 3.0→1.5(减过冲);(c)+lookAheadDis 0.5→0.8(路径方向更稳)。
+- **L2 死区唤醒适配**(改 scripts/sim/warehouse_nav.py,成对重启):仅当 H3 经日志证实
+  误伤才动;退出防抖 5→2 拍或按墙钟换算;重验 E0' 零指令站定回归。
+- **L3 C++ 补丁**(L1/L2 不达门才动,改前把方案+风险补进本节):pathFollower 减速支
+  非对称化(off 相不清零、保持巡航)或 Rate→sim 钟;重建 local_planner 包按铁律流程。
+
+## EXPERIMENT(逐条落数,per-H → result)
+(基线先测,再逐级实验;结果在此追加)
