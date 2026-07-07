@@ -32,20 +32,102 @@ _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
 }
 
 # ---------------------------------------------------------------------------
-# teardown: scoped 拆链，绝不 rosm nuke、绝不无差别 pkill（NEVER-KILL-INFRA）
+# teardown: scoped 拆链——精确打击 + 分级升级 + 逐级复核（NEVER-KILL-INFRA）
 # ---------------------------------------------------------------------------
+# 背景（2026-07-06 活体僵尸取证 DEBUG.md）：旧版 `pkill -9 …||true` 从不复核，
+# status.sh 退出码被 `||true` 吞——工具"说关了"实为"发了信号没验证"，正是 CEO 抱怨点。
+# kit 进程的死法多为逻辑活锁（Rl），偶发 D 态（-9 跳过 simulation_app.close() →
+# GL/CUDA 上下文不释放）。故本 teardown：
+#   1) 先 docker rm -f navstack（PID-1 supervisor 随容器消亡，RViz 不再被拉回）；
+#   2) 容器内对 kit-python 分级升级：TERM→等→KILL→等→复核；
+#   3) 仍存活（D 态兜底）→ docker restart go2w-isaac（终结整个 PID namespace，保留
+#      容器满足"重建代价高"约束）→ 复核；
+#   4) 成功判据 = 宿主 pgrep -f "kit/pytho[n]" 为空 且 status.sh l0=false；
+#      失败退非零 + 打印残留进程表——绝不静默假成功。
+# 铁律：字符类 kit/pytho[n] 防脚本自杀；只 exec 进目标容器 / 只 docker 容器级操作，
+# 绝不在宿主上 pkill（会连坐 sibling 会话，NEVER-KILL-INFRA）。
+
+KILL_PATTERN='kit/pytho[n]'                       # 目标 = Isaac kit python（字符类防自杀）
+TD_GRACE_S="${GO2W_TD_GRACE_S:-5}"                # 每级 kill 后的复核等待秒数
+DOCKER_STOP_GRACE_S="${GO2W_DOCKER_STOP_GRACE_S:-10}"  # docker restart 的 SIGTERM grace
+
+# 宿主侧存活探针：pgrep 扫 /proc（宿主与容器共享内核，能看到容器进程）。
+# 排除 pgrep 自身/本脚本（-f 会匹配到含 pattern 的命令行）用字符类已规避脚本自匹配，
+# 但仍显式排除当前脚本 PID 以防边界情况。返回匹配到的 PID（可能多行），空=已灭。
+_isaac_live_pids() {
+  pgrep -f "$KILL_PATTERN" 2>/dev/null | grep -vx "$$" || true
+}
+
+# 容器内对目标进程发信号（scoped，只在 go2w-isaac 内）。$1 = 信号（TERM/KILL）。
+_isaac_signal() {
+  local sig="$1"
+  docker exec -u 0 go2w-isaac bash -c \
+    "pkill -${sig} -f \"${KILL_PATTERN}\" 2>/dev/null; true" 2>/dev/null || true
+}
+
+# 打印宿主+容器双侧残留进程表（失败诊断，绝不静默）。
+_dump_residual() {
+  echo "[teardown] ===== 残留进程诊断 =====" >&2
+  echo "[teardown] 宿主侧 pgrep -af '$KILL_PATTERN':" >&2
+  pgrep -af "$KILL_PATTERN" 2>/dev/null | grep -v "$$ " >&2 || echo "  （宿主侧空）" >&2
+  echo "[teardown] 容器内 ps（kit/python/warehouse 相关，含 STAT/wchan）:" >&2
+  docker exec go2w-isaac ps -eo pid,ppid,stat,wchan:20,cmd 2>/dev/null \
+    | grep -Ei "python|kit|warehouse" | grep -v grep >&2 || echo "  （容器不可达或空）" >&2
+}
+
 teardown() {
-  echo "[teardown] 拆 navstack + Isaac 桥进程（scoped）"
-  # navstack 整个容器移除（PID-1 supervisor 随容器消亡，干净）
+  echo "[teardown] 拆链开始（scoped 精确打击 + 分级升级 + 逐级复核）"
+
+  # ── 1) 先杀 navstack supervisor（RViz 不再回弹）──────────────────────────
+  # RViz 挂在 navstack 的 PID-1 supervisor(run_all_forever.sh) 下、死后自动重生；
+  # 必须先移除整个 navstack 容器（supervisor 随容器消亡），否则先杀 Isaac 时
+  # RViz 仍被 supervisor 拉回（用户抱怨"关掉的 RViz 一直弹回"的根因）。
+  echo "[teardown] [1/3] docker rm -f navstack（PID-1 supervisor 随容器消亡，RViz 停止回弹）"
   docker rm -f navstack >/dev/null 2>&1 || true
-  # go2w-isaac 容器保留（重建代价高），只杀其中的 kit-python sim 进程。
-  # 字符类 kit/pytho[n] 防脚本自杀（同 restart_all.sh 铁律），且只 exec 进目标容器，
-  # 绝不在宿主上跑 pkill（宿主 pkill 会连坐 sibling 会话）。
-  docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; true' || true
-  # 清理本脚本落的阶段/诊断文件
+
+  # ── 2) 对 kit-python 分级升级：TERM → KILL → docker restart ──────────────
+  # go2w-isaac 容器保留（重建代价高），只终结其中的 kit sim 进程。
+  if [ -z "$(_isaac_live_pids)" ]; then
+    echo "[teardown] [2/3] kit-python 已不存在（宿主 pgrep 为空），跳过击杀"
+  else
+    # 2a. SIGTERM（给 Isaac 机会走 simulation_app.close() 释放 GL/CUDA 上下文）
+    echo "[teardown] [2/3a] SIGTERM kit-python（宿主残留 PID: $(_isaac_live_pids | tr '\n' ' ')）"
+    _isaac_signal TERM
+    sleep "$TD_GRACE_S"
+    # 2b. 仍在 → SIGKILL
+    if [ -n "$(_isaac_live_pids)" ]; then
+      echo "[teardown] [2/3b] TERM 后仍存活 → SIGKILL（残留 PID: $(_isaac_live_pids | tr '\n' ' ')）"
+      _isaac_signal KILL
+      sleep "$TD_GRACE_S"
+    else
+      echo "[teardown] [2/3b] TERM 已生效，无需 SIGKILL"
+    fi
+    # 2c. 仍在（D 态不可中断 / GL 上下文卡死）→ 容器级兜底重启
+    if [ -n "$(_isaac_live_pids)" ]; then
+      echo "[teardown] [3/3] SIGKILL 后仍存活（疑 D 态 / GL 卡死）→ docker restart go2w-isaac"
+      echo "[teardown]        （容器级重启终结整个 PID namespace，保留容器满足'重建代价高'）"
+      # docker restart = docker stop(SIGTERM,grace 后 SIGKILL) + docker start；
+      # -t 指定 grace，容器 config/id 保留（非 --rm，AutoRemove=false 已核）。
+      docker restart -t "$DOCKER_STOP_GRACE_S" go2w-isaac >/dev/null 2>&1 || true
+      sleep "$TD_GRACE_S"
+    fi
+  fi
+
+  # ── 3) 清理阶段/诊断文件（含谎报 green 的 phase 文件）────────────────────
   rm -f "$REPO"/logs/.bringup.* 2>/dev/null || true
-  echo "[teardown] 复核 L0（期望 l0=false）:"
-  bash "$HERE/status.sh" || true   # green=false 时 status.sh 退出非零，属正常，别让 set -e 挂住
+
+  # ── 4) 成功判据复核：宿主 pgrep 空 且 status.sh l0=false，绝不静默假成功 ──
+  local residual l0
+  residual="$(_isaac_live_pids)"
+  # status.sh l0 = 两容器都在跑；teardown 后 navstack 已移除 → 期望 l0=false。
+  l0="$(bash "$HERE/status.sh" 2>/dev/null | sed -n 's/.*"l0":\([a-z]*\).*/\1/p')"
+  if [ -z "$residual" ] && [ "$l0" != "true" ]; then
+    echo "[teardown] SUCCESS: kit-python 已灭（宿主 pgrep 空）且 l0=false（navstack 已拆）"
+    return 0
+  fi
+  echo "[teardown] FAILED: 拆链未达判据 — residual_pids='${residual:-<空>}' l0='${l0:-?}'" >&2
+  _dump_residual
+  return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -163,6 +245,9 @@ up() {
 # ---------------------------------------------------------------------------
 case "${1:-up}" in
   up)       up ;;
-  teardown) teardown ;;
+  # teardown 的退出码是合同的一部分（0=拆净, 非0=残留）——显式捕获并 exit 传播给
+  # 调用方（zeno Go2WBringupTool 据此设 is_error）。临时关 set -e 包住调用，否则
+  # teardown 内部的 `return 1` 会让 set -e 在 exit $? 前就以未定值中断。
+  teardown) set +e; teardown; rc=$?; set -e; exit "$rc" ;;
   *) echo "用法: $0 [up|teardown]" >&2; exit 2 ;;
 esac

@@ -36,8 +36,27 @@ if [ "$l1" = true ] && grep -qa "imu sample" "$LOG" 2>/dev/null; then l2=true; e
 # curl -sf: -s 静默，-f 非 2xx 返回非零退出码（--max-time 3 防桥卡死时探针挂住）。
 if [ "$l2" = true ] && curl -sf --max-time 3 127.0.0.1:8042/gt >/dev/null 2>&1; then l3=true; else l3=false; fi
 
-# --- L4: SLAM 有位姿（收敛）--------------------------------------------------
-if [ "$l3" = true ] && curl -sf --max-time 3 127.0.0.1:8042/pose >/dev/null 2>&1; then l4=true; else l4=false; fi
+# --- L4: SLAM 有位姿（收敛）+ 位姿新鲜（防"green 假象"）----------------------
+# 双闸：/pose 返回 200（桥自带陈旧守卫 >5s 会 503，坑 31）**且** /health 自报的
+# pose age_s < 阈值。为什么要第二道独立闸：僵尸桥/桥守卫回归时 /pose 可能返回
+# 陈旧 200，仅凭 HTTP 码 green 会被冻结的 sim 骗过（2026-07-06 僵尸现场：仿真循环
+# 冻结 ~19min，桥仍 ok:true，phase 文件谎报 up(green)）。故这里不信任桥的 200，
+# 独立读 /health age_s 判新鲜——green 只在"位姿存在且是刚更新的"时为真。
+POSE_MAX_AGE_S="${GO2W_POSE_MAX_AGE_S:-5}"   # 位姿最大允许陈旧秒数（与桥守卫同量级）
+_pose_fresh() {
+  # 读 /health 的 pose.age_s；无 python/jq 依赖，用 grep -o 抠数值（浮点）。
+  # 桥不可达 / 字段缺失 / age 超阈 → 一律判不新鲜（fail-closed，宁缺毋假）。
+  local health age
+  health="$(curl -sf --max-time 3 127.0.0.1:8042/health 2>/dev/null)" || return 1
+  # 抠 "pose": {"present": .., "age_s": <数字>} 里的 age_s
+  age="$(printf '%s' "$health" | grep -oE '"pose"[^}]*"age_s"[[:space:]]*:[[:space:]]*[0-9.]+' \
+         | grep -oE '[0-9.]+$' | head -1)"
+  [ -n "$age" ] || return 1
+  # 浮点比较用 awk（bash 只能整数比较）；age < 阈值 → 新鲜(0)，否则陈旧(1)。
+  awk -v a="$age" -v m="$POSE_MAX_AGE_S" 'BEGIN{ exit !(a < m) }'
+}
+if [ "$l3" = true ] && curl -sf --max-time 3 127.0.0.1:8042/pose >/dev/null 2>&1 \
+   && _pose_fresh; then l4=true; else l4=false; fi
 
 # --- L5: RViz（软状态，pgrep -x 精确匹配进程名，避免误匹配）------------------
 # 仅在 L0 起时才 docker exec 探（容器没起时 exec 会报错刷噪音）。

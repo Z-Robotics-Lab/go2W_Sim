@@ -1,51 +1,70 @@
-# DEBUG — Isaac 里 Go2W 移动异常缓慢、疑似轮子未被驱动（2026-07-06）
+# DEBUG — Isaac Sim "杀不死" / teardown 不可靠（2026-07-06）
 
-## OBSERVE
-- CEO 目测：移动异常缓慢；姿态像"走路"而非轮驱；此前同一会话内导航/探索验收均正常
-  （E2E d=0.32/d=0.36 到点、探索 2 分钟 +1850 m³）。
-- 时间线：正常 E2E → 两次 explore 模式冷拉起 → TARE 持续探索 1.5h+ → CEO 手点过
-  RViz TeleopPanel（发 /joy）→ 现在观察到异常。
-- 待取证：RTF（仿真时间/墙钟比）、/cmd_vel 实际指令值、/joy 残留、内存/GPU。
+活体僵尸样本取证 → 加固 teardown → 杀灭矩阵实测 → 成对重启验绿。
 
-## HYPOTHESIZE
+## OBSERVE（21:48 活体僵尸取证，编排者已确认步态实验被污染，可解剖）
+
+现场（用户 GUI-quit / zeno-stop 尝试后残留的"杀不死"形态）：
+- 桥 `/health`: `ok:true`，但 `pose age_s=957.962`、`gt age_s=958.479`（仿真循环冻结 ~16min）。
+- `/pose` 被陈旧守卫 503（坑 31 守卫尽职）。phase 文件谎报 `up (green)  21:24:03`。
+- 宿主 `pgrep -fc "kit/pytho[n]"` = 1（kit 进程活着）。go2w-isaac Up 27m、navstack Up 25m。
+
+Isaac 三进程树（容器命名空间 PID / STAT）——与阶段 1 健康态同构：
+```
+623  Ss  bash -c ... /isaac-sim/python.sh warehouse_nav.py ...   # 会话组长, cmdline 无 kit/python
+629  S   /bin/bash /isaac-sim/python.sh warehouse_nav.py ...     # python.sh 启动器, 无 kit/python
+634  Rl  /isaac-sim/kit/python/bin/python3 warehouse_nav.py ...  # 真 sim, 有 kit/python  ← 目标
+```
+关键：**634 STAT=Rl（Running），wchan=0，232 线程全扫 D=0 Z=0** —— 不是 D 态不可中断挂起，
+是**逻辑活锁/冻结**（主循环 `while simulation_app.is_running()` 还在转，但仿真时钟冻死）。
+残留僵尸子（已被 PID-1 收养或挂 634）：`[carb.tasking5/23] [omni.telemetry.]` ×4 —— Z 态，无害噪音。
+
+GPU：nvidia-smi `82059(=容器634) 5279MiB`，类型 C+G（CUDA+GL/X11，GUI 窗口归它）。
+
+`/isaac-sim/python.sh` L72 `$python_exe "${args[@]}"` —— spawn-and-wait 非 exec。
+warehouse_nav.py：收尾 `simulation_app.close()`(L508) 仅当 is_running()→False 走；**全文件无 signal handler**。
+
+teardown 模式 DRY-RUN（容器内 cmdline 扫 `*kit/python*`）：**只 634 命中 → WOULD-KILL pid=634**。
+宿主侧 `pgrep -f "kit/pytho[n]"` 也只 82059 命中。→ 模式对真 sim 有效。
+
+## HYPOTHESIZE（"用户为什么杀不死"）
+
 | # | 假设 | 类别 | 证据 |
-|---|---|---|---|
-| H1 | TeleopPanel 残留 joy 锁死速度：joystickHandler 设 joySpeedRaw≠0 后，speedHandler 永远被短路（源码 pathFollower.cpp:195 条件 joySpeedRaw==0），车速被钳在面板残留的小值 | teleop 残留 | CEO 点过面板；源码条件实锤存在；时间线吻合 |
-| H2 | teleop 把 autonomyMode 翻成 false（axes[2]>-0.1 即关，坑29），pathFollower 不再跟 /path，只剩微小站立调整 | teleop 残留 | 同上；但探索体积仍缓涨，部分矛盾 |
-| H3 | 长跑 RTF 崩塌：Isaac GUI+RTX 雷达+相机跑数小时后物理步率下降，一切动作等比变慢 | 性能退化 | sim 已连续跑数小时 |
-| H4 | 轮执行器失效（策略模式 stiffness0/damping0.5 组合在某种状态下扭矩不足） | 物理 | 弱：同配置此前多次验收正常 |
+|---|------|------|------|
+| H1 | 模式失配，-9 打不中 kit 进程 | 模式 | 证伪：DRY-RUN 命中 634；634=Rl 可被 -9 |
+| H2 | D 态不可中断，-9 无效 | GPU/X | 证伪：634=Rl wchan=0，232 线程 0 个 D |
+| H3 | 用户的 GUI-quit / zeno-stop 根本没发出容器级 -9 | 路径 | GUI 窗口冻结不服务输入→quit 设不了 is_running=False；zeno "stop"→stop_simulation 在 go2w 世界被 disable("sim") 禁用=无操作 |
+| H4 | 唯一有效路径(go2w_bringup teardown)不可信 | 复核缺失 | pkill\|\|true 恒成功；status.sh 退出码被 \|\|true 丢；zeno L149 不读 returncode 不设 is_error |
+| H5 | rosm 打不中容器内 kit | 工具错配 | rosm 目标宿主进程；且坑23 记录 rosm 跨命名空间"误伤"navstack，非"清 Isaac" |
 
-## EXPERIMENT
-（按证据强度+证伪成本排序，一次一个）
-- E1(H3): 20s 内两读 /gt stamp -> RTF = Δsim/Δwall
-- E2(H1/H2): ros2 topic echo /cmd_vel 一帧，看指令 vx 大小
-- E3(H1/H2): 发一条"矫正 joy"（axes 全零 + axes[2]=-1 保持自主）解除残留锁，观察速度是否恢复
-- E4(H3/H4): 若 cmd_vel 正常而位移率异常 -> 查 free/docker stats/GPU 与轮速响应
+## EXPERIMENT / 结果
 
-## EXPERIMENT 结果
-- E1: RTF=0.210（基线 0.3-0.5，长跑退化）→ H3 部分成立（放大观感，非根因）
-- E2: /cmd_vel = 0.0 → 上游没给指令，轮子不转是正确行为
-- 追加取证: TARE-ALIVE 但 /way_point 无流量、/exploration_finish=true（11306m³）
-  → **探索完成了**，H1/H2（teleop 残留）REJECTED——与 teleop 无关
-- 追加发现: 桥 volume_age=55.6s 仍 200 → 僵尸桥（kill 后 HTTP 半边带冻结状态存活）
+- H1 REJECTED：容器 dry-run WOULD-KILL 634；宿主 pgrep 命中 82059。
+- H2 REJECTED：634=Rl、wchan=0、232 线程 D=0 Z=0 —— 非 D 态，-9 能收割。
+- H3 CONFIRMED：GUI 冻结→quit 无效；`disable("sim")` 使 zeno "stop" 无 tool 可路由（go2w.py L615-617）。
+- H4 CONFIRMED：读码 bringup.sh L44/L48 + go2w.py L149。
+- H5 CONFIRMED：rosm 宿主向；坑 23。
 
-## CONCLUDE（终版，四病共存全部落地）
-根因链（按发现序）：
-① TeleopPanel joy 锁速+关自主、栈内无 /speed 自愈源 -> 修：桥 1Hz /speed +
-   航点矫正 joy + RViz 去毒面板（go2w.rviz）
-② （医源）矫正 joy 空 buttons -> terrainAnalysis buttons[5] 无界索引 SIGSEGV
-   -> 修：buttons 补满 12 位
-③ （医源）FAST_RENDER 关 RTX 特效疑似连累 RTX 雷达 -> 回退默认关
-④ 【真核心】fullScan 整帧点云点序完全非时序（解剖实测方位角前向率 48.5%=随机，
-   发射器状态交织）-> 按索引铺 offset_time = 逐点随机时戳 -> 静止无感、
-   运动中去畸变毁灭性出错（z 俯冲 -0.4/3s）-> 地形窗口被打空 -> localPlanner
-   空路径 -> pathFollower 全零 -> 走走停停爬行
-   -> 修：Isaac 侧 fullScan=False 增量模式（到达即时序）+ 转换器缓冲聚合
-      0.1s 帧、按增量片真实时戳赋 offset_time
-策略全程无罪：干净注入 vx 0.15/0.30/0.60 -> 跟踪 171%/128%/107%（hip scale
-修复后）；"训练指令死区 0.2"假设被证伪（小指令有 ~0.25 地板但可用）。
-修复后实测：运动中 z 稳定（-0.234→-0.236/30s，此前 3s 俯冲 0.4）；
-cmd_vel 出现 0.47-0.48 连续指令（此前全零）；直线巡航恢复 ~0.45 量级
-（窗口平均 0.209 含 180° 掉头段）。
-观察项：长会话 z 缓沉与掉头段 z 下探（-0.48）继续跟踪；RTF 0.12-0.2 的慢动作
-是渲染税（雷达时钟正确性约束 render_interval=1），不影响正确性。
+## CONCLUDE — 用户"杀不死"的真因（复合）
+
+**不是** -9 无效、**不是** D 态、**不是** 模式失配。真因链：
+1. **用户试的两条路本就发不出容器级 -9**：GUI-quit（窗口活锁不响应）+ zeno "stop"
+   （stop_simulation 被 go2w 世界禁用，无操作）。唯一能发 -9 的是 `go2w_bringup(teardown)`。
+2. **那条唯一路径不可信 + 静默假成功**（CEO 抱怨核心）：`pkill…||true` 恒 0 退出；
+   status.sh 退出码被 `||true` 吞；zeno 层不读 returncode/不设 is_error → "说关了"实为"发了信号没复核"。
+3. **rosm 是宿主工具**，打不进容器内 kit，且历史上只会误伤 navstack（坑 23）。
+
+死法附注：本例是 sim 逻辑冻结（Rl 活锁）非内核 D 态；但 -9 跳过 simulation_app.close()
+→ GL/CUDA 上下文不释放，是 Isaac 公认的 D-态-on-teardown 风险 → 故 teardown 必须有
+**容器级兜底升级**（docker restart go2w-isaac，终结整个 PID namespace，保留容器）。
+
+## FIX（加固，见下游提交）
+
+- bringup.sh teardown()：精确打击 + 分级升级(TERM→KILL→docker restart)+ 逐级复核；
+  判据 = 宿主 pgrep -f "kit/pytho[n]" 空 且 status.sh l0=false；失败退非零 + 打印残留表。先杀 navstack（RViz 不回弹）。
+- status.sh：新增 L4b pose 新鲜度探针（/health age_s < 阈值），green 不再被冻结僵尸骗（本次它误导了所有人）。
+- zeno Go2WBringupTool teardown：读 returncode，非零 → is_error=True 带残留表。
+- docs/pitfalls.md：rosm 无效原因+正确姿势 + RViz 自愈说明。
+
+## 杀灭矩阵实测结果
+（见文末追加 —— 加固脚本对本活体僵尸的实测）
