@@ -1196,3 +1196,85 @@ GO2W_STANDSTILL=0,其余同 L3+L3b。
 - **REFUTED（无持续塌陷）**：30s GT z 序列 min=0.277/max=0.401/mean=0.360/std=0.045，up_z 全<-0.9。
 - z 在 0.28↔0.40 间**周期性起伏（bobbing）**——0.254 单样本=起伏的谷底，非姿态崩塌；均值 0.36≈健康站高。
 - 截帧四轮足站立、身体水平。判为**站定自不稳抖振（已知 B 类）**在 z 上的表现，非"下蹲塌"。
+
+---
+
+# DEBUG — 修法 c 实施：掐灭地形代价阈值闪烁（2026-07-07，CEO 裁定 c 先行）
+
+> 本环=已批修法（c）的实现+真跑验收。前置=上节 H-D 根因裁定（terrain 代价阈值闪烁→
+> localPlanner 反复封/放前向 path→pathDir 翻→wz 饱和±1.396 蹭行）。目标：治点火源（输入侧
+> terrain 噪声跨阈），零 planner/follower C++ 语义改动，真机形态不伤。
+
+## OBSERVE（冷启动源码+活栈实测，两处**推翻编排者/上节转述的阈值前提**）
+
+### 前提改判①：真正的路径封锁门是 **localPlanner 的 obstacleHeightThre=0.05**，不是 terrain 的
+- 上节/STATUS 记"obstacleHeightThre=0.2 被 cost 0.20-0.24 压线闪"——**两处数值都是 C++ 默认，非活栈实值**。
+- 活栈真源（容器 `/ws` = host `refs/Navigation-Physical-Experiment` 读写挂载，逐字核对）：
+  · **terrain_analysis.launch**：obstacleHeightThre=**0.10**（非 0.2）——但此值只喂
+    terrainAnalysis.cpp:570 的 planarVoxelDyObs 动态障碍标记，**不是** path 封锁门。
+  · **local_planner.launch:31**：obstacleHeightThre=**0.05**、groundHeightThre=0.05、useCost=**false**。
+    localPlanner.cpp:214 `if(dis<adjacentRange && (intensity>obstacleHeightThre || (intensity>groundHeightThre&&useCost)))`
+    在 useCost=false 下 = **intensity>0.05 即封为障碍**。**这才是封/放前向 path 的真门**。
+  · omniDir.yaml 不覆写这些（只设 omniDirGoalThre/yaw 参数）。
+- 机制链修正：terrain_map cell 的 intensity=disZ（terrainAnalysis.cpp:596-606，= point.z − 该
+  0.2m planar voxel 的 quantileZ=0.25 地面高）→ localPlanner:214 用 **0.05** 门把 intensity>0.05
+  的 cell 全当障碍 → 地板噪声 disZ 跨 0.05 即封前向 path。
+
+### 前提改判②：实测 /terrain_map intensity 分布（活栈 40 帧，probe_terrain_map.py 只读采样）
+证据：var/evidence/terrain_fix/baseline_terrainmap.txt。栈 GREEN(pose age 0.02s)，idle。
+| cost 门 | 全局 cell(cost>门) min/max/std | 前扇区(+x0.2-2m,|y|<1m) cell min/max/std |
+|---|---|---|
+| >0.05(=活栈 localPlanner 门) | — | 前扇 cost>0.08 已 47↔1462 std=377 |
+| >0.10 | 80↔1135 std=277 swing=1055 | **0↔599 std=167 swing=599** |
+| >0.15 | 1↔80 std=22 | 0↔38 std=9.3 |
+| >0.20 | 0↔34 std=9 | **0↔22 std=4.6** |
+| >0.25 | 0↔26 std=6 | 0↔22 std=4.6（与 0.20 **相同**）|
+| >0.30 | 0↔22 std=5 | 0↔22 std=4.6（与 0.20 **相同**）|
+- 前扇区 max-intensity 0.099-0.731（mean 0.332）、**per-frame mean intensity 仅 0.042-0.060**
+  （地板本身平）——闪烁来自地板点分布的**噪声尾**逐帧戳过门。
+- **噪声尾集中在 cost 0.08-0.15**：门≥0.20 后前扇 cell 数**不再变**（0.20/0.25/0.30 三档 std 恒 4.6），
+  且 >0.20 的 ~22 cell 稳定=真实结构（非闪）。
+- **决定性推论**：门 0.05→0.20 把前扇闪烁 std 从 167（@0.10，@0.05 更烈）压到 4.6（~36×↓），
+  而 0.20→0.30 **零额外收益**、只白削真障碍裕度。**数据最优点=0.20，不是编排者拍的 0.30。**
+
+### 时域滤波参数语义（c2 侯选，逐个搞懂）
+terrain_analysis.launch 现值：decayTime=**1.0**s、noDecayDis=**1.75**m、voxelTimeUpdateThre=2.0s、
+quantileZ=0.25、useSorting=true、minRelZ=-1.5/maxRelZ=0.3、disRatioZ=0.2、vehicleHeight=1.5。
+- decayTime/noDecayDis（terrainAnalysis.cpp:393-398）：点 age>decayTime **且** dis>noDecayDis 才丢；
+  **noDecayDis=1.75m 内点永不衰减**——前扇区(0.2-2m)大半非衰减，噪声点累积重投票。提 decayTime
+  或降 noDecayDis 会让噪声点更快清，但也丢真观测——**非首选**（噪声在空间尾部，不是时间陈旧）。
+- quantileZ=0.25（:461-472）：地面高取每 voxel z 的 25% 分位——bobbing 让分位逐帧移，disZ 跟着抖。
+  这是抖源之一，但改它触地面估计语义、风险高——**留作 c3 若 c1 不够**。
+- minRelZ/maxRelZ（:581 裁 disZ 计算窗）：收紧对**跨阈闪**无直接作用（闪在 disZ 幅值不在 z 窗）——**放弃**。
+
+## HYPOTHESIZE
+| # | 假设 | 类别 | 证据 |
+|---|---|---|---|
+| C1 | localPlanner obstacleHeightThre 0.05→0.20 把前扇闪烁 std 167→4.6，空 path%↓、pathDir 稳、wz 饱和%↓，达叉子门 | 参数(config) | probe 实测门≥0.20 前扇 cell std 恒 4.6；20cm 障碍高对 Go2W 底盘安全（货架/箱远高） |
+| C2 | 若 C1 不够：叠 terrain 时间平滑（提 voxelTimeUpdateThre 慢刷/降 noDecayDis 快清噪声尾） | 时域 | noDecayDis=1.75 内点不衰减→噪声累积；但噪声是空间尾非时间陈旧，预期边际 |
+| C3 | 若仍不够：quantileZ 抬（0.25→0.4）稳地面估计抗 bobbing | 地面估计 | disZ 抖源之一；但触地面语义风险，末选 |
+
+## 修法阶梯（预注册，一次一组，过叉子门即止）
+- **c1（首选，数据最优）**：local_planner.launch:31 obstacleHeightThre **0.05→0.20**
+  （groundHeightThre 保 0.05、useCost 保 false 不动——不引入 cost 软门新语义）。
+  改 host `refs/.../local_planner/launch/local_planner.launch`（=容器 /ws 挂载，直读）→
+  navstack 内重跑 ROS launch（run_navstack.sh；**不动 go2w-isaac Isaac 侧**，省 5min+避冻结）→ 叉子实验。
+  · 若 c1 达门即止；若前扇闪灭但占空比仍<70% → 记录，判是否 terrain 已非绑定（转 pathdir 复核）。
+- **c2**：叠 voxelTimeUpdateThre 2.0→4.0 或 noDecayDis 1.75→1.0（terrain_analysis.launch）——仅 c1 不够时。
+- **c3**：quantileZ 0.25→0.4（terrain_analysis.launch）——仅 c1+c2 不够时。
+- **回滚**：git 未 track 这两个 launch，改前 `cp` 备份到 var/evidence/terrain_fix/；一键还原。
+
+## 预注册门（改前写死，改后同工具复测 before/after）
+1. **火源熄灭（terrain 层）**：probe_terrain_map.py 前扇区 cost>门 cell 数**时序 std 显著缩**
+   （基线 @0.10 std=167 → 目标 <20）；全局 cost>门 cell std 同缩。
+2. **path 层**：pathdir_sampler /path 空帧率 65%→**<10%**；world-pathdir std 43-85°→**<15°**。
+3. **叉子实验**（fork_experiment.sh 5m 航点，30s wall≈6s sim）：cmd.x 非零占比**≥70%**、
+   GT 实速**≥0.35 m/s(sim)**、到点能停、**全程直立≥99%**。
+4. **避障不失能反证**（防"把门调聋"）：朝一个明确真障碍（仓库货架方向）发"直线会穿货架"的航点，
+   RViz /path 或采样判**绕行非直穿**——门 0.20 仍须挡住真障碍。
+5. 达门后：E0'' 120s 复测（wz 爆发随 path 稳定应大幅缩，净位移门<50mm 此时才有机会真过）+
+   产品脸 60s 录制（import -window WM_CLASS=Isaac Sim）。
+6. 不达门：如实报数停手；下一步=修法 a（planner 滞后，CEO gate，不自行开干）。
+
+## EXPERIMENT（逐条落数，此处追加）
+（基线火源已采，见 OBSERVE 改判②；c1 改后复测在下追加）
