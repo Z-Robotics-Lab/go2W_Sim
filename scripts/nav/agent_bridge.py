@@ -286,12 +286,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             req = self._read_json_body()
-            # 矫正 joy（坑32）：恢复 autonomyMode（axes[2]=-1）、退出手动（axes[5]=+1）、
-            # 清空速度轴（joySpeedRaw=0）——2s 后 speedHandler 会用桥发的 /speed 把
-            # joySpeed 恢复满值。TeleopPanel 中毒在下一次发航点时自动痊愈。
+            # 矫正 joy（坑32/41）：恢复 autonomyMode（axes[2]=-1）、退出手动（axes[5]=+1），
+            # 且速度轴必须随载（axes[4]=NAV_SPEED/maxSpeed）——pathFollower.cpp:168 对
+            # axes[4]==0 直接 joySpeed=0，而 speedHandler 的恢复要求 2 个 **sim** 秒的
+            # joy 静默（RTF 0.2 下=10 墙钟秒）；navigate 技能每 5 墙钟秒重投航点 =>
+            # 速度轴为零的矫正 joy 会把 joySpeed 永久压零，机器人原地钉死
+            # （2026-07-07 实测："去5,5" 后 cmd_vel 全零 30+ 分钟，坑41）。
             from sensor_msgs.msg import Joy
             cj = Joy()
-            cj.axes = [0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            # maxSpeed 与 local_planner launch 默认(0.875)同源；改 launch 需同步此处。
+            _joy_speed = min(1.0, float(os.environ.get("NAV_SPEED", "0.6")) / 0.875)
+            cj.axes = [0.0, 0.0, -1.0, 0.0, _joy_speed, 1.0, 0.0, 0.0]
             # buttons 必须补满：terrainAnalysis(.cpp:188)/Ext 直接索引 buttons[5]
             # 无长度检查——空 buttons 会让地形节点 SIGSEGV（2026-07-06 实证：矫正 joy
             # 上线后每发一个航点地形层死一次，路径消失、cmd_vel 全零）。

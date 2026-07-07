@@ -143,3 +143,17 @@
       RTF 0.206 vs 基线 0.222（守卫每步一次 is_playing C++ 调用开销可忽略）。
     - **回归测试**：`xdotool key --window <isaac_wid> space` 注入 pause，nav_bridge.log
       应现 `[NAV][WARN]…auto-resume` 且 /health age 不阶跃（固化 phase2a_pause_inject.log）。
+
+41. **矫正 joy 速度轴为零 = 导航自杀（pathFollower.cpp:168 + sim 时间静默恢复的死锁）**。
+    - 症状：发航点后 cmd_vel 六字段全零、机器人钉在原地；导航循环越勤快（每 5s 重投
+      航点）越死——"去5,5" 后 30+ 分钟纹丝不动（2026-07-07 实证）。
+    - 机制三环：(a) 桥的矫正 joy 原为 axes[4]=0，pathFollower.cpp:168 对 `axes[4]==0`
+      直接 joySpeed=0；(b) speedHandler 用 /speed 恢复 joySpeed 要求 **2 个 sim 秒**的
+      joy 静默——RTF 0.2 下=10 墙钟秒；(c) navigate 技能每 5 墙钟秒重投航点=重发矫正
+      joy → 静默窗永远凑不满 → joySpeed 永久 0。RTF 越低死锁越稳定；历史上"起步慢/
+      0.25 地板/时灵时不灵"皆此病的弱形态。
+    - 修复：矫正 joy 的 axes[4] 携带 `NAV_SPEED/maxSpeed(0.875, 与 local_planner
+      launch 默认同源)`——每次投航点**恢复**速度而非清零（agent_bridge.py）。
+    - 附带教训：pathFollower 的 safetyStop（/slow_down, localPlanner 发布）是**无限期
+      闩锁**（≥1 停速、≥2 连转向也停，直到下一条消息）；slowTime/stopTime 系列全按
+      **sim 时间**计——低 RTF 下起步延迟按 1/RTF 放大，观感像"又坏了"，其实在等闸。
