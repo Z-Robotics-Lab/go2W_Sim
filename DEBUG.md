@@ -914,3 +914,28 @@ up_z -0.953 fresh。回滚一行注释换回 model_3497。
 
 ## EXPERIMENT(逐条落数,per-H → result)
 (基线先测,再逐级实验;结果在此追加)
+
+### 基线(2026-07-07,栈 green model_5495,wp=(2.0,0.0) ~5m,30s wall)
+| 指标 | 值 | 门 | 裁定 |
+|---|---|---|---|
+| cmd.x 非零占比(>0.02) | **5.9%** | ≥70% | FAIL |
+| cmd.x mean / max | 0.0133 / 0.389 | — | 短脉冲蹭行 |
+| GT 实速 mean / max | **0.159 / 0.382** m/s(sim) | ≥0.35 | FAIL |
+| GT 净位移(6s sim) | 0.442 m | — | RTF≈0.2(30s wall→6s sim) |
+| 直立占比 | 100% | ≥99% | PASS |
+| 末5GT帧位移 | 0.188 m | — | 未到点(距目标 5.4m) |
+证据:var/evidence/lowrtf_round/fork_baseline.csv(1501 行)。
+
+### H3 REJECTED(死区非病因,日志实锤)
+- 拓扑:sampler 采 `/cmd_vel`=pathFollower **输出**(warehouse_nav.py:355 订阅它);死区
+  (warehouse_nav.py:477+)作用在 /cmd_vel **下游**的策略喂入。故 /cmd_vel 5.9% 占空比是
+  pathFollower 侧决定,死区不可能是它的成因。
+- 直接证据(logs/nav_bridge.log):STANDSTILL enter=81 / exit=80(**平衡**,永远退得出,
+  没钉住)。exit 全部 `cmd_norm=1.3963`(=pathFollower 满幅 yaw 爆发 80°/s=1.396 rad/s),
+  enter 全部 `cmd_norm=0.0000`(pathFollower 刹到零)。
+- **这反而实锤了 H1/H2**:pathFollower 在 "0.0000(刹停)⟺1.396(纯 yaw 爆发,无 lin.x)"
+  之间 chatter——原地转不前进。死区只是跟随这个 on/off,不是病根。
+
+### H4 部分成立但非主因
+omniDirGoalThre=0.5>0 → line 429 `lin.x=cos(dirDiff)*v`。dirDiff=0.3 时 cos=0.955(仅
+-4.5%);dirDiff 大时才明显缩水。是 dirDiff 驻留的**放大器**,不是独立病因。
