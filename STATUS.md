@@ -28,6 +28,17 @@
   坑表 docs/pitfalls.md；里程碑 docs/sim-plan.md
 
 ## 下一步
+0. 【产品脸验收 2026-07-07 晨·Tune+RTF 落地形态 = 基线】活栈=纯上游 pathFollower(rate(100)
+   wall 钟,无 cruiseFloor/sim 钟)+model_5495+RTF 渲染旋钮(默认全 0)。**Tune 补丁未落地(已回滚)**。
+   实测(green+upright 全程,活栈 var/evidence/lowrtf_round/accept_am/):
+   ·5m 航点(0.2,4.5): cmd.x 占空 1.9%、GT 0.093 m/s、净位移 0.087m、末距 4.89m — FAIL(叉在纯偏航,
+     wz 饱和±1.396,机器人反向漂到 -y);录像 isaac_5m_wp.mp4(75s)+帧 isaac_5m_frame.png(眼见真 Isaac)。
+   ·1.5m 航点(0.7,-0.5): cmd.x 占空 13.3%、GT 0.186 m/s、净位移 0.40m、末距 1.65m — FAIL(复现晨基线 14%)。
+   ·两段直立 100%,RTF≈0.20(双测:stamp 0.20+轨迹 12s/60s)。·explore 端点 plumbing 活(owner 翻转+
+     409 互斥+stop),但 NAV_MODE=waypoint 下 TARE 未加载,真 explore 需配对重启进 explore 模式
+     (free=11G<20G 且会毁绿栈→本轮未跑;explore 早前 P5.2 已 verified)。
+   **结论: Tune 未修好蹭行,活栈=已知 FAIL 的 model_5495 基线;dirDiff/pathDir 振荡仍为真绑定,
+   真解触 planner CEO gate。** 验收结束已 /reset 回出生点,栈留绿。
 1. 【低 RTF 时域适配轮 2026-07-07 FAIL·门未达标·已回滚】叉子实验门(cmd.x 非零占比≥70%
    +GT实速≥0.35 m/s(sim))**未达标**。剥出三层病灶(DEBUG.md 完整假设环+定量表):
    ①控制时钟错配(wall Rate(100) vs RTF 0.17→积分器过激)已用 sim 钟修;②非对称刹车清零
