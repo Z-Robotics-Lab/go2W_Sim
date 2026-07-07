@@ -50,7 +50,9 @@ class UnitreeGo2WPayloadFlatEnvCfg(UnitreeGo2WFlatEnvCfg):
 
     def __post_init__(self):
         # post init of parent (flat -> rough): sets all the go2w semantics, incl. the
-        # plan-d widened envelope. We then TIGHTEN+BIAS the base terms toward the payload.
+        # RECIPE v2 items (rel_standing_envs 0.12, wheel_vel_penalty -0.005) — inherited
+        # as-is; plan-d envelope is withdrawn in the parent and we OVERRIDE mass/CoM below
+        # anyway. (Payload round 2026-07-07: fine-tunes FROM model_3497.)
         super().__post_init__()
 
         # Base mass-add centered on the real payload (every env carries ~5-8 kg on base,
