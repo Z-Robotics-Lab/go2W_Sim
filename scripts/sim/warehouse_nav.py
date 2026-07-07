@@ -237,6 +237,30 @@ def main():
     sim.reset()
     print(f"[NAV] joints({robot.num_joints}) ready")
 
+    # ===== 冻结根治（坑40）：timeline 停摆自愈守卫 + 焊死回调旁路 =====
+    # 根因：kit 内 timeline STOP/PAUSE → IsaacLab 把主线程焊死在同步 render 循环
+    #   - STOP:  simulation_context._app_control_on_stop_handle_fn  `while not is_playing(): render()`（无 stop-break）
+    #   - PAUSE: simulation_context.step()  `while not is_playing(): render()`（旋等）
+    #   - end-of-range: replicator orchestrator 把「到端点的 PAUSE」升格成 timeline.stop()
+    # 机制层三出口全堵死，且不依赖触发源判定。
+    import traceback  # noqa: E402
+    import time as _time  # noqa: E402
+
+    # 【1】anti-wedge：把 STOP 焊死回调变 no-op（IsaacLab 自身 reset():513 同款用法）。
+    #      必须在 sim.reset() 之后——reset 尾部会把 flag 回置 False。
+    assert hasattr(sim, "_disable_app_control_on_stop_handle"), \
+        "[NAV][FATAL] IsaacLab 上游改名 _disable_app_control_on_stop_handle —— anti-wedge 静默失效，停手"
+    sim._disable_app_control_on_stop_handle = True
+    print("[NAV] anti-wedge armed: _disable_app_control_on_stop_handle=True", flush=True)
+
+    # 【2】拆升格器 + 取证默认值：把 end_time 推到不可达，任何 PAUSE 不再被升格成 STOP。
+    import omni.timeline  # noqa: E402
+    _tl = omni.timeline.get_timeline_interface()
+    print(f"[NAV] timeline defaults: end_time={_tl.get_end_time()} "
+          f"looping={_tl.is_looping()} start={_tl.get_start_time()}", flush=True)
+    _tl.set_end_time(1.0e9)  # orchestrator.py 的 current>=end 永假
+    print(f"[NAV] timeline de-promoted: end_time={_tl.get_end_time()}", flush=True)
+
     # PiPER 抓取控制器（臂 8 关节目标的唯一属主；README 抓取管线见 sim-plan M5）
     from piper_grasp import PiperGraspController
     grasp = PiperGraspController(robot, args_cli.device or "cuda:0")
@@ -267,6 +291,20 @@ def main():
     node.create_subscription(String, "/piper/grasp_cmd", on_grasp_cmd, 5)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
+
+    # 【4】触发取证监听（坑40）：对 PLAY/PAUSE/STOP 打印带栈痕迹的事件——闭环触发源。
+    #   进程内调用→栈给出调用者；栈只到事件泵→证明外部输入/UI 注入。放在 sim_t 定义后。
+    _TL_NAMES = {0: "PLAY", 1: "PAUSE", 2: "STOP"}
+    def _on_timeline_event(e):
+        name = _TL_NAMES.get(e.type)
+        if name is None:
+            return  # 只关心 PLAY/PAUSE/STOP，忽略 tick/time-changed 洪流
+        print(f"[NAV][TIMELINE] {name} at sim_t={sim_t['now']:.2f} wall={_time.time():.3f}",
+              flush=True)
+        if e.type in (1, 2):  # PAUSE/STOP 附栈痕迹
+            traceback.print_stack()
+    _tl_event_sub = _tl.get_timeline_event_stream().create_subscription_to_pop(  # noqa: F841
+        _on_timeline_event)  # 强引用保活（勿 GC，否则订阅静默失效）
 
     def sim_stamp():
         t = sim_t["now"]
@@ -305,6 +343,10 @@ def main():
     imu_msg = Imu()
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
+    # 【3】主循环自愈守卫状态（坑40）：PAUSE→自动 play；STOP→响亮退出；限速防与人工暂停拉锯。
+    _resume_ts = []          # 最近一分钟的 auto-resume wall 时间戳
+    _RESUME_MAX_PER_MIN = 5  # >5 次/分钟 → 升级 FATAL 退出
+    stopped = False
     while simulation_app.is_running():
         rclpy.spin_once(node, timeout_sec=0.0)
         sim_t["now"] += physics_dt
@@ -348,6 +390,28 @@ def main():
         robot.set_joint_position_target(
             grasp.q_tgt.unsqueeze(0), joint_ids=arm_ids_t)
         robot.write_data_to_sim()
+        # 【3】自愈守卫：必须在 sim.step() 之前——step():565 的 PAUSE 旋等会先于守卫焊死主线程。
+        if not sim.is_playing():
+            if sim.is_stopped():
+                print(f"[NAV][FATAL] timeline STOPPED at sim_t={sim_t['now']:.2f} "
+                      f"— exit for supervised restart", flush=True)
+                stopped = True
+                break
+            else:  # PAUSED：自动恢复
+                now_wall = _time.time()
+                _resume_ts[:] = [t for t in _resume_ts if now_wall - t < 60.0]
+                _resume_ts.append(now_wall)
+                if len(_resume_ts) > _RESUME_MAX_PER_MIN:
+                    print(f"[NAV][FATAL] timeline PAUSED {len(_resume_ts)}x/min at "
+                          f"sim_t={sim_t['now']:.2f} — 与人工暂停拉锯，exit for supervised restart",
+                          flush=True)
+                    stopped = True
+                    break
+                print(f"[NAV][WARN] timeline PAUSED at sim_t={sim_t['now']:.2f} "
+                      f"— auto-resume ({len(_resume_ts)}/min)", flush=True)
+                _tl.play()
+                _tl.set_end_time(1.0e9)  # play() 可能复位 end_time；重申不可达端点
+                _tl.commit()
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
         robot.update(physics_dt)
         imu.update(physics_dt)
@@ -503,9 +567,13 @@ def main():
                                 target=(p[0], p[1], p[2] + 0.2))
             print(f"[POSE] step={step} root=({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})")
 
+    # 收尾照旧；stopped=True 时响亮死给 status.sh/监管看，绝不再留 527% CPU 焊死僵尸。
     node.destroy_node()
     rclpy.shutdown()
     simulation_app.close()
+    if stopped:
+        import sys
+        sys.exit(3)
 
 
 if __name__ == "__main__":

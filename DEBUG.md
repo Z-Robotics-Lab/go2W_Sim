@@ -87,3 +87,66 @@ xdotool windowactivate 确认 Isaac 在最上层】。
 4. 指令区步态质量（H5）与受控直线/转弯定量（H1 全谱/H3/H4）待复跑 E1/E3/E4。
 5. 新增独立病理：Isaac sim 循环自发冻结（僵尸 #2，19min 寿命）——移交
    teardown/稳定性线；步态实验依赖"栈存活 >10min"，此病不除 E1-E4 无法安全跑完。
+
+---
+
+# DEBUG — Isaac sim 自发冻结根治（坑40，2026-07-06 深夜，独立假设环）
+
+step≈18000/180s 全话题一瞬同冻、kit 527% CPU 活锁、SIGTERM 可收割——移交自
+上一轮 gait CONCLUDE 第 5 条的"稳定性线"。本环=修复实现环，根因已由源码直接证实。
+
+## OBSERVE（源码直接取证，非推测）
+容器内 IsaacLab/replicator/timeline 源码逐行确认（go2w-isaac:/workspace/go2w/IsaacLab
++ /isaac-sim/extscache）：
+- simulation_context.py:1027-1028 `_app_control_on_stop_handle_fn`：
+  `if not self._disable_app_control_on_stop_handle: while not is_playing(): self.render()`
+  —— STOP 焊死出口，**无 stop-break**，在 carb STOP 事件回调内同步阻塞主线程永不返回。
+  该回调 :250-253 order=15 订阅 TimelineEventType.STOP。
+- simulation_context.py:564-573 `step()`：`if not is_playing(): while not is_playing():
+  render(); if is_stopped(): break` —— PAUSE 焊死出口（旋等；此出口有 stop-break）。
+- orchestrator.py:325-330（replicator）：PAUSE 事件时 `if current_time>=end_time
+  and not is_looping(): timeline.stop()` —— **升格器**：把到端点的可恢复 PAUSE 升成
+  不可恢复 STOP。
+- flag 生命周期 :257(init False) / :513(reset 头 True) / :531(reset 尾 False)
+  —— 证实"anti-wedge 必须放 sim.reset() 之后"。
+- 现场符号全吻合：527% CPU=render 热旋、GPU 持有、SIGTERM 可收割（非 D 态）、
+  GUI quit 无效（循环只认 is_playing）。
+- 触发层（本轮 T1 已 REFUTED）：验尸的"sim≈187s 确定性 endTime 自停"被现场直接
+  观测推翻——完全同构栈 02:53:45Z stamp=270.12s / 02:57:40Z stamp=320.4s 仍健康
+  （>186.6s 未冻）；本会话实测 go2w-isaac 容器 Up 2h、当前栈存活>2h 无冻（idle）。
+  两具僵尸均落在步态调试员活跃操作窗（xdotool windowactivate 压焦点到 Isaac、
+  sunshine 输入在线、录屏中）→ 首要触发嫌疑=外部输入/UI 注入 pause/stop。
+  触发源身份未拿到直接栈帧（冻结#3 未发生），修复对 pause/stop/end-of-range 三类
+  全覆盖，不依赖触发源判定。
+
+## HYPOTHESIZE（本环=已确证机制的修复，非探因）
+| # | 假设 | 类别 | 证据 |
+|---|---|---|---|
+| F1 | STOP→回调 no-op 可解焊死 | 机制层 | :1027 flag 门；IsaacLab reset():513 自身同款用法 |
+| F2 | PAUSE→步前自动 play 可自愈 | 机制层 | :565 旋等在 step 内；守卫放 step 前即先手 |
+| F3 | end_time→1e9 拆升格器 | 机制层 | orchestrator :327 current>=end 永假 |
+| F4 | 三出口全堵+不依赖触发源即根治 | 综合 | 三机制独立、无 replicator 副作用（capture_on_play 从未激活） |
+
+## EXPERIMENT / FIX（warehouse_nav.py 应用层四件套，零 IsaacLab/kit/红线改动）
+【1】sim.reset() 后 `sim._disable_app_control_on_stop_handle=True`（+ hasattr assert 防改名）。
+【2】同处 `_tl=omni.timeline.get_timeline_interface()`；打印默认 end_time/looping（回溯
+    取证）；`_tl.set_end_time(1e9)` 拆升格器。
+【3】主循环 sim.step() 之前：is_playing 假 → is_stopped 则 [FATAL]+stopped=True+break+
+    sys.exit(3)；否则 [WARN] auto-resume（_tl.play()+set_end_time(1e9)+commit()），
+    限速 >5 次/分钟升 FATAL 退出防拉锯。
+【4】sim_t 定义后订阅 timeline 事件流：PLAY/PAUSE/STOP 打印 [NAV][TIMELINE]，
+    PAUSE/STOP 附 traceback.print_stack() 闭环触发源。
+API 已全部对容器 stub 核验：set_end_time/get_end_time/is_playing/is_stopped/play/
+commit/get_timeline_event_stream/create_subscription_to_pop/IEvent.type 均存在。
+红线全不碰：render_interval=1、fullScan、pc2_to_livox、vector_sim.lock、不 push。
+
+## 验证计划（下述 Phase1-4 落栈后执行，证据入 var/evidence/freeze_fix/）
+- Phase1 boot：nav_bridge.log 现 `[NAV] anti-wedge armed`+`timeline defaults`+`de-promoted`。
+- Phase2 故障注入：space 暂停×2→1步内 auto-resume、age<5、话题不断流；工具栏 STOP→
+  [FATAL]+≤5s 干净退出（无 527% 残留）+status.sh 红→成对重启。
+- Phase3 浸泡（硬性）：≥40min（>2× 最长 19min 冻结视界），freeze_watch 全程零捕获，
+  pose/gt/grasp age_s<5（10s 轮询），≥15min 主动驾驶负载（waypoint 方形+/explore）。
+- Phase4 回归：waypoint 到达；/lidar/scan≈10Hz；RTF 与基线差<10%；SLAM z 漂移包络
+  不劣于基线；pause 注入前后 /pose z 无阶跃。
+
+## CONCLUDE（待浸泡验证后回填）
