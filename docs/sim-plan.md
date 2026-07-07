@@ -114,3 +114,58 @@ vocab/persona；复用本仓库 DDS 域 42 桥。跨仓库工作按 vector_os_na
 - [ ] D435：RGB 与深度图各存一帧，深度值与场景几何吻合（抽查已知距离物体）
 - [ ] PiPER：发一组关节目标 → 关节实际到位（误差 < 1e-2 rad），末端带着 D435 动
 - [ ] （进阶）ROS2 bridge 出 /points /image /joint_states，rviz2 或 ros2 topic hz 验证
+
+## 策略重训 — 载荷包络修复（2026-07-07 CEO 委托决策）
+
+**病根（vx-audit 已定量，不复查）**：出厂策略 `model_1999.pt`（robot_lab v2.3.2 go2w flat，
+`logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/`）训练时是 **6.92kg 裸躯干**；部署背
+**~6.5kg 前偏载荷**（PiPER 4.66kg + NUC/支架，质心前移 6.5cm / 上抬 7.5cm），把 base 复合体
+推出训练随机化包络（质量 +3kg 上限、质心 ±5cm）**1.3-2.2 倍**，且 obs57 对载荷盲测 →
+零指令爬行、低指令前向过冲、指令边缘步态退化。
+
+**方案阶梯 d→a**（部署一致性红线：奖励/指令分布/执行器增益/decimation/obs57·act16 一律不动，
+新 ckpt 必须与部署 shim `scripts/sim/go2w_policy.py` 同构）：
+
+| 方案 | 改动 | 状态 |
+|---|---|---|
+| **d（默认）** | base 质量随机上限 +3kg→**+8kg**、CoM ±5cm→**±10cm**，重训 | 已落 diff（见下） |
+| **a（d 不达标时）** | 固定 ~6.5kg 前偏载荷（base 质量 add 中心化 5-8kg + CoM 前/上偏），重训 | 预案已备，opt-in 未启用 |
+
+方案 a **不换带臂 URDF 训练**：`go2w_sensored.urdf` 多 8 个臂关节，会破坏 obs57/act16 与冻结
+shim 的同构；改用"base 附加前偏载荷"等价事件项（`payload_env_cfg.py`）保住 16 自由度形态。
+
+**改动落点（robot_lab 是 git-ignore 的 vendored 依赖 → 改动以 tracked 补丁存本仓，clone_deps
+后自动重贴）**：
+- `scripts/sim/retrain/robot_lab_patch/go2w_payload_envelope.patch`（plan-d + plan-a 注册）
+- `scripts/sim/retrain/robot_lab_patch/payload_env_cfg.py`（plan-a 变体 cfg）
+- `scripts/sim/retrain/robot_lab_patch/apply.sh`（幂等贴补，已接入 `clone_deps.sh`）
+- 覆写放在 go2w 专属 `rough_env_cfg.py`（非共享父 `velocity_env_cfg.py`）→ 不影响其他机器人。
+
+**训练/验收工具（离线已备，待 sim 空窗真跑）**：
+- `scripts/sim/run_retrain.sh`：前置检查（ONE-sim、free≥30G、GPU 空闲、容器 Up）→
+  `systemd-run --scope -p MemoryMax=45G` 包裹容器内 headless 训练（2048 env / 2000 iter，
+  与出厂 ckpt 同锚点；torch/CUDA 不用 ulimit -v）。
+- `scripts/sim/policy_acceptance.py`：症状四段套件（载荷态、训练增益、复用 Go2WPolicy 加载/喂
+  指令路径），输出 JSON 行做新旧对比。
+- `scripts/sim/retrain_runbook.md`：完整规程 + 训练监控点 + plan-a 升级路径。
+
+**验收判据**（`policy_acceptance.py` 输出 `pass` 字段，全部 go2w_sensored.urdf 载荷态跑）：
+
+| # | 段 | 判据 |
+|---|---|---|
+| 1 | 零指令 30s | GT 漂移速度 **< 0.02 m/s** 且不摔（对照旧策略 0.075） |
+| 2 | 低指令阶梯 0.15/0.30/0.60 各 10s | `|实测-指令|/指令 ≤ 0.35` 且不摔（对照旧谱系 0.257/0.383/0.644） |
+| 3 | wz=±1.4 阶跃 ×5 | **摔倒率 == 0**（\|roll\|>60° 或 \|pitch\|>60° 判摔） |
+| 4 | 弧线 (0.3, 0.5) 10s | 不摔且 `|速度-0.3|/0.3 ≤ 0.35` |
+
+**保真度注意**：`go2w_sensored.urdf` 的 `nuc_weight` 只 0.5kg 占位（URDF 载荷 ~5.16kg <
+审计 ~6.5kg）；若验收仅勉强通过，把 nuc_weight 提到 ~1.8kg 复验真实部署质量（属硬件建模改动，
+需显式处理）。
+
+**部署切换规程**（验收过后 = go-live）：
+1. 验收全段 pass → 把 `GO2W_POLICY` 指向新 ckpt，或改 `scripts/nav/bringup.sh` +
+   `restart_all.sh` 默认（当前 `.../2026-07-04_15-52-42/model_1999.pt`）。
+2. 清空窗重启 nav 栈（`scripts/nav/restart_all.sh`）。
+3. **步态复验**在真实验收面（裸栈 + 真 cmd_vel，目视 sim）：重跑 DEBUG.md 步态检查
+   （零指令 idle 漂移、低指令跟踪、wz 阶跃稳定），确认部署行为与验收一致。
+4. 旧 ckpt 保留不删，直到新策略在真实面证毕。
