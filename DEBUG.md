@@ -1346,3 +1346,14 @@ fork_analyze：cmd.x 非零 **5.5%** FAIL / GT 实速 **0.16** m/s FAIL / 直立
 - file:line：refs/.../local_planner/launch/local_planner.launch:31（0.05→0.20，带注释+回滚指引）。
   回滚：cp var/evidence/terrain_fix/local_planner.launch.orig 覆写 + 配对重启。
 - 零 planner/follower C++ 语义改动；仅 launch 数值参数（fix-c config 范畴，非红线）。
+
+### E0'' 120s idle 复测（post-gate，e0pp_c1_idle.csv 60 样本）
+| 判据 | 结果 | 判定 |
+|---|---|---|
+| up_z 全程<-0.9 | min -1.000/max -0.933，**0/60 违规** | **PASS**（全程直立，未摔） |
+| GT 净位移<50mm | net **127mm** / maxdev 358mm | **FAIL** |
+- **诚实归因**：位移门 FAIL 但**较前轮大幅改善**（前轮 E0'' 538-821mm → 127mm）。残余位移=idle
+  wz 爆发驱动，系 **stale-path(W1-W3, pathInit 单调置位永不复位→到点后对陈旧 pathDir 做 yaw 伺服)**
+  的 idle 病理，**非 terrain 闪**——fix-c 治的是导航占空(terrain 闪饿死前向 path)，非 idle stale-path
+  爆发。任务原文亦写明位移门<50mm 前置=「爆发根除」=navstack C++ 清 stale path（fix-a/CEO gate 范畴）。
+  故 E0'' 位移门顺延，**不谎报 PASS**；摔倒根治(直立 PASS)+导航占空根治(叉子 PASS)已成立。

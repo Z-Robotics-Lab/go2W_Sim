@@ -157,3 +157,25 @@
     - 附带教训：pathFollower 的 safetyStop（/slow_down, localPlanner 发布）是**无限期
       闩锁**（≥1 停速、≥2 连转向也停，直到下一条消息）；slowTime/stopTime 系列全按
       **sim 时间**计——低 RTF 下起步延迟按 1/RTF 放大，观感像"又坏了"，其实在等闸。
+
+42. **地形代价阈值骑线闪烁 = 低 RTF 蹭行主因（修法 c 根治，2026-07-07 实证）**。
+    - 症状：导航中机器人只转不进（cmd.x 占空 ~5%）、/path 65% 帧为空、pathDir 世界系 std
+      43-85° 反复翻、pathFollower wz 饱和 ±1.396 蹭行。真机免疫（RTF=1+真 mid360 点云稳）。
+    - 机制：低 RTF 下 Isaac 点云噪声 + SLAM z bobbing(0.28↔0.40) → terrainAnalysis 给空旷地板
+      算出 disZ 代价噪声尾（实测 0.05-0.15，intensity=disZ, terrainAnalysis.cpp:606）→
+      **localPlanner** 用 `obstacleHeightThre`（local_planner.launch:31, 活值 **0.05**, useCost=false,
+      localPlanner.cpp:214）把 intensity>0.05 的地板 cell 逐帧当障碍 → 正前方 path 反复封/放 →
+      严格 argmax 无滞后选组（:914-924）翻选 pathDir → pathFollower yaw 伺服跳变 → wz 饱和蹭行。
+    - **两个 obstacleHeightThre 别混**：terrain_analysis.launch 的（活值 0.1）只喂
+      planarVoxelDyObs 动态障碍标记；**真正封/放 path 的是 localPlanner 的（活值 0.05）**。
+      C++ 默认都是 0.2——读默认当活值会误诊（本轮就纠正了上节把 0.2 当活值的错抄）。
+    - 修复（修法 c，config 级，零 planner/follower C++ 语义，真机不伤=真机保 0.05 即可）：
+      local_planner.launch:31 obstacleHeightThre **0.05→0.20**（越过噪声顶 0.15、保真障碍>0.20）。
+      实测叉子门 cmd.x 5.5%→91.4%、GT 实速 0.16→0.377 m/s、能到点、直立；前扇 cost>0.20 cell 恒 0、
+      /path 空帧 65%→0。避障反证：真障碍簇 cost>0.25>0.20 门下仍判障碍，未调聋。
+    - **铁律副产**：改 launch 后**只重启 navstack 会毁 SLAM**（低 RTF 下 arise_slam
+      imu_preintegration isam2 underconstrained、pose 偏 GT ~4m，不自愈）——**必须配对重启**
+      （bringup teardown+up）。obstacleHeightThre 走容器 /ws 挂载(=host refs)，配对重启后仍在。
+    - 残余：world-pathdir std 仍~60° 系 argmax 无滞后选组内因（H-B），属 fix-a（planner 滞后,
+      CEO gate）；idle 位移(E0'' 127mm)系 stale-path wz 爆发（W1-W3, navstack C++, CEO gate）。
+      c 只治导航占空(terrain 闪饿死前向 path)，这两项正交、非 c 能治。全在 DEBUG.md 终节 + var/evidence/terrain_fix/。
