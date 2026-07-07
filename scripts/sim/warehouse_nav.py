@@ -424,6 +424,13 @@ def main():
     STANDSTILL_EXIT_DEBOUNCE = 5    # 连续高命令拍数才退出（0.1s，真自转/起步立即放行）
     STANDSTILL_BLEND_TICKS = 10     # 进入：腿 当前位→default 线性混合拍数（0.2s）
     STANDSTILL_RAMP_TICKS = 10      # 退出：喂策略 cmd 0→实际 斜坡拍数（0.2s）
+    # 活跃导航守卫（低 RTF 时域适配轮 L2，DEBUG.md）：sim 钟(L3)把 pathFollower 的"脉冲间
+    # 零相"拉成整 sim-tick，25 拍 enter 门被导航中的正常零相凑满 → 死区误钉活跃导航中的机器人
+    # （隔离实验实锤：关死区 lin.x 占比 12.5%→64.4%）。守卫：最近一次高命令爆发(cmd_norm>
+    # EXIT_THRESH)后 RECENT_ACTIVE_S sim 秒内，不许进入站姿——机器人在导航则不冻结。真 idle
+    # 是持续零(无爆发)，守卫超时后照常进入，站定语义不变（E0' 回归验证）。
+    STANDSTILL_RECENT_ACTIVE_S = 2.0  # 最近爆发后多久内视为"活跃导航"，禁入站姿（sim 秒）
+    _standstill_last_active_t = -1e9  # 最近一次高命令爆发的 sim 时刻（初始远古=允许首次进入）
     standstill_low_count = 0        # 连续低命令计数（策略拍）
     standstill_high_count = 0       # 连续高命令计数（退出迟滞用）
     standstill_active = False       # 当前是否处于站姿保持
@@ -477,12 +484,15 @@ def main():
                 # ---- 死区 v2 迟滞状态机：命令 3D 范数 + 双阈值 + 柔性过渡 ----
                 cmd_norm = math.sqrt(vx * vx + vy * vy + wz * wz)
                 if STANDSTILL_ENABLE:
-                    # 进入迟滞：norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍。
+                    # 活跃导航守卫（L2）：最近爆发后 RECENT_ACTIVE_S sim 秒内视为活跃导航，禁入站姿。
+                    _recently_active = (sim_t["now"] - _standstill_last_active_t) \
+                        < STANDSTILL_RECENT_ACTIVE_S
+                    # 进入迟滞：norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍 且 非活跃导航。
                     if cmd_norm < STANDSTILL_ENTER_THRESH:
                         standstill_low_count += 1
                         standstill_high_count = 0
                         if standstill_low_count >= STANDSTILL_ENTER_DEBOUNCE \
-                                and not standstill_active:
+                                and not standstill_active and not _recently_active:
                             standstill_active = True
                             # 柔性进入：锁存当前腿位为混合起点，BLEND 拍内 →default。
                             _blend_from = robot.data.joint_pos[:1, _stand_leg_ids].clone()
@@ -495,6 +505,7 @@ def main():
                     elif cmd_norm > STANDSTILL_EXIT_THRESH:
                         standstill_high_count += 1
                         standstill_low_count = 0
+                        _standstill_last_active_t = sim_t["now"]  # 记爆发时刻,喂活跃导航守卫
                         if standstill_high_count >= STANDSTILL_EXIT_DEBOUNCE \
                                 and standstill_active:
                             standstill_active = False
