@@ -20,7 +20,7 @@ index d2b18e7..1a5b125 100644
 +    },
 +)
 diff --git a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
-index b0d5051..2829d31 100644
+index b0d5051..0fd1e53 100644
 --- a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
 +++ b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
 @@ -131,6 +131,28 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
@@ -52,7 +52,7 @@ index b0d5051..2829d31 100644
          # ------------------------------Rewards------------------------------
          # General
          self.rewards.is_terminated.weight = 0
-@@ -169,7 +191,22 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+@@ -169,7 +191,26 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
          self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
          self.rewards.joint_pos_penalty.weight = -1.0
          self.rewards.joint_pos_penalty.params["asset_cfg"].joint_names = self.leg_joint_names
@@ -72,11 +72,15 @@ index b0d5051..2829d31 100644
 +        # basin (post-mortem H1: standing pressure overshoot); v2 fine-tunes FROM the
 +        # shipped ckpt whose tracking is healthy, so start conservative.
 +        # v1 (from-scratch, FAILED §4b): self.rewards.wheel_vel_penalty.weight = -0.01
-+        self.rewards.wheel_vel_penalty.weight = -0.005
++        # v2 round-1 (model_2498: drift 0.0877->0.0277, ④ 3-5x better, ① still >0.02):
++        #   self.rewards.wheel_vel_penalty.weight = -0.005
++        # v2 round-2 (authorized single-knob pressure step): back to the full tita value —
++        # the residual creep IS zero-cmd wheel rolling; the tax is its direct price.
++        self.rewards.wheel_vel_penalty.weight = -0.01
          self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = [self.foot_link_name]
          self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
          self.rewards.joint_mirror.weight = -0.05
-@@ -232,3 +269,14 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+@@ -232,3 +273,14 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
          # self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
          # self.commands.base_velocity.ranges.lin_vel_y = (-1.0, 1.0)
          # self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
