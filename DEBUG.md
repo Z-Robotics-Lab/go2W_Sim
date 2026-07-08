@@ -1357,3 +1357,59 @@ fork_analyze：cmd.x 非零 **5.5%** FAIL / GT 实速 **0.16** m/s FAIL / 直立
   的 idle 病理，**非 terrain 闪**——fix-c 治的是导航占空(terrain 闪饿死前向 path)，非 idle stale-path
   爆发。任务原文亦写明位移门<50mm 前置=「爆发根除」=navstack C++ 清 stale path（fix-a/CEO gate 范畴）。
   故 E0'' 位移门顺延，**不谎报 PASS**；摔倒根治(直立 PASS)+导航占空根治(叉子 PASS)已成立。
+
+---
+
+# DEBUG — Office 场景迁移与验收（2026-07-07，预注册于改动前）
+
+## 任务
+CEO 直接指示"先做 office，去做迁移和测试"。把硬编码的仓库场景参数化为 `GO2W_SCENE`
+env（默认 warehouse 逐字节等价；office 选 Environments/Office/office.usd），校准 office
+出生点，跑全套验收门。config-not-code（宪法：embodiments/worlds 是 config 不是 code）。
+
+## 场景迁移机制（改动前调研，已证实）
+- 场景 USD：warehouse_nav.py:119 `WAREHOUSE_USD`；载入在 L230-235（`args_cli.env`）。
+- 机器人出生位姿：`GO2W_NAV_CFG.init_state.pos=(0,0,0.42)`（L163），reset 从
+  `robot.data.default_root_state` 锁存（L403 `_birth_root`）。改场景须一并改 spawn。
+- 箱子：`BOX_POS=(2.0,-1.0,0.031)`（L129），挂 /World/GraspBox + /objects/box。换场景一并进配置。
+- bringup 透传范式：`-e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}"`（L213）→ 脚本读 `_os.environ.get`。
+- **TARE 边界（关键调研结论）**：explore 用 `exploration_planner_config=indoor_small`（reference L21）。
+  warehouse-scale `boundary.ply`（多边形 X:-12..38 Y:-10..36.5≈50×46m 仓库脚印）由
+  `navigationBoundary` 节点发布，**但 `use_boundary` 默认 false 且 sim reference 不传它**
+  → 该仓库边界 **未激活**。TARE 靠传感器覆盖 + indoor_small 栅格自限，非硬编码 geofence。
+  ⟹ office explore **不被仓库边界阻塞**；无需改边界。若 office explore 实测越界/追不可达
+  frontier，如实记为限制 + 建议（改栈源码=CEO gate，不硬跑）。
+
+## 预注册验收门（office，改前写死，诚实优先——任何门 FAIL 照实写并停手上报）
+- **门 a（栈健康）**：bringup ALL-GREEN + upright:true + /health pose age<5。
+- **门 b（叉子实验，走廊 3-4m 航点）**：cmd.x 占空 ≥70%、GT 实速 ≥0.30 m/s（走廊允许略低于
+  空旷仓库 0.35，如实报）、全程直立（up_z<-0.9）、到点<0.5m。同时是 obstacleHeightThre=0.20
+  在 office 地板/地毯材质上的泛化考验：若空路径率回升→如实报数并停手上报（阈值再调=新决策）。
+- **门 c（窄道，门洞/走廊两侧真障碍）**：航点穿越 GT 轨迹连续推进、不卡死、不擦墙翻车
+  （up_z 全程 + 帧序目检）。
+- **门 d（explore 冒烟）**：POST /explore 跑 3 分钟，explored_volume 有增长、无冻结无翻倒，
+  然后 /explore_stop。边界不适配则如实记限制 + 修配置建议，不硬跑。
+- **门 e（RTF 对照）**：office vs 仓库 RTF 实测（office 更小可能白捡性能）。
+- **门 f（zeno E2E 产品脸=宪法验收面）**：`cd ~/Desktop/z-agent && .venv/bin/python -m
+  zeno.vcli.cli --world go2w -p "导航到 (X,Y)"`（X,Y=office 可达点）→ 期望 verdict
+  GROUNDED verified=True。
+- **门 g（回归）**：GO2W_SCENE 不设默认 warehouse 逐字节等价（代码 diff 审读级证明）；
+  最后栈恢复到 office 留给 CEO 测（他要测 office，不切回仓库）。
+
+## 铁律（本轮）
+ONE sim、配对重启（bringup teardown→up，坑42：单独重启 navstack 毁 SLAM）、
+NEVER-KILL-INFRA、红线不碰（render_interval/fullScan/pc2_to_livox/vector_sim.lock/
+go2w_policy/planner+follower C++）、ros2 探测套 timeout、单命令≤540s。
+Office USD 首拉从资产服务器下载，bringup 可能慢几分钟——等待窗放宽，以 /health age
++ phase 文件为准，别误判冻结。
+
+## 验收数字表（填充中）
+| 门 | 判据 | office 实测 | 仓库基线 | 判定 |
+|---|---|---|---|---|
+| a | ALL-GREEN+upright+age<5 | — | GREEN | — |
+| b | 占空≥70% / GT≥0.30 / 直立 / 到点<0.5m | — | 91.4% / 0.377 / 100% | — |
+| c | 窄道穿越连续/不卡/不翻 | — | n/a | — |
+| d | explore 3min 体积增长/不冻/不翻 | — | 全绿(warehouse) | — |
+| e | RTF | — | ≈0.21 | — |
+| f | zeno E2E verdict | — | GROUNDED verified=True | — |
+| g | 默认 warehouse 等价 | — | — | — |
