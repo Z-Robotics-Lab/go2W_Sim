@@ -116,11 +116,15 @@ print("system_isaac_sim_with_exploration.launch.py written")
 
 # 5e. indoor_small.yaml: kAutoStart true->false（agent 显式触发探索）。
 # kRushHome / kNoExplorationReturnHome 保持原值不动（探索结束回家行为不改）。
+# 幂等：二次运行时已是 false → 跳过；两种值都找不到才报错（config 格式变了）。
 cfg = nav / "src/exploration_planner/tare_planner/config/indoor_small.yaml"
 y = cfg.read_text()
-assert "kAutoStart : true" in y, "kAutoStart : true 未找到（config 格式变了？）"
-cfg.write_text(y.replace("kAutoStart : true", "kAutoStart : false", 1))
-print("indoor_small.yaml kAutoStart -> false")
+if "kAutoStart : true" in y:
+    cfg.write_text(y.replace("kAutoStart : true", "kAutoStart : false", 1))
+    print("indoor_small.yaml kAutoStart -> false")
+else:
+    assert "kAutoStart : false" in y, "kAutoStart 未找到（config 格式变了？）"
+    print("indoor_small.yaml kAutoStart 已是 false — 跳过")
 PYEOF
 
 # 6. 转换节点 + 编排脚本
