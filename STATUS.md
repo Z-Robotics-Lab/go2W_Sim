@@ -31,8 +31,12 @@
    e PASS（RTF 0.20≈仓库，无红利）· g PASS（默认等价，diff 纯加性）· **f FAIL**（zeno E2E 物理到点
    arrived+held d=0.11 但 verdict verified=False——到点后 idle 漂移不 hold，根因=已入册 fix-a/W1-W3
    CEO-gate 残余，非迁移缺陷）。零红线改动。回滚=git 或 GO2W_SCENE 不设。
-1. 【待令，不自行开火·门 f 依赖】fix-a（planner argmax 滞后）+ stale-path 清（W1-W3, navstack C++）
-   ——除净后 idle 不漂移，门 f E2E 才能 verified=True。工具 scripts/nav/pathdir_{sampler,analyze}.py。
+1. 【fix-a 代码已落地·验收 BLOCKED 2026-07-07】CEO 批准 A1 后迟滞码已入 localPlanner.cpp+launch
+   （参数门控 groupSwitchRatio，**现值 1.0=关=上游语义**；重建+加载实证；diff 在
+   var/evidence/pathdir_fix/）。A/B 验收被并行会话拉起面变更（默认翻 office+摩擦+SLAM 外参）
+   混淆作废——迟滞 ON 三窗 FAIL 但归因未定（SLAM yaw 抖两臂皆升=疑地基病）。**复验窗口待排**：
+   A线地图倾斜/B线摩擦收敛后，冻结拉起面重跑 2 臂（预注册门在 DEBUG.md fix-a 节）。之后才轮
+   stale-path 清（W1-W3）→ 门 f E2E verified=True。
 2. 恢复③抓取（feat/grasp-wip 60%；office 箱已随 spawn 迁 (-1.5,-5.0)）· TARE 软停缺口· P5.4 真机
 
 ## 裁决项（待 CEO）
