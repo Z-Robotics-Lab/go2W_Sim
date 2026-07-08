@@ -70,6 +70,20 @@
 - **纳入单一真源**：`livox_mid360_calibration.yaml` 当前不在 sync_navstack_files.sh 清单（且 refs/
   被 gitignore）——把 SLAM 生效 config 纳入 sync（见修复实施）。
 
+## 启动时序取证（Explore 子代理，代码只读，2026-07-07）+ 本会话红队
+- **spawn 折叠姿态**：warehouse_nav.py:212-218 init_state thigh=0.8/calf=-1.5=折叠（非站立），z=0.42。
+- **IMU 从 sim_t≈0.01s 即发布，无 settle 前置**（:346 reset → :541 loop → :770 publish）。
+- SLAM 冻结重力=[first_imu, +1.0s] 平均（imuPreintegration.cpp:886），use_imu_roll_pitch:false 永不纠。
+- **GO2W_STANDSTILL（:513-524）是 idle 死区控制，非启动 settle**——0.5s 后才介入，太晚，救不了 init 窗。
+- 子代理裁定：机体折叠→站立沉降（~0.5s）与 SLAM [0.01,1.0]s init 窗**重叠** → 折叠瞬态被烙进重力帧。
+- **本会话红队（诚实校准，防子代理过度断言 20°）**：
+  - sim 发的是**软件水平化 IMU**（固定 Ry+20°），非原始斜帧——折叠瞬态的体 pitch 会经该固定旋转
+    传到发布值，但**量级**由折叠幅度定，非必然 20°。
+  - LIVE 实测 init `Gravity x=0.735 → 仅 4.3° pitch`（warehouse），稳态 IMU 仅 1-2° → **确证有几度
+    固定倾斜偏差，但 warehouse 未见 20°**。office 折叠沉降是否更烈需受控实测。
+  - 结论校准：**init-settle 缺陷=真实、已确证产生数度持久倾斜；office 20° 全量待受控复测**。
+    修法（settle 后再启 SLAM init）无论量级都正确、无害。
+
 ## 验证脚本（本会话新增，read-only）
 - `scripts/nav/ground_normal_probe.py`：订阅 registered_scan/map，RANSAC 拟合地面法向，报与竖直夹角。
   门：<2° = 水平。live warehouse 驱动中拟合噪声大（易锁墙面），office 静止采样才干净。

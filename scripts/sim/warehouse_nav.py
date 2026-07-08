@@ -472,6 +472,8 @@ def main():
     right = [i for i, n in zip(wheel_ids, wheel_names) if n.startswith(("FR", "RR"))]
 
     yaw0 = {"v": 0.0}
+    arc_tq_peak = {"v": 0.0}   # selftest 弧线段轮 effort 峰值（转向回归，Finding B）
+    arc_up_min = {"v": 0.0}    # selftest 弧线段最不直立 up_z（越负越直立）
     st = {"vx": 0.4, "wz": 0.0}  # 自检指令（独立于 cmd：外部 pathFollower 会持续发
     # cmd_vel=0 把 cmd 字典覆盖——第7轮自检取证的教训）
     if args_cli.selftest:
@@ -812,12 +814,29 @@ def main():
                       f"(目标 {round((0.4)/WHEEL_RADIUS,2)})")
             if step == 300:  # 前进段结束，切纯旋转
                 dp = (robot.data.root_pos_w[0] - start_pos).tolist()
+                # 滑移率（Finding B）：v_body = dx / 2.0s（step100->300 @100Hz）；
+                # ω·r = mean(|轮角速度|)·WHEEL_RADIUS。slip = 1 - v_body/(ω·r)。
+                # 摩擦修复前后对照的核心量：CEO 大理石地面轮转身体不进=高滑移率。
+                _wv_mean = sum(abs(v) for v in wv) / max(len(wv), 1)
+                _v_body = dp[0] / 2.0
+                _v_wheel = _wv_mean * WHEEL_RADIUS
+                _slip = 1.0 - (_v_body / _v_wheel) if _v_wheel > 1e-6 else float("nan")
+                _tq_fwd = robot.data.applied_torque[0, wheel_ids].tolist()
+                _tq_max = max(abs(t) for t in _tq_fwd)
+                print(f"[SELFTEST] 滑移率 slip={_slip:.3f} "
+                      f"(v_body={_v_body:.3f}m/s ω·r={_v_wheel:.3f}m/s; <0.15 GOOD, ≈0 理想) "
+                      f"轮effort_max={_tq_max:.1f}(限23.5,{'饱和!' if _tq_max > 23.0 else 'ok'})")
                 print(f"[SELFTEST] 前进 dx={dp[0]:.3f}m dy={dp[1]:.3f} "
                       f"({'PASS' if dp[0] > 0.3 else 'FAIL'})")
                 st["vx"], st["wz"] = 0.3, 0.5  # 行进弧线段（planner 的真实指令形态）
                 q = robot.data.root_quat_w[0].tolist()
                 import math as _m
                 yaw0["v"] = _m.atan2(2*(q[0]*q[3]+q[1]*q[2]), 1-2*(q[2]**2+q[3]**2))
+            if 300 < step <= 600:  # 弧线段：跟踪轮 effort 峰值（转向回归，高抓地负载）
+                _tq = robot.data.applied_torque[0, wheel_ids].abs().max().item()
+                arc_tq_peak["v"] = max(arc_tq_peak["v"], _tq)
+                _uz = robot.data.projected_gravity_b[0, 2].item()
+                arc_up_min["v"] = min(arc_up_min["v"], _uz)  # 最不直立时刻（越负越直立）
             if step == 600:  # 3s 旋转结束：测 yaw 响应
                 import math as _m
                 q = robot.data.root_quat_w[0].tolist()
@@ -826,6 +845,12 @@ def main():
                 print(f"[SELFTEST] 3s 旋转 dyaw={_m.degrees(dyaw):.1f}deg "
                       f"(指令 0.5rad/s x3s = 86deg; >45 PASS): "
                       f"{'PASS' if _m.degrees(dyaw) > 45 else 'FAIL'}")
+                # 转向回归（Finding B 高摩擦副作用检查）：弧线段轮 effort 峰值不得顶 23.5、
+                # 全程直立（up_z<-0.8=四轮着地直立）。高抓地改变差速+腿协调负载。
+                print(f"[SELFTEST] 弧线转向回归 轮effort峰值={arc_tq_peak['v']:.1f}"
+                      f"(限23.5,{'饱和!' if arc_tq_peak['v'] > 23.0 else 'ok'}) "
+                      f"最不直立up_z={arc_up_min['v']:.2f}"
+                      f"({'直立ok' if arc_up_min['v'] < -0.8 else '倾覆risk!'})")
                 break
         if step == 200:
             print(f"[NAV] imu sample: acc={[round(a,2) for a in acc]} (水平化后期望 ~[0,0,9.8])")

@@ -10,6 +10,15 @@ NAV="$(cd "$NAV" && pwd)"
 for f in pc2_to_livox.py run_navstack.sh agent_bridge.py run_all_forever.sh; do
   cp "$HERE/$f" "$NAV/$f"
 done
+# SLAM IMU<->Laser 外参（单一真源，CEO A线指令 2026-07-07）：此前仅在 gitignore 的 refs/ 里，
+# 仓库更新带不上 -> 纳入 sync。目标=容器 /ws 里 arise_slam 生效 config 路径。
+SLAM_CALIB_DST="$NAV/src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml"
+if [ -d "$(dirname "$SLAM_CALIB_DST")" ]; then
+  cp "$HERE/livox_mid360_calibration.yaml" "$SLAM_CALIB_DST"
+  echo "[sync] SLAM 外参 -> $SLAM_CALIB_DST"
+else
+  echo "[sync] WARN: SLAM config 目录不存在（refs 未克隆？）跳过外参同步" >&2
+fi
 # P5.2 探索变体 launch：.reference 快照即真相（与 patch 第5步产物逐字节一致已验证）
 cp "$HERE/system_isaac_sim_with_exploration.launch.py.reference" \
    "$NAV/system_isaac_sim_with_exploration.launch.py"

@@ -1,0 +1,34 @@
+%YAML:1.0
+# SLAM (arise_slam_mid360) IMU<->Laser 外参 —— 单一真源（sync_navstack_files.sh 同步进容器 /ws）。
+# 此前仅存在于 gitignore 的 refs/ 克隆里，仓库更新不会带上它 -> 纳入本 sync 机制（CEO A线指令 2026-07-07）。
+#
+# 验证（2026-07-07，extrinsic-friction 会话）：此 20° 外参**正确且已生效**——
+#  - URDF go2w_sensored.urdf mid360_joint rpy=(0,0.349,0)=+20° pitch（真机 Mid-360 20° 挂载复刻）；
+#  - LIVE system.log 两 SLAM 节点均 'updated pitch:20.0'（parameter.cpp 合成 T_i_l.rot=Ry(+20°)）；
+#  - LIVE raw /lidar/points 地面法向 vs sensor-Z=19.70° 证实 sim 雷达真斜 20°；
+#  - 数值验证 sim斜20°+SLAM认斜20° 相互抵消得水平图。
+# **不要把这个 20° 改成 0，也不要再加第二个 20°**——那会把自洽的水平图变成真 20°/40° 倾斜。
+
+#Rotation from laser frame to imu frame, imu^R_laser
+extrinsicRotation_imu_laser: !!opencv-matrix
+  rows: 3
+  cols: 3
+  dt: d
+  data: [1., 0., 0.,
+        0., 1., 0.,
+        0., 0., 1.]
+
+#Translation from laser frame to imu frame, imu^T_laser
+extrinsicTranslation_imu_laser: !!opencv-matrix
+  rows: 3
+  cols: 1
+  dt: d
+  data: [-0.011, -0.02329, 0.04412]
+
+imu_laser_rotation_offset: !!opencv-matrix
+  rows: 3
+  cols: 1
+  dt: d
+  data: [0.0, 20.0, 0.0] # 雷达相对水平 IMU 前倾 20 度（单位: 度）
+
+yaw_ratio: 0.0
