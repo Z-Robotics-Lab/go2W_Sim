@@ -188,3 +188,54 @@
 ## 历史伪影关联（A线定因后填）
 - 候选：z-bobbing(0.277-0.401)、静止 pose 漂移、pathDir 振荡的一部分（斜地面→terrain 代价噪声）——
   若 office 复测确认 init-settle 是主因，这些可能同源；否则分别归因。**未定因前不写死关联**。
+
+=====================================================================
+# OFFICE 收官验证（2026-07-08，本会话持 sim 槽，配对重启×3，全部达门）
+=====================================================================
+
+## A线定罪 + 修复（CEO 处方"init pitch=20"的 mapping 模式落地）
+- **定罪实验 2a**（fresh init、静止、零漂移）：图地面倾斜 **11.26°**（pitch +11.22）→ **init 即斜=初始化问题**。
+- 静止拆解三残差（GT 躯干水平 0.09° 前提）：raw 雷达实际 18.81°（≠精确20）· 发布 IMU 稳态偏差
+  −2.95°（硬编码 cos/sin20 与 prim 实际姿态失配）· init 窗沉降残余 −1.35°（SLAM 1s 重力窗吃进沉降瞬态）。
+- **加载链定案（CEO 要求入档）**：arise 生效 config = 容器 /ws/src/slam/arise_slam_mid360/config/
+  livox_mid360.yaml（install share 是指向它的符号链接；live `ros2 param get` 验证）。
+  **yaml init_pitch 在本构建 mapping 模式是死配置**：laserMapping.cpp:493/:514 仅 local_mode 分支
+  setRPY（弧度制），:188-196 无先验地图时 local_mode 自动回落 false。真机处方走的是 localization
+  模式加载链。mapping 模式初始姿态唯一活通道 = IMU orientation（:487 q_ext.inverse()⊗q_pub 左乘）。
+- **修复（warehouse_nav.py IMU 发布三件套，sim 侧，零 SLAM/yaml 改动）**：
+  1) acc/gyr 运行时精确相对旋转到躯干系（等效"水平 IMU"，消 −2.95°）；
+  2) orientation q_pub=Ry(+20°)⊗q_imu_raw——代数上使 :487 还原 T_w_lidar.rot=雷达真实姿态（prim
+     误差一并吸收）＝CEO"声明 20° 挂载"意图的 mapping 等价实现；
+  3) IMU 发布延迟 1.5s（GO2W_IMU_SETTLE_S），SLAM 重力窗只见站定机体（真机开机已站稳，形态一致）。
+- 注：修后 feature_extraction 打印 pitch offset gravity=+19.2 ——那是该节点内部先乘外参
+  （featureExtraction.cpp:1165-66）后的雷达系值，非失败信号；裁决只看图。
+
+## 前后数字表（office，全部实测）
+| 指标 | 修复前 | 修复后 | 门 | 判定 |
+|------|--------|--------|-----|------|
+| MAP 地面法向 vs 竖直（fresh init 静止） | **11.26°** | **1.65°** | <2° | **PASS** |
+| 同上（150s 驱动后，漂移检） | （warehouse 30min 时 10.9°） | **1.72°**（Δ+0.07） | 不随驱动涨 | **PASS（无漂移）** |
+| 同上（第三次 fresh init，复现性） | — | **1.81°** | <2° | **PASS** |
+| z-bobbing GT z 带宽（30s 静止） | 0.277-0.401（历史） | 0.265-0.396 | — | **不变：物理性（策略站立抖动），非外参伪影，如实报** |
+| 滑移率 slip=1−v_body/(ω·r)（selftest 直线） | —（CEO 目击空转） | **−0.055 ≈ 0** | <0.15 | **PASS** |
+| v_body @ cmd 0.4（selftest 直线 2s） | office 导航面基线 0.40 | **0.415（跟踪 104%）** | — | **PASS** |
+| 轮 effort（直线/弧线峰值） | — | **0.5 / 5.2 Nm** | <23.5 不饱和 | **PASS** |
+| 转向回归（wz=0.5 弧线 3s） | — | **dyaw 51.9°>45、up_z=−1.00 全程直立、零摔** | 零摔不饱和 | **PASS** |
+| 轮材质实值（回读取证） | combine 默认 average | **staticF 1.8/dynF 1.6/combine=max**（双 run 实锤） | =max | **PASS** |
+
+## RViz 截图（var/evidence/extrinsic_friction/）
+- a2a_init_stationary_rviz.png / _side.png：修复前，侧视可见地面相对 map 轴明显倾斜（CEO 目检件）
+- e1_fixed_rviz.png · e1_postdrive_rviz.png · final_green_rviz_side.png：修复后（相机画面天花板水平）
+
+## 历史伪影关联（定因后裁定）
+- **地图倾斜（CEO 发现A）**：根因=初始化姿态误判（详上），已修，1.65-1.81° 复现达门。
+- **z-bobbing 0.277-0.401**：与外参无关——GT 物理 z 同带宽（0.265-0.396），是策略站立抖动。不改判。
+- **轮转身不进（CEO 发现B）**：摩擦 combine=average 被 office 大理石低 μ 拉低；combine=max+1.8/1.6
+  修复，CEO 目击+滑移率≈0 定量双证。
+- **地形代价噪声带/obstacleHeightThre=0.20**：图平后未复测代价带宽度（非本轮门）；建议 fix-a 复验窗
+  顺带采数，**阈值本身未动**（独立决策，遵 CEO 指令）。
+
+## 收尾状态
+- 栈留 office ALL-GREEN（L0-L5 + upright），robot 静止 spawn 区，CEO 可直接接手。
+- 死配置发现：livox_mid360.yaml 的 init_x/y/z/roll/pitch/yaw 在 mapping 模式全部无效（gate 见上）——
+  给未来调参人的防坑记录。

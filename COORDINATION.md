@@ -35,5 +35,7 @@
 - **不碰**:live sim 重启(现已归还,可配对重启到 office)、DEBUG.md、STATUS.md、
   local_planner、红线(render_interval/fullScan/pc2_to_livox/vector_sim.lock/go2w_policy/planner C++)。
 - **SLAM 外参裁定**:livox_mid360_calibration.yaml 已正确(20° 已应用,live 实证)——**不改其值**。
-- 依据:CEO 委托。不 push。**sim 槽位已归还本会话(23:55)。**
-- 释放条件:A/B 提交 + 上报后本节删除。
+- **已完成并释放 sim 槽位(2026-07-08 05:2x)**：A线达门(图倾斜 11.26°→1.65/1.72/1.81°<2°,
+  init 定罪+修复+无漂移)·B线达门(slip≈0,转向回归零摔)·栈留 office ALL-GREEN(robot 静止)。
+  详 DEBUG_extrinsic_friction.md。拉起面文件冻结解除。
+- 后续:fix-a 复验窗(CEO 排期)可按其预注册门重新 claim。
