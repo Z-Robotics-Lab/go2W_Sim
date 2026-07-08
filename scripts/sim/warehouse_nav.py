@@ -169,6 +169,12 @@ TRACK_WIDTH = 0.288  # 自检实测（左右前轮世界系间距）
 # 训练包络：robot_lab env.yaml 摩擦随机化区间中值附近偏上；向上偏离=安全方向，DEBUG 记录。
 WHEEL_FRICTION_STATIC = float(_os.environ.get("GO2W_WHEEL_MU_S", "1.8"))
 WHEEL_FRICTION_DYNAMIC = float(_os.environ.get("GO2W_WHEEL_MU_D", "1.6"))
+# IMU 发布延迟（秒，仿真时）：SLAM 的 1s 重力 init 窗必须只看到站定机体（真机开机已站稳）。
+# 沉降（z=0.42 落地+起立）实测 <1s；1.5s 留裕量。L2 门的 "imu sample" 打印在 step200=2.0s 不受影响。
+IMU_SETTLE_S = float(_os.environ.get("GO2W_IMU_SETTLE_S", "1.5"))
+# Ry(+20°) wxyz 四元数（w=cos10°, y=sin10°）：发布 orientation 用 q_pub=Q_RY20⊗q_imu_raw，
+# 使 arise mapping 模式 init（laserMapping.cpp:487 左乘 q_ext.inverse()）还原雷达真实姿态。
+Q_RY20 = torch.tensor([[0.9848077530122081, 0.0, 0.17364817766693033, 0.0]])
 # Mid-360 出厂标定: imu^T_laser=[-0.011,-0.02329,0.04412] -> IMU 在雷达系的位置取反
 IMU_OFFSET_IN_LIDAR = (0.011, 0.02329, -0.04412)
 
@@ -308,10 +314,12 @@ def main():
     box = RigidObject(BOX_CFG)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
-        # rot: -20° 俯仰抵消雷达前倾 -> IMU 帧水平（等效"IMU 平装在车体"）。
-        # CMU 栈的 imu_acc_x_limit 限幅假设 IMU 水平：斜装 IMU 的重力 x 分量会被
-        # 剪掉导致重力初始化错 13°、vehicle 系歪（RViz 路径扇面竖起，已实锤）。
-        # 雷达相对 IMU 的 20° 俯仰改由标定文件 imu_laser_rotation_offset 声明。
+        # 注意（2026-07-08 更正）：OffsetCfg 从未传 rot（历史注释描述过"-20°反转装平"设计但
+        # 代码缺行=编排者烟枪一）。现设计不靠 OffsetCfg.rot：发布环节做三件套精确变换
+        # （acc/gyr 运行时精确旋到躯干系 + orientation=Ry20⊗raw + 沉降延迟），见 IMU 发布块注释。
+        # 真机形态依据：Mid-360 内置 IMU 与雷达同斜 20°，真机靠 arise init_pitch 声明初始姿态；
+        # mapping 模式该 yaml 键被 local_mode:false 门死，等价通道=IMU orientation（实证）。
+        # 雷达相对"水平 IMU"的 20° 俯仰由标定文件 imu_laser_rotation_offset=[0,20,0] 声明。
         offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR),
         update_period=1 / 100,
         gravity_bias=(0.0, 0.0, 0.0),  # 纯运动学加速度；重力在发布时按姿态正确投影
@@ -342,6 +350,28 @@ def main():
     for foot in ("FL", "FR", "RL", "RR"):
         sim_utils.bind_physics_material(f"/World/Robot/{foot}_foot",
                                         "/World/Materials/wheel_rubber")
+    # B线取证（2026-07-08）：回读轮 collider 实际生效的 physics material 绑定 + combine mode。
+    # 编排者烟枪二怀疑 URDF 导入的 collider 自带材质覆盖绑定；bind_physics_material 是
+    # apply_nested + strongerThanDescendants，理应覆盖——此处打印实值定案（一次性，进 nav_bridge.log）。
+    try:
+        from pxr import PhysxSchema, Usd, UsdPhysics, UsdShade
+        _stage = get_current_stage()
+        _mat_prim = _stage.GetPrimAtPath("/World/Materials/wheel_rubber")
+        _papi = UsdPhysics.MaterialAPI(_mat_prim)
+        _pxapi = PhysxSchema.PhysxMaterialAPI(_mat_prim)
+        print(f"[MAT] wheel_rubber staticF={_papi.GetStaticFrictionAttr().Get()} "
+              f"dynamicF={_papi.GetDynamicFrictionAttr().Get()} "
+              f"combine={_pxapi.GetFrictionCombineModeAttr().Get()}", flush=True)
+        for foot in ("FL", "FR", "RL", "RR"):
+            _link = _stage.GetPrimAtPath(f"/World/Robot/{foot}_foot")
+            for _p in Usd.PrimRange(_link):
+                if _p.HasAPI(UsdPhysics.CollisionAPI):
+                    _bound = UsdShade.MaterialBindingAPI(_p).ComputeBoundMaterial("physics")[0]
+                    _bpath = _bound.GetPath() if _bound else "NONE"
+                    print(f"[MAT] {foot} collider={_p.GetPath()} bound_physics_material={_bpath}",
+                          flush=True)
+    except Exception as _e:  # 取证失败不阻断拉起，但必须留痕（编码规范：不静默吞）
+        print(f"[MAT] introspection FAILED: {_e}", flush=True)
     setup_lidar_ros2()
     sim.reset()
     print(f"[NAV] joints({robot.num_joints}) ready")
@@ -753,23 +783,37 @@ def main():
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec
         clock_pub.publish(clock_msg)
 
-        # IMU 发布：比力（斜帧）-> 恒定 Ry(+20°) 旋到水平帧。
-        # isaaclab OffsetCfg.rot 实测不作用于测量值（样本仍斜帧），故自己旋。
-        # 与 SLAM 标定 imu_laser_rotation_offset=[0,20,0]（雷达相对水平 IMU 俯仰 20°）自洽。
-        g_b = math_utils.quat_apply_inverse(
-            imu.data.quat_w, torch.tensor([[0.0, 0.0, 9.81]], device=imu.data.quat_w.device))
-        ax, ay, az = (imu.data.lin_acc_b + g_b)[0].tolist()
-        gx_, gy_, gz_ = imu.data.ang_vel_b[0].tolist()
-        CY, SY = 0.9396926, 0.3420201  # cos/sin(20°)
-        acc = (CY * ax + SY * az, ay, -SY * ax + CY * az)
-        gyr = (CY * gx_ + SY * gz_, gy_, -SY * gx_ + CY * gz_)
-        quat = imu.data.quat_w[0].tolist()  # wxyz（arise use_imu_roll_pitch=false，仅参考）
-        imu_msg.header.stamp.sec, imu_msg.header.stamp.nanosec = sec, nsec
-        imu_msg.header.frame_id = "imu"
-        imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z = acc
-        imu_msg.angular_velocity.x, imu_msg.angular_velocity.y, imu_msg.angular_velocity.z = gyr
-        imu_msg.orientation.w, imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z = quat
-        imu_pub.publish(imu_msg)
+        # IMU 发布（A线修复 2026-07-08，CEO 真机处方"init pitch=20"的 mapping 模式落地）：
+        # 真机形态：Mid-360 内置 IMU 与雷达刚性同斜 20°，真机部署在 arise localization 模式
+        # 用 yaml init_pitch 声明初始姿态（laserMapping.cpp:498 setRPY，弧度）。本栈跑 mapping
+        # 模式，init_pitch 被 local_mode:false 门死（:493/:514；:188-196 无先验地图自动回落）。
+        # mapping 模式初始姿态的唯一活通道 = IMU orientation：laserMapping.cpp:487
+        #   q_w_curr = q_extrinsic(Ry20).inverse() ⊗ q_imu_pub
+        # 实测定罪（2026-07-08，office 静止 fresh init）：旧实现地图斜 11.26°，机理=
+        # 初始姿态误判(~-1..-3°) vs 雷达真实 +18.8° + init 窗沉降残差，算术闭合。三件套修复：
+        # 1) acc/gyr：运行时精确相对旋转表达到躯干系（等效"IMU 平装车体"，与标定
+        #    imu_laser_rotation_offset=[0,20,0] 的水平 IMU 假设一致）。替换旧硬编码
+        #    cos/sin(20°)（prim 实际姿态≠精确 20°，曾留 -2.95° 稳态残差，实测）。
+        # 2) orientation：q_pub = Ry(+20°) ⊗ q_imu_raw —— 代数上使 :487 还原出
+        #    T_w_lidar.rot = q_imu_raw = 雷达真实世界姿态（prim 误差一并吸收，零残差）。
+        # 3) 发布延迟 IMU_SETTLE_S：SLAM 1s 重力 init 窗（imuPreintegration.cpp:886）只看
+        #    站定机体（旧 init 窗含沉降瞬态，重力多偏 -1.35°）；真机开机时本来就已站稳。
+        if sim_t["now"] >= IMU_SETTLE_S:
+            q_imu = imu.data.quat_w                  # (1,4) wxyz：imu prim 世界姿态
+            q_trunk = robot.data.root_quat_w[0:1]    # (1,4) wxyz：躯干世界姿态
+            f_imu = imu.data.lin_acc_b + math_utils.quat_apply_inverse(
+                q_imu, torch.tensor([[0.0, 0.0, 9.81]], device=q_imu.device))  # 比力（prim 系）
+            acc = math_utils.quat_apply_inverse(
+                q_trunk, math_utils.quat_apply(q_imu, f_imu))[0].tolist()      # 躯干系=水平IMU
+            gyr = math_utils.quat_apply_inverse(
+                q_trunk, math_utils.quat_apply(q_imu, imu.data.ang_vel_b))[0].tolist()
+            quat = math_utils.quat_mul(Q_RY20.to(q_imu.device), q_imu)[0].tolist()
+            imu_msg.header.stamp.sec, imu_msg.header.stamp.nanosec = sec, nsec
+            imu_msg.header.frame_id = "imu"
+            imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z = acc
+            imu_msg.angular_velocity.x, imu_msg.angular_velocity.y, imu_msg.angular_velocity.z = gyr
+            imu_msg.orientation.w, imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z = quat
+            imu_pub.publish(imu_msg)
 
         # 相机发布 RGB + 深度：CAM_STRIDE 步一帧（10Hz 默认，2Hz 若 CAM_SLOW）
         if step % CAM_STRIDE == 0 and "rgb" in d435.data.output:
