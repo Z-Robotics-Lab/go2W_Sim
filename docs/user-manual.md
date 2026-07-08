@@ -130,6 +130,15 @@ bash scripts/nav/restart_all.sh
 【P5.1 落地后】换 `bash scripts/nav/bringup.sh`（幂等：环境已好会直接返回），
 健康检查 `bash scripts/nav/status.sh`。
 
+### 2.1.1 换场景（GO2W_SCENE）
+
+```bash
+GO2W_SCENE=office bash scripts/nav/bringup.sh teardown   # 换场景必须配对重启（坑42/43）
+GO2W_SCENE=office bash scripts/nav/bringup.sh            # 默认 warehouse；office 首拉慢几分钟
+```
+
+不设 `GO2W_SCENE`（或 `=warehouse`）= 仓库（历史行为不变）；`=office` = 办公室。
+
 ## 2.2 和机器狗对话
 
 ```bash
