@@ -79,10 +79,11 @@ sudo usermod -aG docker $USER && newgrp docker
 # 拉本仓库 + 导航栈源码 + 打补丁 + 构建镜像（与开发机完全同一套脚本）
 git clone https://github.com/Z-Robotics-Lab/go2W_Sim.git ~/go2W_Sim
 cd ~/go2W_Sim
-git clone <Navigation-Physical-Experiment fork> refs/Navigation-Physical-Experiment
+git clone -b jazzy https://github.com/Yuxin916/Navigation-Physical-Experiment.git \
+    refs/Navigation-Physical-Experiment
 bash scripts/nav/patch_navstack.sh refs/Navigation-Physical-Experiment
-# 按 refs/.../docker/README.md 构建 jazzy 镜像并 colcon build，完成后固化：
-docker commit <容器> navstack:ready
+# 建 jazzy-dev 镜像 → 容器内 colcon build → docker commit navstack:ready
+# 完整 5 步命令见 user-manual.md §1.5「导航栈容器」（NUC 与开发机同一套，勿重复维护两份）。
 ```
 
 真机与仿真的差异只在容器**启动参数/launch 选择**（真机：`system_real_robot*` 系 +
