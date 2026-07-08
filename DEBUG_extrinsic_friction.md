@@ -239,3 +239,38 @@
 - 栈留 office ALL-GREEN（L0-L5 + upright），robot 静止 spawn 区，CEO 可直接接手。
 - 死配置发现：livox_mid360.yaml 的 init_x/y/z/roll/pitch/yaw 在 mapping 模式全部无效（gate 见上）——
   给未来调参人的防坑记录。
+
+=====================================================================
+# A线第二层（2026-07-08 深夜轮）：vehicle 系去斜 20°（sensor_mount_pitch_deg）
+=====================================================================
+
+## 定罪
+- CEO 新截图：图已平，但 localPlanner 路径扇 + TF 轴仍斜 ~20°。
+- 实测 /state_estimation 姿态（静止）：**pitch +19.86°±8.2** = SLAM 发布姿态=雷达姿态直通下游；
+  CMU 栈（localPlanner/terrainAnalysis/pathFollower，8 订阅者）假设平装雷达 → vehicle 系继承挂载俯仰。
+- vehicleTransPublisher（local_planner.launch:108）纯平移 0 旋转——TF 链同病。
+- 本栈无 loam_interface；单点发布源=imu_preintegration_node（odometry2+TF 同吃 q_w_lidar）。
+
+## 修复（param-first，真机同值复用）
+- imuPreintegration.cpp：新参数 `sensor_mount_pitch_deg`（默认 0=上游等价）；发布口
+  `q_w_lidar = q_w_lidar ⊗ Ry(-pitch)` 单点右乘（同时修 odom+TF；位置不动=sensorOffset 平移语义不变）。
+- livox_mid360.yaml imu_preintegration_node 节设 20.0；主配置纳入 sync 单一真源（scripts/nav/ 快照）。
+- C++ 在 refs 克隆内提交 36b8e1b；容器 colcon 重建 62s。
+
+## 验收（全过）
+| 项 | 修复前 | 修复后 | 门 |
+|---|---|---|---|
+| /state_estimation pitch（静止均值） | +19.86° | **−2.62°（终检 −1.03°）** | ≈0 ✓ |
+| MAP 地面倾斜（不回退） | 1.46-1.81° | **1.46/1.74°** | <2° ✓ |
+| TF Z 轴目检（RViz 侧视） | 斜 ~20°（CEO 截图） | **竖直**（l2fix_pathfan_side.png） | ✓ |
+| 路径扇 | 斜面扇（CEO 截图） | **贴地**（l2fix_pathfan_driving.png） | ✓ |
+| 正前方地板 cost（1-4m 扇区） | 历史噪声带 0.05-0.15 | **p50=0.022**（尾部=真家具/红箱） | 显著降 ✓ |
+| 4m 航点 | 今日早前 2.5m TIMEOUT | **ARRIVED d=0.70/50s**（回程 TIMEOUT=fix-a 已知残余） | 不劣化 ✓ |
+
+## 假设登记兑现 + 建议（不动值）
+- **"地板代价噪声带 0.05-0.15 源于斜 vehicle 系"假设：实测支持**（修后 p50=0.022）。
+  → obstacleHeightThre=0.20 可能可回调（0.05-0.1 档）；**值未动**，建议 fix-a 复验窗采数后由 CEO 决。
+- /reset 瞬移后 stale-path 游走复现（GT 走 3m 而指令源已停）= gate f 已知残余，fix-a 辖区。
+  注：游走期间 GT-vs-SLAM 位置差含**帧偏移**（SLAM map 原点=spawn≠Isaac 世界原点），
+  跨帧直接求差会误判失位——写进坑表候选。
+- 交接栈（终检）：GT=spawn wander 0.05m、odom pitch −1.03°、图 1.74°、ALL-GREEN。
