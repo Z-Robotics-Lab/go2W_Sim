@@ -84,6 +84,21 @@
   - 结论校准：**init-settle 缺陷=真实、已确证产生数度持久倾斜；office 20° 全量待受控复测**。
     修法（settle 后再启 SLAM init）无论量级都正确、无害。
 
+## DECISIVE 量级对照（2026-07-07，warehouse live 30min 驱动run）——诚实校准，防过早定因
+- **实测 MAP 地面倾斜**（20s 累积 registered_scan、bottom20% RANSAC、inlier 0.57）：
+  **normal_vs_vertical=10.90°，pitch=+10.84°，roll=-1.20°** —— 地图确实明显倾斜（非水平）。
+- 同run SLAM init 重力偏移：**pitch=-4.30°，roll=+1.16°**。
+- **关键矛盾**：init 偏移(-4.3° pitch) ≠ 地图倾斜(+10.84° pitch)——量级不符(4.3 vs 10.8)、
+  **pitch 符号相反**。→ **init-重力误差 NOT 地图 10.9° 倾斜的唯一/主因**（Explore 子代理的
+  "highly likely" 过度自信；本会话红队校准正确）。
+- 残余 ~10.9° pitch 倾斜的候选源（待 office 静止受控区分）：
+  (i) 长 run SLAM 漂移累积（fix-a 已驱动 ~30min，arise 无回环，纯里程计漂移会累倾）；
+  (ii) 驱动中 scan-matching 在斜地面/斜外参下的累积；
+  (iii) 我数值模型未捕捉的残余外参符号/量级（低概率——静态验证 MATCH，但需 office 静止右侧复核）。
+- **诚实裁定**：地图倾斜=**已实测证实的真问题**（10.9° live）；但**根因未唯一定死**——
+  init-重力是贡献者非全量，外参静态自洽。**office 静止 + init 后立即测图**（drift 未累积前）才能
+  分离 init-误差 vs 累积漂移 vs 外参。**未定因前不动 SLAM 外参**（已验证正确，动它风险最高）。
+
 ## 验证脚本（本会话新增，read-only）
 - `scripts/nav/ground_normal_probe.py`：订阅 registered_scan/map，RANSAC 拟合地面法向，报与竖直夹角。
   门：<2° = 水平。live warehouse 驱动中拟合噪声大（易锁墙面），office 静止采样才干净。
@@ -132,3 +147,44 @@
   WHEEL_FRICTION_STATIC/DYNAMIC（:166 附近，env 可调 GO2W_WHEEL_MU_S/D）。
 - 轮 link 名核对：URDF 轮=`{FL,FR,RL,RR}_foot`（continuous joint，left/right_wheel.dae，
   collision cylinder r=0.086 l=0.052）→ 现有 bind_physics_material 绑定路径**命中正确**（B2 REFUTED）。
+
+=====================================================================
+# 当前状态 / NEXT（可恢复锚点，2026-07-07）
+=====================================================================
+
+## 已完成（committed WIP：6073597, d3e706a；未 push）
+- A线取证：外参 20° 三方(URDF/sim/SLAM)自洽已 live 实证；SLAM 已应用 20°（非缺失，CEO 假设 REFUTED）。
+- A线单一真源：calibration.yaml 纳入 sync_navstack_files.sh。外参值未改（正确）。
+- A线真问题定位：地图确 live 倾斜 10.9°（warehouse），根因未唯一定死（init-重力=贡献者非全量+
+  可能的长run漂移）；待 office 静止受控分离。ground_normal_probe.py 就绪。
+- B线修复：friction_combine_mode="max" + 高摩擦 1.8/1.6（CEO 硬指令）。selftest 加滑移率+转向回归仪表。
+- CEO 裁定：默认场景翻 office（warehouse_nav.py:153 + bringup.sh:217）+ docs 更新。
+
+## NEXT（待 fix-a 归还 sim 槽位 → 配对重启 office，坑42）
+1. **office 静止受控 A线复测**：GO2W_SCENE=office 配对重启，机体落地站定后：
+   - init 后立即（drift 未累积前）测 MAP 地面法向 vs 竖直（ground_normal_probe.py 或累积 registered_scan）；
+   - 对照同run SLAM init `pitch/roll offset gravity`；
+   - 若 MAP 倾斜 ≈ init 偏移 → 根因=init-settle（修：settle 后再启 SLAM）；
+   - 若 MAP 倾斜 >> init 偏移且随时间涨 → 根因=drift 累积（另案）；
+   - 若与外参相关 → 复核（低概率）。
+   - **office 目标数**：地面法向<2°、走廊墙面竖直（import -window 截帧目检）、z-bobbing 前后对照、
+     静止 pose 漂移前后对照。
+2. **B线 office 验证**：`GO2W_SCENE=office ... --selftest` 读 slip / v_body / effort 峰值 / up_z；
+   对照修复前（combine_mode 默认）vs 后（=max）。目标：slip→≈0、GT实速 0.40→0.55+、
+   转向回归零摔+effort不顶23.5+直立全程。
+3. 证据入 var/evidence/extrinsic_friction/。
+
+## 前后数字表（待 office 验证填）
+| 指标 | 修复前(baseline) | 修复后 | 目标门 |
+|------|-----------------|--------|--------|
+| MAP 地面法向 vs 竖直 | warehouse live 10.9° | 待测 | <2° |
+| SLAM z bobbing (min-max) | 0.277-0.401 (std0.045) | 待测 | 显著收敛 |
+| 静止 pose 漂移 | 待测基线 | 待测 | 缩小 |
+| 滑移率 slip | 待测(combine=avg) | 待测(combine=max) | ≈0 |
+| GT 实速 (office 直线) | 0.40 | 待测 | 0.55+ |
+| 轮 effort 峰值(弧线) | 待测 | 待测 | <23.5 不饱和 |
+| 直立 up_z (全程) | 待测 | 待测 | <-0.8 |
+
+## 历史伪影关联（A线定因后填）
+- 候选：z-bobbing(0.277-0.401)、静止 pose 漂移、pathDir 振荡的一部分（斜地面→terrain 代价噪声）——
+  若 office 复测确认 init-settle 是主因，这些可能同源；否则分别归因。**未定因前不写死关联**。
