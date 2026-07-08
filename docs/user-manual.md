@@ -160,7 +160,9 @@ bash scripts/vector_os/run_agent.sh --no-permission -p "导航到 (2.0, 0.0)"
 
 ## 2.3 看画面
 
-- Isaac 窗口：狗和仓库（restart_all 自动打开）
+- Isaac 窗口：狗和场景（restart_all 自动打开）。默认视角已对准出生的狗（每场景配了
+  相机）。**视角乱了/看到屋顶或外景**：Stage 树里选中机器人 prim（/World/Robot）再按
+  `F` 键 framing（把镜头框到机器人）；office 天花板高，滚轮缩放步长随视距变粗属正常。
 - RViz【P5.1】：SLAM 点云/地形/路径/探索区域
 - `logs/shots/`：每 30 秒自动截图
 
