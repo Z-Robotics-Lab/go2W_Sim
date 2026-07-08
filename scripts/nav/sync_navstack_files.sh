@@ -15,7 +15,9 @@ done
 SLAM_CALIB_DST="$NAV/src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml"
 if [ -d "$(dirname "$SLAM_CALIB_DST")" ]; then
   cp "$HERE/livox_mid360_calibration.yaml" "$SLAM_CALIB_DST"
-  echo "[sync] SLAM 外参 -> $SLAM_CALIB_DST"
+  # 主配置（含 sensor_mount_pitch_deg=20：odom/TF 车体系化，A线第二层修复 2026-07-08）
+  cp "$HERE/livox_mid360.yaml" "$NAV/src/slam/arise_slam_mid360/config/livox_mid360.yaml"
+  echo "[sync] SLAM 外参+主配置 -> $NAV/src/slam/arise_slam_mid360/config/"
 else
   echo "[sync] WARN: SLAM config 目录不存在（refs 未克隆？）跳过外参同步" >&2
 fi
