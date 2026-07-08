@@ -118,8 +118,10 @@ cd ~/go2w
 git clone -b jazzy https://github.com/Yuxin916/Navigation-Physical-Experiment.git \
     refs/Navigation-Physical-Experiment
 
-# 2) 打 Isaac 适配补丁（use_sim_time 全链切真、生成 system_isaac_sim*.launch.py、
-#    同步 pc2_to_livox / agent_bridge / run_navstack 等真相源文件）
+# 2) 打 Isaac 适配补丁（use_sim_time 全链切真、生成 system_isaac_sim*.launch.py、同步
+#    pc2_to_livox / agent_bridge / run_navstack 等真相源文件），并**自动**应用 refs-only 定制
+#    补丁集（sensor_mount_pitch_deg C++、obstacleHeightThre=0.20、SLAM 节点 respawn；末步会
+#    打印需容器内重建的包 = arise_slam_mid360。归属见 scripts/nav/navstack_patch/manifest.md）
 bash scripts/nav/patch_navstack.sh refs/Navigation-Physical-Experiment
 
 # 3) 构建 jazzy-dev 基础镜像（一次性；详见 refs/.../docker/README.md）

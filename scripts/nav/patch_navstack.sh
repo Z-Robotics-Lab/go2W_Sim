@@ -125,4 +125,12 @@ PYEOF
 
 # 6. 转换节点 + 编排脚本
 bash "$HERE/sync_navstack_files.sh" "$NAV"
+
+# 7. refs-only 定制补丁集（既非本脚本 sed/python 产物、也非 sync 真源的直改）：
+#    imuPreintegration.cpp sensor_mount_pitch_deg（36b8e1b C++ 半）、local_planner.launch
+#    obstacleHeightThre=0.20（fix-c）、arize_slam.launch.py respawn。幂等；补丁基线=本脚本
+#    产物之上，故必须在此步（sed/inject 之后）应用。归属见 navstack_patch/manifest.md。
+#    末尾会打印需容器内重建的包清单（arise_slam_mid360）。
+bash "$HERE/navstack_patch/apply.sh" "$NAV"
+
 echo "OK: nav stack patched for Isaac sim integration"

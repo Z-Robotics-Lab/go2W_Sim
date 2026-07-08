@@ -1,0 +1,33 @@
+diff --git a/src/slam/arise_slam_mid360/src/ImuPreintegration/imuPreintegration.cpp b/src/slam/arise_slam_mid360/src/ImuPreintegration/imuPreintegration.cpp
+index ef2d5a1..0ddf90f 100644
+--- a/src/slam/arise_slam_mid360/src/ImuPreintegration/imuPreintegration.cpp
++++ b/src/slam/arise_slam_mid360/src/ImuPreintegration/imuPreintegration.cpp
+@@ -133,6 +133,13 @@ namespace arise_slam {
+         this->declare_parameter<double>("imu_acc_x_limit", 1.0);
+         this->declare_parameter<double>("imu_acc_y_limit", 1.0);
+         this->declare_parameter<double>("imu_acc_z_limit", 1.0);
++        // Sensor mount pitch (deg) relative to the vehicle body. When nonzero, the published
++        // /state_estimation odometry + map->sensor TF are de-rotated by Ry(-pitch) so their
++        // attitude equals the VEHICLE body attitude (CMU downstream convention assumes a
++        // level-mounted sensor; a tilted Mid-360 otherwise leaks its mount pitch into the
++        // vehicle frame: path fan / terrain costs computed in a pitched plane).
++        // Default 0.0 = upstream-identical behavior. (go2w sim: 20.0; real robot same value.)
++        this->declare_parameter<double>("sensor_mount_pitch_deg", 0.0);
+ 
+         config_.imuAccNoise = this->get_parameter("acc_n").as_double();
+         config_.imuAccBiasN = this->get_parameter("acc_w").as_double();
+@@ -1038,6 +1045,14 @@ namespace arise_slam {
+         Eigen::Quaterniond q_w_lidar(lidarPoseOpt.rotation().toQuaternion().w(), lidarPoseOpt.rotation().toQuaternion().x(),
+                                      lidarPoseOpt.rotation().toQuaternion().y(), lidarPoseOpt.rotation().toQuaternion().z());
+         q_w_lidar.normalized();
++        // De-rotate the sensor mount pitch so published attitude = vehicle body attitude
++        // (see sensor_mount_pitch_deg declaration). Applied to BOTH odometry2 and the TF
++        // below (both read q_w_lidar). Position stays at the sensor origin: downstream
++        // sensorOffsetX/Y translation handles the lever arm, unchanged.
++        static const Eigen::Quaterniond q_mount_corr(
++            Eigen::AngleAxisd(-this->get_parameter("sensor_mount_pitch_deg").as_double()
++                              * M_PI / 180.0, Eigen::Vector3d::UnitY()));
++        q_w_lidar = (q_w_lidar * q_mount_corr).normalized();
+ 
+         odometry2.pose.pose.position.x = lidarPoseOpt.translation().x();
+         odometry2.pose.pose.position.y = lidarPoseOpt.translation().y();

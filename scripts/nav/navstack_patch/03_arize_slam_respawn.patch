@@ -1,0 +1,31 @@
+diff --git a/src/slam/arise_slam_mid360/launch/arize_slam.launch.py b/src/slam/arise_slam_mid360/launch/arize_slam.launch.py
+index e587294..96dd2f6 100644
+--- a/src/slam/arise_slam_mid360/launch/arize_slam.launch.py
++++ b/src/slam/arise_slam_mid360/launch/arize_slam.launch.py
+@@ -53,6 +53,8 @@ def generate_launch_description():
+     feature_extraction_node = Node(
+         package="arise_slam_mid360",
+         executable="feature_extraction_node",
++        respawn=True,
++        respawn_delay=3.0,
+         output={
+             "stdout": "screen",
+             "stderr": "screen",
+@@ -65,6 +67,8 @@ def generate_launch_description():
+     laser_mapping_node = Node(
+         package="arise_slam_mid360",
+         executable="laser_mapping_node",
++        respawn=True,
++        respawn_delay=3.0,
+         output={
+             "stdout": "screen",
+             #"stderr": "screen",
+@@ -81,6 +85,8 @@ def generate_launch_description():
+     imu_preintegration_node = Node(
+         package="arise_slam_mid360",
+         executable="imu_preintegration_node",
++        respawn=True,
++        respawn_delay=3.0,
+         output={
+             "stdout": "screen",
+             "stderr": "screen",

@@ -1,0 +1,18 @@
+diff --git a/src/base_autonomy/local_planner/launch/local_planner.launch b/src/base_autonomy/local_planner/launch/local_planner.launch
+index 530ff51..5cedf1a 100644
+--- a/src/base_autonomy/local_planner/launch/local_planner.launch
++++ b/src/base_autonomy/local_planner/launch/local_planner.launch
+@@ -28,7 +28,12 @@
+     <param name="checkObstacle" value="true" />
+     <param name="checkRotObstacle" value="false" />
+     <param name="adjacentRange" value="3.5" />
+-    <param name="obstacleHeightThre" value="0.05" />
++    <!-- fix-c (2026-07-07): 0.05->0.20 掐灭地形代价阈值闪烁(sim 低RTF点云噪声令地板 disZ 跨阈闪，
++         封/放前向 path→pathDir 翻→wz 饱和蹭行)。实测 /terrain_map 前扇噪声尾集中 0.08-0.15,
++         门>=0.20 后前扇障碍 cell std 216->0.6(~360x↓)、真障碍(>0.20)保留。20cm 对 Go2W 底盘安全,
++         货架/箱远高于此。真机 RTF=1 点云稳不跨阈,此提门不伤真机(真机可保 0.05)。回滚见
++         var/evidence/terrain_fix/local_planner.launch.orig。零 planner/follower C++ 语义改动。 -->
++    <param name="obstacleHeightThre" value="0.20" />
+     <param name="groundHeightThre" value="0.05" />
+     <param name="costHeightThre1" value="0.1" />
+     <param name="costHeightThre2" value="0.05" />
