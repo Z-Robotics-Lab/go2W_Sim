@@ -1,7 +1,7 @@
 # STATUS — go2W_Sim 会话恢复锚点（覆盖式，≤40 行）
 
-更新：2026-07-07（修法 c 达门）。仓库：github.com/Z-Robotics-Lab/go2W_Sim（main）。
-姐妹仓：github.com/Z-Robotics-Lab/z-agent（agent 运行时，fork 自 vector-os-nano）。
+更新：2026-07-07（Office 场景迁移完成，活栈=office）。仓库：github.com/Z-Robotics-Lab/go2W_Sim。
+分支 feat/go2w-office-scene（未 push）。姐妹仓：z-agent（agent 运行时，fork 自 vector-os-nano）。
 
 ## CEO 任务序列（已完成里程碑）
 - ① 导航栈 Isaac 跑通 ✅（方形回归 4/4 + RL 策略）· ② agent 控狗 ✅（z-agent `--world go2w`
@@ -20,18 +20,20 @@
 - 接口 docs/agent-bridge-api.md · 坑表 docs/pitfalls.md · 里程碑 docs/sim-plan.md · DEBUG.md
 
 ## 下一步
-0. 【修法 c 达门 2026-07-07·CEO 裁定 c 先行已执行·蹭行验收面根治】
-   改动=local_planner.launch:31 obstacleHeightThre **0.05→0.20**（掐灭地形代价阈值闪烁点火源）。
-   真门=localPlanner obstacleHeightThre 活值 0.05（非上节记的 0.2=C++默认误抄）；噪声带实测 0.05-0.15。
-   **叉子门 PASS**：cmd.x 占空 5.5%→91.4%、GT 实速 0.16→0.377 m/s、能到点、直立 100%；
-   火源熄灭（前扇 cost>0.20 cell 恒 0、/path 空帧 65%→0）；避障反证 PASS（真障碍 cost>0.25>0.20 仍判障碍）。
-   残余（诚实，非 c 能治，均 CEO gate）：world-pathdir std ~60°=argmax 无滞后（fix-a）；
-   E0'' idle 位移 127mm（<50mm FAIL，较前轮 538-821mm 改善）=stale-path wz 爆发（W1-W3, navstack C++）。
-   改动只在 refs 克隆（容器/ws 挂载，gitignore）；回滚=cp var/evidence/terrain_fix/local_planner.launch.orig
-   +配对重启。零 planner/follower C++ 语义。全在 DEBUG.md 终节 + var/evidence/terrain_fix/。活栈 ALL-GREEN 留绿。
-1. 【待令，不自行开火】fix-a（planner 选组滞后灭 argmax 抖，CEO gate）→ 之后 stale-path 清（W1-W3, CEO gate）
-   → 二者除净后 E0'' 位移门<50mm 方可复验。工具 scripts/nav/pathdir_{sampler,analyze}.py。
-2. 恢复③抓取（feat/grasp-wip 60%，迁 z-agent 收尾）· TARE 软停缺口（改栈源码=CEO gate）· P5.4 真机
+0. 【Office 场景迁移完成 2026-07-07·分支 feat/go2w-office-scene·活栈=OFFICE 留给 CEO 测】
+   **GO2W_SCENE 参数化**（config 非 code）：warehouse_nav.py 加 SCENES 字典（usd/spawn/box/cam），
+   GO2W_SCENE 未设=warehouse 逐字节等价；=office 选 Office/office.usd。bringup 透传 GO2W_SCENE。
+   开机：`GO2W_SCENE=office bash scripts/nav/bringup.sh [teardown|up]`（配对重启，坑42/43）。
+   **office spawn 校准 (-2.5,-5.0) 开阔厅**（原点是 reception 拥挤角落；/terrain_map 实证）。
+   **门验收（DEBUG 终节数字表）**：a PASS（green+直立+相机拉起即见狗）· b PASS（占空 84.9%/
+   GT 0.40/直立 100%/空路径率 8%=fix-c obstacleHeightThre 泛化 office 地毯成功）· c PASS（穿
+   0.12m 净空窄缝、连续、不翻）· d PASS（explore 体积 +278m³/不冻/不翻，限制=robot 徘徊 spawn±0.4m）·
+   e PASS（RTF 0.20≈仓库，无红利）· g PASS（默认等价，diff 纯加性）· **f FAIL**（zeno E2E 物理到点
+   arrived+held d=0.11 但 verdict verified=False——到点后 idle 漂移不 hold，根因=已入册 fix-a/W1-W3
+   CEO-gate 残余，非迁移缺陷）。零红线改动。回滚=git 或 GO2W_SCENE 不设。
+1. 【待令，不自行开火·门 f 依赖】fix-a（planner argmax 滞后）+ stale-path 清（W1-W3, navstack C++）
+   ——除净后 idle 不漂移，门 f E2E 才能 verified=True。工具 scripts/nav/pathdir_{sampler,analyze}.py。
+2. 恢复③抓取（feat/grasp-wip 60%；office 箱已随 spawn 迁 (-1.5,-5.0)）· TARE 软停缺口· P5.4 真机
 
 ## 裁决项（待 CEO）
 - 修法 a（planner C++ 滞后）· stale-path 清（navstack C++）· 真机 verify 语义 / NUC vs Orin / unitree_sdk2_python
