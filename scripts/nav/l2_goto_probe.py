@@ -30,15 +30,22 @@ def main():
     ap.add_argument("--timeout", type=float, default=240.0)
     ap.add_argument("--hold", type=float, default=10.0)
     ap.add_argument("--duty-thresh", type=float, default=0.05)
+    ap.add_argument("--relative", action="store_true",
+                    help="treat (slam_x, slam_y) as forward/left offset in robot's "
+                         "current SLAM heading; goal fixed at send time.")
     args = ap.parse_args()
 
     rclpy.init()
     node = rclpy.create_node("l2_goto_probe")
 
-    st = {"slam": None, "gt": None, "up_z": float("nan")}
+    st = {"slam": None, "gt": None, "up_z": float("nan"), "slam_yaw": float("nan")}
 
     def on_slam(m: Odometry):
         p = m.pose.pose.position
+        q = m.pose.pose.orientation
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        st["slam_yaw"] = math.atan2(siny, cosy)
         st["slam"] = (p.x, p.y, p.z)
 
     def on_gt(m: PoseStamped):
@@ -64,7 +71,6 @@ def main():
     wp_pub = node.create_publisher(PointStamped, "/way_point", 5)
     wp = PointStamped()
     wp.header.frame_id = "map"
-    wp.point.x, wp.point.y = args.slam_x, args.slam_y
 
     def on_cmd(m: TwistStamped):
         cmd["v"] = (m.twist.linear.x, m.twist.linear.y, m.twist.angular.z)
@@ -80,9 +86,20 @@ def main():
 
     slam0 = st["slam"]
     gt0 = st["gt"]
-    print(f"[L2] start SLAM=({slam0[0]:.2f},{slam0[1]:.2f}) "
-          f"GT=({gt0[0]:.2f},{gt0[1]:.2f}) goal_slam=({args.slam_x:.2f},{args.slam_y:.2f})",
-          flush=True)
+
+    # resolve goal: absolute SLAM (default) or forward/left offset in current SLAM heading
+    if args.relative:
+        yaw = st["slam_yaw"]
+        fwd, left = args.slam_x, args.slam_y
+        goal_x = slam0[0] + fwd * math.cos(yaw) - left * math.sin(yaw)
+        goal_y = slam0[1] + fwd * math.sin(yaw) + left * math.cos(yaw)
+    else:
+        goal_x, goal_y = args.slam_x, args.slam_y
+    wp.point.x, wp.point.y = float(goal_x), float(goal_y)
+
+    print(f"[L2] start SLAM=({slam0[0]:.2f},{slam0[1]:.2f},yaw{st['slam_yaw']:.2f}) "
+          f"GT=({gt0[0]:.2f},{gt0[1]:.2f}) goal_slam=({goal_x:.2f},{goal_y:.2f}) "
+          f"rel={args.relative}", flush=True)
 
     t0 = time.time()
     last_pub = 0.0
@@ -106,7 +123,7 @@ def main():
         s = st["slam"]; g = st["gt"]
         d = float("nan")
         if s is not None:
-            d = math.hypot(s[0] - args.slam_x, s[1] - args.slam_y)
+            d = math.hypot(s[0] - goal_x, s[1] - goal_y)
         # arrival detection (SLAM frame), require 1.5s sustained
         if not reached and s is not None and d < args.tol:
             if reach_since is None:
