@@ -120,7 +120,8 @@ WAREHOUSE_USD = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/full_warehou
 OFFICE_USD = f"{ISAAC_NUCLEUS_DIR}/Environments/Office/office.usd"
 
 # 场景注册表（宪法：worlds 是 config 不是 code——一套通用驱动，换场景只换字典）。
-# GO2W_SCENE 选场景：默认 "warehouse" 与历史逐字节等价（usd/spawn/box/cam 四值原样）。
+# GO2W_SCENE 选场景：**默认=office**（CEO 裁定 2026-07-07：以后一律用 office，两个 CEO 实测发现
+# 的现场）。GO2W_SCENE=warehouse 可回旧仓库景（保留为可选值，其 usd/spawn/box/cam 四值原样）。
 # 每场景字典：usd（None=纯地面 flat 调试面）、spawn（机器人出生 xyz）、box（红箱 xyz）、
 # cam（启动视角 {eye,target}）。cam 让"拉起即看到站立的狗"：eye=出生点斜后上方、
 # 高度在天花板以下（office 有顶棚，太高会被挡→看到屋顶/城市外景，坑43+CEO 实测），
@@ -150,7 +151,7 @@ SCENES = {
                 "target": (-2.5, -5.0, 0.42), "follow_dz": 2.0},
     },
 }
-SCENE_NAME = _os.environ.get("GO2W_SCENE", "warehouse")
+SCENE_NAME = _os.environ.get("GO2W_SCENE", "office")  # CEO 裁定：默认 office；warehouse 可选回退
 if SCENE_NAME not in SCENES:
     raise SystemExit(
         f"[NAV] 未知 GO2W_SCENE={SCENE_NAME!r}；可选：{sorted(SCENES)}")
@@ -163,6 +164,11 @@ SCENE_CAM = SCENE["cam"]
 # Go2W 轮几何（left_wheel.dae 实测半径 0.086m；轮距待实测校准）
 WHEEL_RADIUS = 0.086
 TRACK_WIDTH = 0.288  # 自检实测（左右前轮世界系间距）
+# 轮-地摩擦（CEO 硬件事实指令 2026-07-07：现实轮摩擦大、不漂移 -> 高值）。
+# 覆盖上游 warehouse 隐式默认；配 friction_combine_mode="max" 使场景无关（见 main 绑定处）。
+# 训练包络：robot_lab env.yaml 摩擦随机化区间中值附近偏上；向上偏离=安全方向，DEBUG 记录。
+WHEEL_FRICTION_STATIC = float(_os.environ.get("GO2W_WHEEL_MU_S", "1.8"))
+WHEEL_FRICTION_DYNAMIC = float(_os.environ.get("GO2W_WHEEL_MU_D", "1.6"))
 # Mid-360 出厂标定: imu^T_laser=[-0.011,-0.02329,0.04412] -> IMU 在雷达系的位置取反
 IMU_OFFSET_IN_LIDAR = (0.011, 0.02329, -0.04412)
 
@@ -322,9 +328,16 @@ def main():
         offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0),
                                    convention="world"),
     ))
-    # 轮胎高摩擦材质：滑移转向的横摆力矩来自轮-地纵向抓地力
+    # 轮胎高摩擦材质：滑移转向的横摆力矩来自轮-地纵向抓地力。
+    # CEO 硬件事实指令(2026-07-07)：现实轮子摩擦很大，不会漂移 -> 轮摩擦设高值。
+    # friction_combine_mode="max" 是关键一步：PhysX 合成两材质时取"优先级更高"的模式
+    # (max>multiply>min>average)，轮设 max 后无论场景地面材质(office 大理石 μ 低、经默认
+    # average/multiply 会吃掉轮的高摩擦)都以轮的高 μ 为准 -> 换景免调、场景无关。
+    # 训练包络偏离(env.yaml 摩擦随机化中值附近)照 DEBUG 记录：向上偏离=安全方向
+    # (滑移减少让轮式运动学更接近训练的理想意图)，非谎报。
     wheel_mat = sim_utils.RigidBodyMaterialCfg(
-        static_friction=1.6, dynamic_friction=1.4, restitution=0.0)
+        static_friction=WHEEL_FRICTION_STATIC, dynamic_friction=WHEEL_FRICTION_DYNAMIC,
+        restitution=0.0, friction_combine_mode="max", restitution_combine_mode="max")
     wheel_mat.func("/World/Materials/wheel_rubber", wheel_mat)
     for foot in ("FL", "FR", "RL", "RR"):
         sim_utils.bind_physics_material(f"/World/Robot/{foot}_foot",

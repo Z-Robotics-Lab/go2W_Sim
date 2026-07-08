@@ -195,12 +195,18 @@ bash scripts/nav/restart_all.sh
 
 ### 2.1.1 换场景（GO2W_SCENE）
 
+**默认场景 = office**（CEO 裁定 2026-07-07：以后一律用 office）。不设 `GO2W_SCENE` 即 office。
+
 ```bash
-GO2W_SCENE=office bash scripts/nav/bringup.sh teardown   # 换场景必须配对重启（坑42/43）
-GO2W_SCENE=office bash scripts/nav/bringup.sh            # 默认 warehouse；office 首拉慢几分钟
+# 默认 office：直接开机即可（office 首拉慢几分钟）
+bash scripts/nav/bringup.sh teardown && bash scripts/nav/bringup.sh
+
+# 切回旧仓库景（可选）——换场景必须配对重启（坑42/43）
+GO2W_SCENE=warehouse bash scripts/nav/bringup.sh teardown
+GO2W_SCENE=warehouse bash scripts/nav/bringup.sh
 ```
 
-不设 `GO2W_SCENE`（或 `=warehouse`）= 仓库（历史行为不变）；`=office` = 办公室。
+不设 `GO2W_SCENE`（或 `=office`）= 办公室（**新默认**）；`=warehouse` = 回退旧仓库景。
 
 ## 2.2 和机器狗对话
 
