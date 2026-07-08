@@ -117,6 +117,48 @@ ROBOT_URDF = ("/workspace/go2w/assets/urdf/go2w_sensored.urdf" if WITH_ARM
               else "/workspace/go2w/assets/urdf/go2w_bare.urdf")
 LIDAR_USD = "/workspace/go2w/assets/lidar_configs/Livox_Mid360_approx.usd"
 WAREHOUSE_USD = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/full_warehouse.usd"
+OFFICE_USD = f"{ISAAC_NUCLEUS_DIR}/Environments/Office/office.usd"
+
+# 场景注册表（宪法：worlds 是 config 不是 code——一套通用驱动，换场景只换字典）。
+# GO2W_SCENE 选场景：默认 "warehouse" 与历史逐字节等价（usd/spawn/box/cam 四值原样）。
+# 每场景字典：usd（None=纯地面 flat 调试面）、spawn（机器人出生 xyz）、box（红箱 xyz）、
+# cam（启动视角 {eye,target}）。cam 让"拉起即看到站立的狗"：eye=出生点斜后上方、
+# 高度在天花板以下（office 有顶棚，太高会被挡→看到屋顶/城市外景，坑43+CEO 实测），
+# target=出生位姿。spawn/box/cam 选点是场景专属常量（无硬编码散落）；office 值由校准轮写死。
+SCENES = {
+    "warehouse": {
+        "usd": WAREHOUSE_USD,
+        "spawn": (0.0, 0.0, 0.42),   # 历史值：贴地生成减小落地冲击
+        "box": (2.0, -1.0, 0.031),   # 方形回归验证过的空旷走廊 (2,0)-(2,-2)
+        # 历史静态视角（eye=(4,4,3) target=(0,0,0.5)）逐字节保留：出生在原点，旧值即对准狗。
+        # follow_dz=3.6 保历史跟随高度（warehouse 无低天花板，高俯视不挡镜头）。
+        "cam": {"eye": (4.0, 4.0, 3.0), "target": (0.0, 0.0, 0.5), "follow_dz": 3.6},
+    },
+    "office": {
+        "usd": OFFICE_USD,
+        # office 出生点：校准到开阔厅（2026-07-07 校准轮实证）。office 脚印
+        # X[-4.3,5.3] Y[-9.3,0.1]；原点 (0,0) 在 reception 顶墙=拥挤角落（净空~1.5m），
+        # 开阔厅在 -Y。选 (-2.5,-5.0)=/terrain_map 证实开阔（障碍净空 3m+）、手动驱动
+        # origin→此点全程直立可达。z=0.42 同 warehouse 贴地策略。回滚原点见 git 历史。
+        "spawn": (-2.5, -5.0, 0.42),
+        # 箱子放出生点 +X 前方 1m 开阔地（6cm 低于障碍阈值不被绕开）。
+        "box": (-1.5, -5.0, 0.031),
+        # 启动视角：出生点斜后上方 3-4m、eye 高度 2.4m（office 天花板下——高了被顶棚挡、
+        # 看到屋顶/自带城市外景，CEO 实测坑）。target=出生位姿，拉起即见站立的狗。
+        # follow_dz=2.0：跟随镜头也压在天花板下（历史 3.6 会穿顶棚）。
+        "cam": {"eye": (-2.5 + 3.2, -5.0 - 2.4, 0.42 + 2.0),
+                "target": (-2.5, -5.0, 0.42), "follow_dz": 2.0},
+    },
+}
+SCENE_NAME = _os.environ.get("GO2W_SCENE", "warehouse")
+if SCENE_NAME not in SCENES:
+    raise SystemExit(
+        f"[NAV] 未知 GO2W_SCENE={SCENE_NAME!r}；可选：{sorted(SCENES)}")
+SCENE = SCENES[SCENE_NAME]
+SCENE_USD = SCENE["usd"]
+SCENE_SPAWN = SCENE["spawn"]
+SCENE_BOX = SCENE["box"]
+SCENE_CAM = SCENE["cam"]
 
 # Go2W 轮几何（left_wheel.dae 实测半径 0.086m；轮距待实测校准）
 WHEEL_RADIUS = 0.086
@@ -126,7 +168,7 @@ IMU_OFFSET_IN_LIDAR = (0.011, 0.02329, -0.04412)
 
 # 可抓物：6cm 红箱，方形回归验证过的空旷地带（(2,0)-(2,-2) 走廊内）。
 # 6cm 低于地形分析的障碍阈值——接近时 planner 不会把它当障碍绕开
-BOX_POS = (2.0, -1.0, 0.031)
+BOX_POS = SCENE_BOX  # 场景专属（SCENES[GO2W_SCENE]["box"]）；warehouse 默认=(2.0,-1.0,0.031)
 BOX_SIZE = 0.06
 BOX_CFG = RigidObjectCfg(
     prim_path="/World/GraspBox",
@@ -160,7 +202,7 @@ GO2W_NAV_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.42),  # 贴地生成减小落地冲击
+        pos=SCENE_SPAWN,  # 场景专属出生位姿；warehouse 默认=(0,0,0.42) 贴地减冲击
         joint_pos={
             ".*_hip_joint": 0.0, ".*_thigh_joint": 0.8, ".*_calf_joint": -1.5,
             ".*_foot_joint": 0.0,
@@ -225,10 +267,15 @@ def main():
     # dt=1/100 + render_interval=1：GUI 模式下 Kit 时间线每个物理步前进 rendering_dt，
     # 只有两者相等时雷达时钟才与物理/IMU 时钟一致（曾实测雷达 stamp 跑到 2 倍速）
     sim = SimulationContext(SimulationCfg(dt=1 / 100, render_interval=1, device=args_cli.device))
-    sim.set_camera_view(eye=(4.0, 4.0, 3.0), target=(0.0, 0.0, 0.5))
+    # 启动视角=场景专属（SCENE_CAM）：warehouse 保历史 eye=(4,4,3) target=(0,0,0.5)；
+    # office 对准开阔厅出生点、eye 在天花板下——拉起即见站立的狗（非屋顶/城市外景，CEO 实测）。
+    sim.set_camera_view(eye=SCENE_CAM["eye"], target=SCENE_CAM["target"])
 
     if args_cli.env == "warehouse":
-        env_cfg = sim_utils.UsdFileCfg(usd_path=WAREHOUSE_USD)
+        # 场景 USD 由 GO2W_SCENE 选（SCENE_USD）；默认 warehouse=full_warehouse.usd 等价。
+        # prim 路径沿用 /World/Warehouse 作通用场景容器名（仅 stage 路径，不绑场景语义）。
+        print(f"[NAV] scene={SCENE_NAME} usd={SCENE_USD}", flush=True)
+        env_cfg = sim_utils.UsdFileCfg(usd_path=SCENE_USD)
         env_cfg.func("/World/Warehouse", env_cfg)
     else:
         ground = sim_utils.GroundPlaneCfg(); ground.func("/World/Ground", ground)
@@ -496,7 +543,7 @@ def main():
             standstill_blend = standstill_ramp = 0
             _blend_from = None
             print(f"[NAV][RESET] done at sim_t={sim_t['now']:.2f} "
-                  f"root->birth (0,0,0.42), vel=0", flush=True)
+                  f"root->birth {SCENE_SPAWN} (scene={SCENE_NAME}), vel=0", flush=True)
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
@@ -775,10 +822,10 @@ def main():
             os.makedirs(args_cli.shot_dir, exist_ok=True)
             capture_viewport_to_file(get_active_viewport(),
                                      f"{args_cli.shot_dir}/nav_{step//6000:04d}.png")
-            # 跟随机器人视角
+            # 跟随机器人视角（斜后上方俯视）。高度偏移=场景专属 follow_dz：
+            # warehouse 3.6（无低顶）、office 2.0（压在天花板下，历史 3.6 会穿顶棚）。
             p = robot.data.root_pos_w[0].tolist()
-            # 高位斜俯视：货架区不易挡镜头
-            sim.set_camera_view(eye=(p[0] + 1.6, p[1] - 1.2, p[2] + 3.6),
+            sim.set_camera_view(eye=(p[0] + 1.6, p[1] - 1.2, p[2] + SCENE_CAM["follow_dz"]),
                                 target=(p[0], p[1], p[2] + 0.2))
             print(f"[POSE] step={step} root=({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})")
 

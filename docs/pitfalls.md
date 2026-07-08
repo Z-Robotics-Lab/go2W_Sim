@@ -179,3 +179,18 @@
     - 残余：world-pathdir std 仍~60° 系 argmax 无滞后选组内因（H-B），属 fix-a（planner 滞后,
       CEO gate）；idle 位移(E0'' 127mm)系 stale-path wz 爆发（W1-W3, navstack C++, CEO gate）。
       c 只治导航占空(terrain 闪饿死前向 path)，这两项正交、非 c 能治。全在 DEBUG.md 终节 + var/evidence/terrain_fix/。
+43. **office 场景迁移：原点是拥挤角落，开阔厅在 -Y**（GO2W_SCENE=office，2026-07-07）。
+    `Environments/Office/office.usd`（酒店大堂）脚印 X[-4.3,5.3] Y[-9.3,0.1]；**世界原点 (0,0)
+    紧贴 reception 顶墙=拥挤角落**（净空~1.5m，locomotion 受限，出生虽直立但无 3-4m 跑道）。
+    真正开阔厅在 -Y（X[-4,-2.5] Y[-5,-6.5] 净空 3m+）。→ office spawn 校准到 **(-2.5,-5.0)**
+    开阔厅（/terrain_map 证净空、手动驱动全程直立可达），box 随迁 (-1.5,-5.0)。换场景=改
+    warehouse_nav.py SCENES 字典 spawn/box + **配对重启**（坑42 铁律，spawn 是 launch 期烘焙）。
+    - **fix-c(坑42) obstacleHeightThre=0.20 泛化到 office 地毯成功**：空路径率 office 2-8% vs
+      仓库 0%=同量级（远低于 fix-c 前 65%），无 terrain 回归。首拉 office USD 材质编译 ~5min
+      (kit 200%+CPU 活跃非冻结，以 /health age+phase 判活)；缓存后重启 ~50s。
+    - **idle stale-path/wz 漂移(fix-a/W1-W3 残余)在 office 更痛**：到点后 robot 不 hold、在
+      ~0.5m 半径漂移 → zeno E2E 到点 arrived+held d=0.11 但 verdict verified=False(0/8 grounded,
+      grounding 抓不到 in-tol 瞬间)。非迁移缺陷=已入册 CEO-gate planner/navstack C++ 残余。
+    - explore 冒烟：体积真增(开阔厅首分钟 +278m³)、不冻不翻，但 robot 徘徊 spawn±0.4m 不远行
+      （同 stale-path 残余）。TARE 边界无关：explore_world.launch `use_boundary=false` 默认，
+      仓库 boundary.ply(50×46m 多边形)**未激活**，office explore 不被仓库边界阻塞。

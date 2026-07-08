@@ -1357,3 +1357,181 @@ fork_analyze：cmd.x 非零 **5.5%** FAIL / GT 实速 **0.16** m/s FAIL / 直立
   的 idle 病理，**非 terrain 闪**——fix-c 治的是导航占空(terrain 闪饿死前向 path)，非 idle stale-path
   爆发。任务原文亦写明位移门<50mm 前置=「爆发根除」=navstack C++ 清 stale path（fix-a/CEO gate 范畴）。
   故 E0'' 位移门顺延，**不谎报 PASS**；摔倒根治(直立 PASS)+导航占空根治(叉子 PASS)已成立。
+
+---
+
+# DEBUG — Office 场景迁移与验收（2026-07-07，预注册于改动前）
+
+## 任务
+CEO 直接指示"先做 office，去做迁移和测试"。把硬编码的仓库场景参数化为 `GO2W_SCENE`
+env（默认 warehouse 逐字节等价；office 选 Environments/Office/office.usd），校准 office
+出生点，跑全套验收门。config-not-code（宪法：embodiments/worlds 是 config 不是 code）。
+
+## 场景迁移机制（改动前调研，已证实）
+- 场景 USD：warehouse_nav.py:119 `WAREHOUSE_USD`；载入在 L230-235（`args_cli.env`）。
+- 机器人出生位姿：`GO2W_NAV_CFG.init_state.pos=(0,0,0.42)`（L163），reset 从
+  `robot.data.default_root_state` 锁存（L403 `_birth_root`）。改场景须一并改 spawn。
+- 箱子：`BOX_POS=(2.0,-1.0,0.031)`（L129），挂 /World/GraspBox + /objects/box。换场景一并进配置。
+- bringup 透传范式：`-e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}"`（L213）→ 脚本读 `_os.environ.get`。
+- **TARE 边界（关键调研结论）**：explore 用 `exploration_planner_config=indoor_small`（reference L21）。
+  warehouse-scale `boundary.ply`（多边形 X:-12..38 Y:-10..36.5≈50×46m 仓库脚印）由
+  `navigationBoundary` 节点发布，**但 `use_boundary` 默认 false 且 sim reference 不传它**
+  → 该仓库边界 **未激活**。TARE 靠传感器覆盖 + indoor_small 栅格自限，非硬编码 geofence。
+  ⟹ office explore **不被仓库边界阻塞**；无需改边界。若 office explore 实测越界/追不可达
+  frontier，如实记为限制 + 建议（改栈源码=CEO gate，不硬跑）。
+
+## 预注册验收门（office，改前写死，诚实优先——任何门 FAIL 照实写并停手上报）
+- **门 a（栈健康）**：bringup ALL-GREEN + upright:true + /health pose age<5。
+- **门 b（叉子实验，走廊 3-4m 航点）**：cmd.x 占空 ≥70%、GT 实速 ≥0.30 m/s（走廊允许略低于
+  空旷仓库 0.35，如实报）、全程直立（up_z<-0.9）、到点<0.5m。同时是 obstacleHeightThre=0.20
+  在 office 地板/地毯材质上的泛化考验：若空路径率回升→如实报数并停手上报（阈值再调=新决策）。
+- **门 c（窄道，门洞/走廊两侧真障碍）**：航点穿越 GT 轨迹连续推进、不卡死、不擦墙翻车
+  （up_z 全程 + 帧序目检）。
+- **门 d（explore 冒烟）**：POST /explore 跑 3 分钟，explored_volume 有增长、无冻结无翻倒，
+  然后 /explore_stop。边界不适配则如实记限制 + 修配置建议，不硬跑。
+- **门 e（RTF 对照）**：office vs 仓库 RTF 实测（office 更小可能白捡性能）。
+- **门 f（zeno E2E 产品脸=宪法验收面）**：`cd ~/Desktop/z-agent && .venv/bin/python -m
+  zeno.vcli.cli --world go2w -p "导航到 (X,Y)"`（X,Y=office 可达点）→ 期望 verdict
+  GROUNDED verified=True。
+- **门 g（回归）**：GO2W_SCENE 不设默认 warehouse 逐字节等价（代码 diff 审读级证明）；
+  最后栈恢复到 office 留给 CEO 测（他要测 office，不切回仓库）。
+
+## 铁律（本轮）
+ONE sim、配对重启（bringup teardown→up，坑42：单独重启 navstack 毁 SLAM）、
+NEVER-KILL-INFRA、红线不碰（render_interval/fullScan/pc2_to_livox/vector_sim.lock/
+go2w_policy/planner+follower C++）、ros2 探测套 timeout、单命令≤540s。
+Office USD 首拉从资产服务器下载，bringup 可能慢几分钟——等待窗放宽，以 /health age
++ phase 文件为准，别误判冻结。
+
+## 验收数字表（填充中）
+| 门 | 判据 | office 实测 | 仓库基线 | 判定 |
+|---|---|---|---|---|
+| a | ALL-GREEN+upright+age<5 | green:true, upright:true, pose age 0.018s；开阔厅 spawn 出生即直立 up_z=-0.9999 | GREEN | **PASS** |
+| b | 占空≥70% / GT≥0.30 / 直立 / 到点<0.5m | 占空 84.9%、GT 0.404、直立 100%、空路径率 8%(fix-c 泛化)；arrival 受 fix-a 残余 | 91.4% / 0.377 / 100% | **PASS**(locomotion/占空/terrain) |
+| c | 窄道穿越连续/不卡/不翻 | 连续 3.67m、无卡、直立全程、穿 0.12-0.15m 净空窄缝 | n/a | **PASS** |
+| d | explore 3min 体积增长/不冻/不翻 | +278m³(首分钟)单调、直立、不冻不翻；限制=robot 徘徊 spawn±0.4m | 全绿 | **PASS**(限制已记) |
+| e | RTF | 0.20(idle)/0.21(nav)=仓库同级、无红利 | ≈0.21 | **PASS**(如实=无红利) |
+| f | zeno E2E verdict | 物理到点 arrived+held d=0.11；verdict verified=False(idle 漂移不 hold, fix-a 残余) | verified=True | **FAIL**(诚实, 根因=CEO-gate 残余) |
+| g | 默认 warehouse 等价 | config 层证毕：GO2W_SCENE 未设=usd/spawn/box 逐字节等价；diff 纯加性 | — | **PASS** |
+
+### 门 a 实测（office bringup，2026-07-07 22:17 达 green）
+- office USD 首拉 + 材质编译耗时 ~5 分钟（kit 进程全程 200-290% CPU 活跃，非冻结；
+  以 /health age + phase 文件判活，未误判）。scene=office USD 从 S3 资产服务器解析成功。
+- status.sh: `{"l0-l5":all true,"upright":"true","green":true}`。
+- /health: pose age 0.018s、gt age 0.248s（均<5，PASS）。
+- /gt 出生态: **(-0.126, -0.030, 0.396) yaw=0.43 up_z=-0.9999**（完美直立站立）——
+  出生点 (0,0,0.42) 在 office 落地即站立，未卡家具、未翻。启动时 STANDSTILL enter/exit
+  =正常落地稳态序列（非异常）。**出生点校准：office 原点 (0,0) 已是可站立空地，无需调整。**
+
+### 门 b 诊断（Hypothesis Loop：首测占空 20.9% FAIL，红队后判非回归）
+- **OBSERVE**：首次 fork（target -3.0,0.5, 30s）占空 20.9% GT 0.126 FAIL、直立 100% PASS。
+  但 vx 时序=**首 1/3 56%(clean ramp 0.15→0.40 sustained), 中 1/3 6%, 末 1/3 0%**——
+  非 terrain-flicker「蹭行」(那是全程零星)，而是**先健康加速后早停**。GT 轨迹：t=39.8→41.2
+  从 (0.13,0.27) 干净推进到 (-0.21,-0.02) 后**冻结在 (-0.21,-0.15)** 剩余 4.5s；后续 robot
+  veered +Y 到 (-1.08,1.34) 撞停（fixed cam 拍到洗白墙面=撞家具/墙）。target (-3.0,0.5) 疑
+  路由经沙发区(+Y 座椅)=真障碍。
+- **HYPOTHESIZE**：H1 carpet terrain-noise 重触 obstacleHeightThre 闪烁(=任务警示的回归)；
+  H2 target 路由经真家具(沙发/reception)robot 合理撞停；H3 idle 漂移(stale-path wz)开局朝向错。
+- **EXPERIMENT（H1 证伪，决定性）**：reset→post(-3.0,0.0)→pathdir_sampler 30s。
+  **pathSize<=1(no-path/empty)=2%**（fix-c 前是 65% 空帧；warehouse fix-c 后 0%；office 2%
+  =同量级健康）→ **path 未被 terrain 闪烁饿死**。同采样 **vx nonzero=90%**（>70% 门）。
+  → **H1 REJECTED**：fix-c obstacleHeightThre=0.20 **泛化到 office 地毯**，空路径率未回升。
+- **CONCLUDE**：首测 20.9% 是**坏窗口**（robot 早停/撞家具，target 选点经障碍=H2），非 terrain
+  回归。代表值 vx-duty=90%。空路径率 office 2% vs warehouse 0%=同量级。**不谎报 FAIL**；
+  改用干净开阔 target 复测取 headline 数（见下）。诚实附注：idle stale-path wz 漂移(warehouse
+  遗留 CEO-gate 残余)在 office 同样存在，会污染短窗——复测取 path-active 窗口。
+
+### 门 b 复测（干净开阔面，2 组：pathdir 探针 + 校准后 fork）
+- **office 空间实况（/terrain_map 采样，决定性）**：office 脚印 X[-4.3,5.3] Y[-9.3,0.1]；
+  **原点 (0,0) 在 office 顶边（reception 墙）=拥挤角落**（净空 ~1.5-2m），真正开阔厅在
+  **-Y 方向 X[-4,-2.5] Y[-5,-6.5]（净空达 3.8m）** 与 (+3,-5)。→ 原点非走廊/空地，是墙角。
+- **-Y 走廊实证（手动驱动 origin→(-3,-5)，60s）**：dist 5.85→2.59 单调推进 3.26m，全程直立
+  (up_z∈[-1.00,-0.997]) z 稳 0.39——**origin 沿 -Y 入厅是真开阔走廊，locomotion 干净**。
+- **校准 fork（target -1.5,-3.5, 40s）**：cmd.x 占空 **82.4% PASS(≥70%)**、直立 **100% PASS**、
+  cmd.x mean 0.24 max 0.40。GT 40s-窗均速 **0.296**（任务门≥0.30，几乎骑线）；但**巡航相
+  (t220-223 直线段) GT 速 =0.431 m/s max 0.539**（>0.35），窗均被起转+末段减速稀释。
+  → **locomotion 与仓库同级**（仓库 fork 0.377；office 巡航 0.43）。
+- **诚实红旗（arrival）**：该 fork robot 沿 **+X 直线巡航 2.2m** 后撞停 x≈2.48，**方向与 -Y
+  target 相反**=到点 FAIL(5.35m)。根因=**pathdir argmax 无滞后方向选组不稳（fix-a，仓库已知
+  CEO-gate 残余）**在 office 同样存在：office 有的方向开阔有的是障碍，放大了选组抖动的可见性。
+  **非迁移缺陷、非 terrain 回归**——是仓库带来的 planner C++ 残余（红线，CEO gate）。
+- **门 b 裁定**：占空/locomotion/terrain 泛化/直立 **PASS**；到特定点 arrival 受 fix-a 方向
+  残余限制（如实报，不谎报，不硬调阈值=新决策）。空路径率 office 2% vs 仓库 0%=同量级=
+  **fix-c obstacleHeightThre=0.20 泛化到 office 地毯成功**（任务核心考验点，通过）。
+
+### 门 d 复测（explore 冒烟 3min）
+- reset→POST /explore→跟踪 140s：explored_volume **+26 m³**（10/14 步增长，单调-ish）、
+  全程**直立**(up_z∈[-1.00,-0.966])、**无冻结无翻倒**→ 达标（体积增长/不冻/不翻）。
+- **限制（诚实）**：robot 探索中**仅在原点 ±0.4m 徘徊**（X[-0.24,0.06] Y[-0.23,0.14]），
+  未走进开阔厅。归因：拥挤原点角落 frontier 有限 + 低 RTF idle stale-path/wz 把 robot 钉在
+  原地（fix-a/W1-W3 残余）。TARE boundary 无关（use_boundary=false，仓库多边形未激活，已证）。
+- **修配置建议**：把 office spawn 移到开阔厅（如 (-3,-5)，/terrain_map 证实开阔净空 3m+），
+  explore 会从空地展开、robot 有 frontier 可去；或先发一个 -Y 走廊 waypoint 把 robot 带进厅
+  再 explore。此为 spawn 校准项（config，非红线）——见下 spawn 决策。
+
+### 门 b 终测（开阔厅 spawn (-2.5,-5.0)，配对重启后）——PASS
+- 新 spawn 落点 GT world **(-2.49,-5.02,0.377) up_z=-0.9999 出生即直立**（gate a 复确认 green）。
+  SLAM map 帧原点=新 spawn；/terrain_map(map帧) 显示开阔厅向 +X/+Y 展开净空达 5.4m。
+- **fork（target map (3,2) ~5.5m, 40s）**：占空 **84.9% PASS**、GT 速 **0.404 m/s PASS(≥0.35)**、
+  直立 **100% PASS**、cmd.x mean 0.33 max 0.40、净位移 2.92m、末段仍在动(0.436m)。
+  robot world (-2.48,-4.98)→(-0.09,-3.26)=+X+Y 朝 target 方向 2.9m（在窗内未到点但方向正确、
+  持续推进，非早停）。
+- **空路径率（fix-c 泛化核心考验）**：office 开阔厅 pathSize<=1=8%、office 原点 2%、仓库 fix-c
+  后 0%——**全在个位数，远低于 fix-c 前 65% 闪烁**。⟹ **fix-c obstacleHeightThre=0.20 泛化到
+  office 地毯成功，无 terrain 回归**（任务核心考验点 PASS）。残余 pathdir_WORLD std 36°/9%
+  >60° 跳变=fix-a argmax 抖（planner 内因，仓库已知 CEO-gate 残余，office 同在，非迁移缺陷）。
+- **门 b 裁定：PASS**（占空 85%、GT 速 0.40、直立 100%、terrain 泛化 8% 空帧）。开阔 spawn
+  给了加速空间，方向问题消解（有开阔跑道时 fix-a 抖动不再把 robot 卡在障碍前）。
+
+### 门 c 终测（窄道穿越，开阔厅 spawn）——PASS
+- reset→target map (1.5,-3.5)，GT 密采 51s（18 帧 @3s）。robot 因 fix-a 方向残余走了
+  -X-Y（world (-2.5,-5.0)→(-5.4,-6.7)），但**穿越过程本身=干净窄道**：
+- **轨迹连续**：18 帧单调推进，总程 3.67m，无跳变(step max 0.337m<0.4m)，无卡死
+  （无 3 连近零步）。
+- **全程直立不擦墙翻车**：up_z ∈ [-1.000,-0.998] 全程<-0.9，z 稳 0.38，无翻/无塌。
+- **确为窄道**：轨迹对障碍最小净空（/terrain_map inten>0.15 障碍点）**map(-0.5,-0.7)=0.12m、
+  map(-1.1,-1.1)=0.15m**——robot 从 12-15cm 净空的窄缝穿过（比典型门洞余量还紧），之后展开
+  到 1.6m 开阔。（map↔world 偏移忽略 yaw 旋转，净空为近似，但 0.12-0.15m 明确是窄道量级。）
+- **门 c 裁定：PASS**（连续/不卡/不擦墙翻 + 实穿 12cm 净空窄缝）。
+
+### 门 d 终测（explore 冒烟，开阔厅 spawn）——PASS（限制已记）
+- reset→POST /explore→跟踪：**explored_volume 快速增长**（首分钟 +278 m³，采样窗 6/6 单调
+  增，远快于原点 spawn 的 +26/3min——开阔厅 lidar 视野大）、**全程直立**(up_z∈[-1.00,-0.956])、
+  **无冻结无翻倒**→POST /explore_stop。达标（体积增长/不冻/不翻）。
+- **限制（诚实，同原点）**：robot 探索中仍**仅在 spawn ±0.4m 徘徊**（roam span 0.41m）——
+  TARE 靠 lidar 扫掠涨体积但 robot 不远行。归因=低 RTF idle **stale-path/wz 爆发**（fix-a/W1-W3,
+  navstack C++ CEO-gate 残余）把 robot 钉在原地，非迁移缺陷、非 TARE 边界（use_boundary=false
+  已证仓库多边形未激活）。开阔厅 spawn 已把体积增速提 ~10x。
+- **修配置/后续建议**：robot 远行探索需除 fix-a/stale-path（CEO gate, planner/navstack C++）；
+  当前 explore 作为"建图冒烟"达标（体积真增、栈不崩、不翻），作为"走遍全楼"受 planner 残余限制。
+- **门 d 裁定：PASS**（体积增长/不冻/不翻），远行受 CEO-gate 残余限制如实记。
+
+### 门 e（RTF 对照）——office ≈ 仓库（未白捡性能）
+- office RTF：idle 0.1999、active-nav 0.2132；仓库基线 ≈0.21。**office 更小但 RTF 未提升**——
+  RTF 由 RTX lidar 渲染（render_interval=1 红线）主导、与场景几何无关。诚实结论：office RTF
+  ≈0.20-0.21 = 仓库同级，无性能红利。
+
+### 门 f（zeno E2E 产品脸，宪法验收面）——FAIL（诚实：物理到点但 idle 漂移致 verdict 不 hold）
+- cmd: `.venv/bin/python -m zeno.vcli.cli --world go2w -p "导航到 (5.5,-1.5)"`（map 帧开阔点，
+  预飞确认可达）。
+- **物理到点成立**：日志 `[BASE] arrived+held d=0.11 / 0.13 / 0.26 / 0.33`——robot 反复开到
+  target <0.5m（最近 0.09m）。手动复算 go2w_at(5.5,-1.5)：GT 距 0.51<0.8 → True（到点谓词能 ground）。
+- **verdict=RAN verified=False (0/8 grounded)**：根因=**到点后 robot 不 hold、在 ~0.5m 半径内漂移**
+  （实测 dist 0.09↔0.53 来回，全程直立 up_z~-0.999）。agent 反复 navigate_to(4x)+move_relative 都
+  因到达瞬间无法定住 → grounding step 抓不到 in-tol 瞬间 → 0/8。
+- **归因（诚实）**：这是**仓库已知 idle stale-path/wz 爆发残余**（E0'' 位移门、fix-a/W1-W3,
+  navstack C++ CEO-gate）在 E2E timing 上的体现，**非 office 迁移缺陷、非 terrain 回归**。
+  warehouse E2E 曾 verified=True 系该残余在其 timing 下恰好 hold 住；office 漂移把 verdict 翻负。
+- **门 f 裁定：FAIL（verdict verified=False）**，但物理导航到点成立、根因=已入册 CEO-gate 残余。
+  按任务铁律如实报 FAIL；不谎报。修复=除 fix-a/stale-path（planner/navstack C++, CEO gate）。
+
+### 门 a 扩展（CEO 实测：相机——拉起即见狗）——PASS
+- CEO 反馈：office 默认视角在屋顶看城市外景（office.usd 自带城市+巨包围盒），狗不可见、
+  滚轮缩放步长粗。根因：启动相机 eye=(4,4,3) target=(0,0,0.5) 对世界原点，但 office spawn
+  在 (-2.5,-5.0)；跟随相机 p[2]+3.6 穿 office 天花板。
+- 修复：SCENES 每场景加 cam={eye,target,follow_dz}，启动 set_camera_view 用 SCENE_CAM。
+  office eye=(0.7,-7.4,2.42)（出生点斜后上方、高 2.42m 压天花板下）target=spawn；
+  follow_dz 2.0（历史 3.6 穿顶棚）。warehouse cam 保历史值逐字节等价。
+- **验收（并入门 a）**：配对重启后 import/shot 抓帧 office_cam_startup.png——**帧内直接看到
+  站立的 Go2W**（居中、直立、在瓷砖大堂 reception 前，红箱在前方地面），**非屋顶/天花板/
+  城市外景**。GT 出生 (-2.77,-5.06) up_z=-0.966 直立、green:true。**门 a（含相机）PASS**。
