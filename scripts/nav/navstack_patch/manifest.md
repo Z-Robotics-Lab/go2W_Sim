@@ -8,9 +8,14 @@ mechanism** — the sets are mutually exclusive and jointly cover all customizat
 
 New-machine order (all offline; no sim/container needed for the file layer):
 1. `git clone -b jazzy … refs/Navigation-Physical-Experiment`
-2. `scripts/nav/patch_navstack.sh refs/Navigation-Physical-Experiment`  ← mechanism A + calls B
-3. `scripts/nav/navstack_patch/apply.sh refs/Navigation-Physical-Experiment`  ← mechanism C
-4. in-container rebuild of `arise_slam_mid360` (patch 01 is C++) + docker commit
+2. `scripts/nav/patch_navstack.sh refs/Navigation-Physical-Experiment`
+   ← runs **A, then B (calls `sync_navstack_files.sh`), then C (calls `navstack_patch/apply.sh`)**
+   in one shot. The file layer is fully restored after this single command.
+3. (only if hand-tweaking) `scripts/nav/navstack_patch/apply.sh <NAV>` re-applies **C** alone —
+   idempotent, and already invoked by step 2, so a fresh machine does NOT need it separately.
+4. in-container build of `arise_slam_mid360 (+_msgs)` — patch 01 is C++, and this pkg is in the
+   main build's `--packages-skip`, so it is NOT otherwise compiled; **mandatory** or SLAM lacks
+   the module / the de-tilt. Then `docker commit` → `navstack:ready`. (user-manual §1.5 step 4b.)
 
 ---
 
