@@ -164,6 +164,14 @@ SCENES = {
         # follow_dz=2.0：跟随镜头也压在天花板下（历史 3.6 会穿顶棚）。
         "cam": {"eye": (-2.5 + 3.2, -5.0 - 2.4, 0.42 + 2.0),
                 "target": (-2.5, -5.0, 0.42), "follow_dz": 2.0},
+        # Z-Manip M0.5 抓取测试角（CEO 已批 2026-07-10）：托盘垫台 + 3 个物理 YCB 罐/瓶，
+        # 为 M1 find(X)/M2 抓取供靶。摆位纪律（AGENTS §sim-safety + M0.5 铁律）：
+        # 锚 (-1.5,-6.5)=spawn(-2.5,-5.0) 往厅深处 -Y 1.5m 的空角；托盘顶>0.20m 进代价图
+        # 导航正常绕，罐高<0.20m 对导航失明（设计意图）故只放停车点侧向、绝不放行进直线上。
+        # 每条：name(短语义)/usd/pos(xyz)/physics。physics=True 走 RigidObjectCfg（可抓、
+        # 出 GT odom）；physics=False 走静态 UsdFileCfg（垫台，不进 GT）。z 由核验 bbox 算
+        # （见 PROPS_OFFICE 上方几何注释）。additive：其它场景无 props 键=[] 向后兼容。
+        "props": None,  # 占位；真值在 PROPS_OFFICE 定义后回填（见下）——避免前向引用
     },
 }
 SCENE_NAME = _os.environ.get("GO2W_SCENE", "office")  # CEO 裁定：默认 office；warehouse 可选回退
@@ -210,6 +218,43 @@ BOX_CFG = RigidObjectCfg(
     ),
     init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POS),
 )
+
+# ===== Z-Manip M0.5 抓取测试角：托盘 + 3 物理 YCB（office 专属 props）=====
+# 资产全部复用 ISAAC_NUCLEUS_DIR 前缀（office.usd 同源，零新机制）。真名/质量/尺寸=
+# 容器内 headless 核验定案（verify_ycb_assets.py → var/evidence/m05/asset_verification.json，
+# meters_per_unit=1.0）。010_potted_meat_can 不存在 → 按预案换 004_sugar_box。
+_ITEM_DIR = f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics"
+_PALLET_DIR = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/Props"
+# 摆位锚（厅深处空角，见 SCENES["office"]["props"] 注释）。
+_ANCHOR_X, _ANCHOR_Y = -1.5, -6.5
+# 托盘 SM_PaletteA_01：核验 bbox=[1.213,1.003,0.211]，原点 XY 居中 / Z 基座对齐
+# （bbox_max=[0.608,0.503,0.211] ⇒ min=[-0.605,-0.500,0.0]）。落地 z=0 ⇒ 顶面 0.211m。
+_PALLET_TOP_Z = 0.21112  # 托盘顶面（罐子落台面高度）——核验 bbox z
+# YCB Axis_Aligned_Physics 原点在物体中心；落台面 ⇒ 中心 z = 顶面 + 半高 + 落差裕量。
+# 落差裕量 0.02m 防生成即穿台（穿台会被弹飞）；物理沉降后落稳，G-p2 ±0.10m 门吸收微漂。
+_DROP_CLR = 0.02
+def _rest_z(bbox_z: float) -> float:
+    """物体落托盘顶面后的中心 z（顶面 + 半高 + 落差裕量）。"""
+    return _PALLET_TOP_Z + bbox_z / 2.0 + _DROP_CLR
+# 入选 3 物理物体的核验 bbox z（供靶：soup 首抓 Ø66 / sugar 矮盒兜底 / mustard 瓶）。
+_BBZ_SOUP, _BBZ_SUGAR, _BBZ_MUSTARD = 0.10185, 0.04513, 0.1913
+# props 单一同源（z-manip tests/contract.py PROPS 引此为准；改摆位要同步测试常量）。
+# 间距沿 X 展开 0.35m（≥0.15m 门）、均落托盘 X 跨 [-2.11,-0.89] 内留边；Y 居锚线 -6.5。
+PROPS_OFFICE = [
+    # 垫台：静态托盘（physics=False，不进 GT）。落地 z=0，顶面 _PALLET_TOP_Z。
+    {"name": "pallet", "usd": f"{_PALLET_DIR}/SM_PaletteA_01.usd",
+     "pos": (_ANCHOR_X, _ANCHOR_Y, 0.0), "physics": False},
+    # 物理物体（physics=True，出 /objects/<name>/odom GT）：
+    {"name": "soup_can", "usd": f"{_ITEM_DIR}/005_tomato_soup_can.usd",
+     "pos": (_ANCHOR_X - 0.35, _ANCHOR_Y, _rest_z(_BBZ_SOUP)), "physics": True},
+    {"name": "sugar_box", "usd": f"{_ITEM_DIR}/004_sugar_box.usd",
+     "pos": (_ANCHOR_X, _ANCHOR_Y, _rest_z(_BBZ_SUGAR)), "physics": True},
+    {"name": "mustard", "usd": f"{_ITEM_DIR}/006_mustard_bottle.usd",
+     "pos": (_ANCHOR_X + 0.35, _ANCHOR_Y, _rest_z(_BBZ_MUSTARD)), "physics": True},
+]
+SCENES["office"]["props"] = PROPS_OFFICE  # 回填占位（前向引用规避）
+# 其它场景无 props ⇒ 取 [] 向后兼容（main 用 SCENE.get("props") or []）。
+SCENE_PROPS = SCENE.get("props") or []
 
 GO2W_NAV_CFG = ArticulationCfg(
     prim_path="/World/Robot",
@@ -333,6 +378,26 @@ def main():
         }
     robot = Articulation(GO2W_NAV_CFG)
     box = RigidObject(BOX_CFG)
+    # Z-Manip M0.5 抓取测试角：静态垫台直落 prim，物理物体建 RigidObject（后续出 GT odom）。
+    # SCENE_PROPS 为场景专属（office 有托盘+3 YCB；其它场景=[] 向后兼容）。物理物体收进
+    # phys_props（name→RigidObject），供 GT 多路发布循环沿用 box 的组装逻辑（抽 _publish_odom）。
+    phys_props = {}
+    for _pd in SCENE_PROPS:
+        _pname, _pusd, _ppos = _pd["name"], _pd["usd"], _pd["pos"]
+        if _pd["physics"]:
+            # 参照 BOX_CFG，仅把 spawn 源从 CuboidCfg 换成 UsdFileCfg（YCB 自带质量/collider）。
+            _cfg = RigidObjectCfg(
+                prim_path=f"/World/Props/{_pname}",
+                spawn=sim_utils.UsdFileCfg(usd_path=_pusd),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=_ppos),
+            )
+            phys_props[_pname] = RigidObject(_cfg)
+            print(f"[NAV][M05] physics prop {_pname} @ {_ppos} <- {_pusd}", flush=True)
+        else:
+            # 静态垫台：直落 USD prim（参照场景 USD 落法 env_cfg.func）。translate=落位。
+            _scfg = sim_utils.UsdFileCfg(usd_path=_pusd)
+            _scfg.func(f"/World/Props/{_pname}", _scfg, translation=_ppos)
+            print(f"[NAV][M05] static prop {_pname} @ {_ppos} <- {_pusd}", flush=True)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
         # 注意（2026-07-08 更正）：OffsetCfg 从未传 rot（历史注释描述过"-20°反转装平"设计但
@@ -474,6 +539,33 @@ def main():
     clock_pub = node.create_publisher(Clock, "/clock", 10)
     # 抓取管线话题：箱子 GT、EE GT、臂关节态/目标、抓取指令与状态
     box_pub = node.create_publisher(Odometry, "/objects/box/odom", 5)
+    # Z-Manip M0.5 GT 多路：每个物理 prop 一路 /objects/<name>/odom（沿用 box 5Hz 与组装
+    # 逻辑，抽 _publish_odom 一处；/objects/box/odom 保持原样不动=既有 M0 测试依赖）。
+    prop_pubs = {
+        _pname: node.create_publisher(Odometry, f"/objects/{_pname}/odom", 5)
+        for _pname in phys_props
+    }
+    if prop_pubs:
+        print(f"[NAV][M05] GT odom publishers: {sorted(prop_pubs)}", flush=True)
+
+    def _publish_odom(pub, obj, child, sec_, nsec_):
+        """把一个 RigidObject 的 SIM GT（pose+twist，世界系）发到 /objects/<child>/odom。
+        box 与所有 M0.5 物理 prop 共用此一处（sec_/nsec_=同拍 sim_stamp，5Hz 分支调用）。
+        obj.update() 必须已由调用方在同拍先行（读 root_pos_w/quat_w/lin_vel_w 前刷新）。"""
+        pp = obj.data.root_pos_w[0].tolist()
+        qq = obj.data.root_quat_w[0].tolist()
+        vv = obj.data.root_lin_vel_w[0].tolist()
+        od = Odometry()
+        od.header.stamp.sec, od.header.stamp.nanosec = sec_, nsec_
+        od.header.frame_id = "world"
+        od.child_frame_id = child
+        (od.pose.pose.position.x, od.pose.pose.position.y,
+         od.pose.pose.position.z) = pp
+        (od.pose.pose.orientation.w, od.pose.pose.orientation.x,
+         od.pose.pose.orientation.y, od.pose.pose.orientation.z) = qq
+        (od.twist.twist.linear.x, od.twist.twist.linear.y,
+         od.twist.twist.linear.z) = vv
+        pub.publish(od)
     ee_pub = node.create_publisher(PoseStamped, "/piper/ee_pose", 10)
     js_pub = node.create_publisher(JointState, "/piper/state", 10)
     jc_pub = node.create_publisher(JointState, "/piper/cmd", 10)
@@ -813,22 +905,14 @@ def main():
             # 直立度：机体系重力 z 分量（站立≈-1，翻倒偏离）。同 5Hz 与 GT 位姿同步。
             up_z_msg.data = float(robot.data.projected_gravity_b[0, 2].item())
             up_z_pub.publish(up_z_msg)
-            # 箱子 GT（pose+twist，verify oracle 的 get_object_positions/velocities 源）
+            # 箱子 GT（pose+twist，verify oracle 的 get_object_positions/velocities 源）。
+            # 与 M0.5 物理 prop 共用 _publish_odom；/objects/box/odom 语义/字段一字不变。
             box.update(physics_dt)
-            bp = box.data.root_pos_w[0].tolist()
-            bq = box.data.root_quat_w[0].tolist()
-            bv = box.data.root_lin_vel_w[0].tolist()
-            bo = Odometry()
-            bo.header.stamp.sec, bo.header.stamp.nanosec = sec, nsec
-            bo.header.frame_id = "world"
-            bo.child_frame_id = "box"
-            (bo.pose.pose.position.x, bo.pose.pose.position.y,
-             bo.pose.pose.position.z) = bp
-            (bo.pose.pose.orientation.w, bo.pose.pose.orientation.x,
-             bo.pose.pose.orientation.y, bo.pose.pose.orientation.z) = bq
-            (bo.twist.twist.linear.x, bo.twist.twist.linear.y,
-             bo.twist.twist.linear.z) = bv
-            box_pub.publish(bo)
+            _publish_odom(box_pub, box, "box", sec, nsec)
+            # Z-Manip M0.5 GT 多路：每个物理 prop 同拍刷新后发 /objects/<name>/odom。
+            for _pname, _pobj in phys_props.items():
+                _pobj.update(physics_dt)
+                _publish_odom(prop_pubs[_pname], _pobj, _pname, sec, nsec)
             if grasp is not None:
                 gs = String()
                 gs.data = f"{grasp.status};aperture={grasp.aperture():.4f};" \
