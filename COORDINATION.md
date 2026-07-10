@@ -66,3 +66,16 @@
   三件立正 G-p7/reach 窄带合规/GT 四路≥4Hz-sim)+ 全量回归 20 pass 0 fail(M0 面无退化)。
   入账 go2w 09cf0cb+7009c57、z-manip 5e3a7c3(均已推)。链留 office ALL-GREEN(robot 静止
   LOOKOUT,CEO 眼见)。sim 槽位归还;/piper/named_pose 无人持有。
+
+## 并行 claim(2026-07-10 03:2x · z-manip-m1 workflow = 主编排会话代持,CEO 开工令)
+- **z-manip-m1 workflow** 持有(M1 find+SCAN+两段伺服进近+追踪+感知可视化):
+  - **sim 槽位**(配对重启权)
+  - **主动指令话题**:/piper/named_pose(LOOKOUT/SCAN 用)、/way_point(远段伺服)、
+    **/manip/cmd_vel(新增)+/cmd_vel 仲裁面**(近段直控;仲裁在 warehouse_nav 消费端,
+    manip 新鲜优先——绝不双写 /cmd_vel 原话题)
+  - scripts/sim/warehouse_nav.py(cmd 仲裁 mux + 其余不动)、scripts/nav/sync_navstack_files.sh
+    (rviz 生成器加感知三面板)、~/Desktop/z-manip 全仓(感知/伺服节点+容器+测试)
+- **不碰**:local_planner(fix-a 持有)、refs/ 源码、agent_bridge.py(G7 全量后置 M4;若设计判定
+  必须动则最小 diff 并在此记录)、红线参数、props 摆位(刚达门)。
+- 释放条件:M1 gates 数字入 commit 后本节改"已释放";链留 ALL-GREEN。
+- **已释放(2026-07-10 晚)**:M1 五层根因逐层实证收口(感知 PASS conf0.529/伺服 spoke 化/TABLE_VIEW −20.21°落地/RTF0.282/GPU9.6G),唯一遗留 BLOCKER=底盘原地 yaw ~2% 失效(frozen 链,CEO gate,待专项轮)。链留 ALL-GREEN idle,servo IDLE;槽位归还。
