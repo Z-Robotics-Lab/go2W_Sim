@@ -50,3 +50,15 @@
   + G-c 3/3 PASS(0.0374/0.0289/0.0240<0.05rad)**,K400/D15 入账,数字详 git commit +
   var/evidence/m0/。[RULING] sim 执行器 PD 整定非 CEO gate(不涉接口/依赖/安全/真机)。
   zmanip-m0-verify claim 已释放(sim 槽位归还,勿再有会话双驱 named_pose)。
+
+## 并行 claim(2026-07-10 02:3x · z-manip-m05 workflow = 主编排会话代持)
+- **z-manip-m05 workflow** 持有(M0.5 office 抓取测试角,CEO 已批;宿主唯一活动会话):
+  - **sim 槽位**(配对重启权:teardown+bringup,office 默认)
+  - **/piper/named_pose 发布权**(Verify 阶段 G-p6 证据帧需 LOOKOUT;按 00:37 冲突新规先 claim)
+  - scripts/sim/warehouse_nav.py **SCENES props 段 + GT odom 多路发布块**(新增代码,不碰红线/摩擦/场景默认行)
+  - ~/Desktop/z-manip tests/(PROPS 扩展)
+- **不碰**:refs/ 源码、local_planner(fix-a 持有)、DEBUG*.md、红线参数。
+- 释放条件:workflow 完成(gate 数字入 commit)后本节改"已释放"。届时链留 ALL-GREEN(CEO 眼见要求)。
+- **02:4x 更新**:workflow 的 Verify 被 CEO 直令重启打断(TaskStop;旧布局 gate 数据不再入账)。
+  claim 转由主编排会话继续持有,执行 CEO reach+立正裁定(托盘缩 XY/三件 Rx90° 立正/贴边一列/
+  G-p7 立正 gate)后配对重启+复测;完成后释放,链留 ALL-GREEN。
