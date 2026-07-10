@@ -33,10 +33,16 @@ import numpy as np
 # 爪 OPEN=(0.035,-0.035) 与 piper_grasp.py:OPEN_POS 一致（j7∈[0,0.035], j8∈[-0.035,0]）。
 #
 # FK 实证（go2w_sensored.urdf 全链，见文件尾自检）——视轴=相机 prim +X（world 约定）：
-#   STOW    (j2=0.80,j3=-1.20): 视轴 pitch=+27.91°（朝上，收臂 park；导航态）。
-#   LOOKOUT (j2=0.43,j3=-0.34): 视轴 pitch=-0.16° （水平前视；SCAN/ALIGN；**默认启动姿态**）。
-#   CARRY   (j2=1.00,j3=-0.71): 视轴 pitch=-11.62°（胸前握持略俯视；载物导航态）。
-# URDF 关节限位核对：j2∈[0,3.14], j3∈[-2.967,0]（三姿态全在域内）；
+#   STOW       (j2=0.80,j3=-1.20): 视轴 pitch=+27.91°（朝上，收臂 park；导航态）。
+#   LOOKOUT    (j2=0.43,j3=-0.34): 视轴 pitch=-0.16° （水平前视；SCAN/远段进近；**默认启动姿态**）。
+#   CARRY      (j2=1.00,j3=-0.71): 视轴 pitch=-11.62°（胸前握持略俯视；载物导航态）。
+#   TABLE_VIEW (j2=1.30,j3=-0.86): 视轴 pitch=-20.21°（低头台面视；近距进近末段/HOLD）。
+# TABLE_VIEW 的几何依据（M1 收官 root-cause）：LOOKOUT 平视时相机眼高≈0.45m、vFOV 42.47°
+#   (fx=617.6/480px)，在 0.6m 标准 standoff 处视野下缘 z=0.45-0.6·tan(21.2°)≈0.217m——罐子
+#   (z 0.22-0.32m) 骑在画面最底边(475/480 行)闪进闪出→近距永不稳定锁定。TABLE_VIEW 保持
+#   LOOKOUT 眼高(0.45m)但腕俯 20°，把罐子拉进画面中央(0.6m 处罐心≈203/480 行，全罐 154-249
+#   行皆在框内)→近距稳定可见。视轴 pitch=-20.21°∈[-30°,-20°] 目标带（见文件尾 FK 自检核对）。
+# URDF 关节限位核对：j2∈[0,3.14], j3∈[-2.967,0]（四姿态全在域内：TABLE_VIEW j2=1.30/j3=-0.86 OK）；
 #                    j7∈[0,0.035], j8∈[-0.035,0]（OPEN/CLOSED 全在域内）。
 _GRIP_OPEN = (0.035, -0.035)
 
@@ -44,12 +50,16 @@ _GRIP_OPEN = (0.035, -0.035)
 # 数字名序——按名索引杜绝"目标写错关节"的隐患（关键正确性）。缺省的臂关节视为 0。
 # 爪：j7=OPEN 上侧(+)，j8=OPEN 下侧(-)，与 piper_grasp.py:OPEN_POS 一致。
 NAMED_POSES: dict[str, dict[str, float]] = {
-    "STOW":    {"piper_joint2": 0.80, "piper_joint3": -1.20,
-                "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
-    "LOOKOUT": {"piper_joint2": 0.43, "piper_joint3": -0.34,
-                "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
-    "CARRY":   {"piper_joint2": 1.00, "piper_joint3": -0.71,
-                "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+    "STOW":       {"piper_joint2": 0.80, "piper_joint3": -1.20,
+                   "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+    "LOOKOUT":    {"piper_joint2": 0.43, "piper_joint3": -0.34,
+                   "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+    "CARRY":      {"piper_joint2": 1.00, "piper_joint3": -0.71,
+                   "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+    # 低头台面视：LOOKOUT 眼高 + 腕俯 20°（视轴 pitch=-20.21°）。近距进近末段/HOLD 用，
+    # 让 0.6m 处的罐子落画面中央而非贴底边（M1 收官 root-cause 修法；见姿态表上方几何依据）。
+    "TABLE_VIEW": {"piper_joint2": 1.30, "piper_joint3": -0.86,
+                   "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
 }
 # 默认启动姿态：LOOKOUT（当前 URDF init j2=0.8/j3=-1.2 视轴朝上 +27.9°，过不了 G-b；
 # 拉起后由主循环发一次内部 named_pose=LOOKOUT 切到平视，不动 init_state 落地态）。
@@ -329,9 +339,17 @@ def _selftest_fk() -> None:
         M = fk(p.get("piper_joint2", 0.0), p.get("piper_joint3", 0.0))
         view = M[:3, 0]  # world 约定视轴 = prim +X
         pitch = math.degrees(math.asin(view[2] / np.linalg.norm(view)))
-        gate = "<=5 (G-b PASS)" if abs(pitch) <= 5 else ">5"
+        # LOOKOUT 有 ±5° 平视门（G-b）；TABLE_VIEW 是**有意低头**姿态，核对其落 -30..-20 目标带；
+        # 其余姿态只报数（STOW 朝上 park、CARRY 略俯，均无平视门约束）。
+        if name == "LOOKOUT":
+            gate = "<=5 (G-b PASS)" if abs(pitch) <= 5 else ">5 (G-b FAIL)"
+        elif name == "TABLE_VIEW":
+            gate = ("in[-30,-20] (table PASS)" if -30.0 <= pitch <= -20.0
+                    else "NOT in[-30,-20] (table FAIL)")
+        else:
+            gate = "(no level gate)"
         tag = " [default]" if name == DEFAULT_POSE else ""
-        print(f"[wrist_camera] {name:8} view+X pitch={pitch:+6.2f}deg  {gate}{tag}")
+        print(f"[wrist_camera] {name:10} view+X pitch={pitch:+6.2f}deg  {gate}{tag}")
 
 
 if __name__ == "__main__":
