@@ -217,30 +217,41 @@ _ITEM_DIR = f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics"
 _PALLET_DIR = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/Props"
 # 摆位锚（厅深处空角，见 SCENES["office"]["props"] 注释）。
 _ANCHOR_X, _ANCHOR_Y = -1.5, -6.5
-# 托盘 SM_PaletteA_01：核验 bbox=[1.213,1.003,0.211]，原点 XY 居中 / Z 基座对齐
-# （bbox_max=[0.608,0.503,0.211] ⇒ min=[-0.605,-0.500,0.0]）。落地 z=0 ⇒ 顶面 0.211m。
-_PALLET_TOP_Z = 0.21112  # 托盘顶面（罐子落台面高度）——核验 bbox z
-# YCB Axis_Aligned_Physics 原点在物体中心；落台面 ⇒ 中心 z = 顶面 + 半高 + 落差裕量。
-# 落差裕量 0.02m 防生成即穿台（穿台会被弹飞）；物理沉降后落稳，G-p2 ±0.10m 门吸收微漂。
-_DROP_CLR = 0.02
+# 托盘 SM_PaletteA_01：核验 bbox=[1.213,1.003,0.211]，原点 XY 居中 / Z 基座对齐。
+# CEO 2026-07-10 reach 裁定：整托盘当"桌"太大（PiPER 626mm，臂基距鼻端~0.3m ⇒ 只有
+# 台缘 ~0.15-0.2m 窄带可达；中线物品离任何边 0.5m+ = 物理不可达）。修法：只缩 XY 不缩 Z
+# ——scale(0.5,0.4,1) ⇒ 台面 0.607×0.401m，顶面 0.21112 不变（可抓带一毫米不动）。
+_PALLET_SCALE = (0.5, 0.4, 1.0)
+_PALLET_TOP_Z = 0.21112  # 托盘顶面（核验 bbox z；Z 不缩故不变）
+# YCB Axis_Aligned_Physics 规范系是 Y 轴朝上——三件的"高度"全在 bbox Y 分量
+# （soup [.068,.102,.068] / sugar [.093,.176,.045] / mustard [.096,.191,.058]），
+# 默认姿态=躺（CEO 眼见实锤；躺姿圆罐还会滚位）。立正 = 绕 X 转 +90°（体 Y→世界 Z）。
+_UPRIGHT = (0.70711, 0.70711, 0.0, 0.0)  # quat(w,x,y,z) = Rx(+90°)
+# 落差裕量：0.02 弹跳曾致滚位，立姿收紧 0.01（不穿台、少弹跳）；G-p7 立正 gate 兜底。
+_DROP_CLR = 0.01
 def _rest_z(bbox_z: float) -> float:
     """物体落托盘顶面后的中心 z（顶面 + 半高 + 落差裕量）。"""
     return _PALLET_TOP_Z + bbox_z / 2.0 + _DROP_CLR
-# 入选 3 物理物体的核验 bbox z（供靶：soup 首抓 Ø66 / sugar 矮盒兜底 / mustard 瓶）。
-_BBZ_SOUP, _BBZ_SUGAR, _BBZ_MUSTARD = 0.10185, 0.04513, 0.1913
+# 入选 3 件的立高 = 核验 bbox Y 分量（立正后即竖直尺寸）：soup 首抓 Ø66×H102 /
+# sugar 薄盒立起 176 高、38mm 薄边呈爪 / mustard 瓶 191 高、瓶身 58mm 呈爪。
+_H_SOUP, _H_SUGAR, _H_MUSTARD = 0.10185, 0.17625, 0.1913
+# 一列贴 -Y 近边：行 Y = 锚-0.08（距缩放后 -Y 台缘 0.2006-0.08=0.12m ≤ reach gate
+# 0.15m）；X = 锚±0.18 间距（爪进入余量 + 单目标隔离；端件距 X 台缘 0.303-0.18=0.12m）。
+_ROW_Y = _ANCHOR_Y - 0.08
 # props 单一同源（z-manip tests/contract.py PROPS 引此为准；改摆位要同步测试常量）。
 # 间距沿 X 展开 0.35m（≥0.15m 门）、均落托盘 X 跨 [-2.11,-0.89] 内留边；Y 居锚线 -6.5。
 PROPS_OFFICE = [
-    # 垫台：静态托盘（physics=False，不进 GT）。落地 z=0，顶面 _PALLET_TOP_Z。
+    # 垫台：静态托盘（physics=False，不进 GT）。落地 z=0，顶面 _PALLET_TOP_Z；XY 缩放见上。
     {"name": "pallet", "usd": f"{_PALLET_DIR}/SM_PaletteA_01.usd",
-     "pos": (_ANCHOR_X, _ANCHOR_Y, 0.0), "physics": False},
-    # 物理物体（physics=True，出 /objects/<name>/odom GT）：
+     "pos": (_ANCHOR_X, _ANCHOR_Y, 0.0), "physics": False, "scale": _PALLET_SCALE},
+    # 物理物体（physics=True，出 /objects/<name>/odom GT）：全部立正（_UPRIGHT），
+    # 一列贴 -Y 近边（reach 窄带内），z 按立高算。
     {"name": "soup_can", "usd": f"{_ITEM_DIR}/005_tomato_soup_can.usd",
-     "pos": (_ANCHOR_X - 0.35, _ANCHOR_Y, _rest_z(_BBZ_SOUP)), "physics": True},
+     "pos": (_ANCHOR_X - 0.18, _ROW_Y, _rest_z(_H_SOUP)), "rot": _UPRIGHT, "physics": True},
     {"name": "sugar_box", "usd": f"{_ITEM_DIR}/004_sugar_box.usd",
-     "pos": (_ANCHOR_X, _ANCHOR_Y, _rest_z(_BBZ_SUGAR)), "physics": True},
+     "pos": (_ANCHOR_X, _ROW_Y, _rest_z(_H_SUGAR)), "rot": _UPRIGHT, "physics": True},
     {"name": "mustard", "usd": f"{_ITEM_DIR}/006_mustard_bottle.usd",
-     "pos": (_ANCHOR_X + 0.35, _ANCHOR_Y, _rest_z(_BBZ_MUSTARD)), "physics": True},
+     "pos": (_ANCHOR_X + 0.18, _ROW_Y, _rest_z(_H_MUSTARD)), "rot": _UPRIGHT, "physics": True},
 ]
 SCENES["office"]["props"] = PROPS_OFFICE  # 回填占位（前向引用规避）
 # 其它场景无 props ⇒ 取 [] 向后兼容（main 用 SCENE.get("props") or []）。
@@ -374,20 +385,22 @@ def main():
     phys_props = {}
     for _pd in SCENE_PROPS:
         _pname, _pusd, _ppos = _pd["name"], _pd["usd"], _pd["pos"]
+        _prot = _pd.get("rot", (1.0, 0.0, 0.0, 0.0))   # quat(w,x,y,z)；YCB 立正用
+        _pscale = _pd.get("scale")                      # None=原尺寸；托盘缩 XY 用
         if _pd["physics"]:
             # 参照 BOX_CFG，仅把 spawn 源从 CuboidCfg 换成 UsdFileCfg（YCB 自带质量/collider）。
             _cfg = RigidObjectCfg(
                 prim_path=f"/World/Props/{_pname}",
-                spawn=sim_utils.UsdFileCfg(usd_path=_pusd),
-                init_state=RigidObjectCfg.InitialStateCfg(pos=_ppos),
+                spawn=sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=_ppos, rot=_prot),
             )
             phys_props[_pname] = RigidObject(_cfg)
-            print(f"[NAV][M05] physics prop {_pname} @ {_ppos} <- {_pusd}", flush=True)
+            print(f"[NAV][M05] physics prop {_pname} @ {_ppos} rot={_prot} <- {_pusd}", flush=True)
         else:
             # 静态垫台：直落 USD prim（参照场景 USD 落法 env_cfg.func）。translate=落位。
-            _scfg = sim_utils.UsdFileCfg(usd_path=_pusd)
-            _scfg.func(f"/World/Props/{_pname}", _scfg, translation=_ppos)
-            print(f"[NAV][M05] static prop {_pname} @ {_ppos} <- {_pusd}", flush=True)
+            _scfg = sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale)
+            _scfg.func(f"/World/Props/{_pname}", _scfg, translation=_ppos, orientation=_prot)
+            print(f"[NAV][M05] static prop {_pname} @ {_ppos} scale={_pscale} <- {_pusd}", flush=True)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
         # Keep the physical IMU location. In this Isaac Lab integration the
