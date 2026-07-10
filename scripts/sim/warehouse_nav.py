@@ -13,6 +13,7 @@
 """
 import argparse
 import math
+from pathlib import Path
 
 from sensor_frame_contract import to_navigation_imu
 
@@ -101,9 +102,12 @@ from sensor_msgs.msg import JointState  # noqa: E402
 from std_msgs.msg import Bool  # noqa: E402
 from std_msgs.msg import Float32  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
+from trajectory_msgs.msg import JointTrajectory  # noqa: E402
 
 # Z-Manip M0：腕相机口径 + 三姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
 import wrist_camera as wc  # noqa: E402
+from manip_scene import load_manip_scene  # noqa: E402
+from piper_trajectory import JointTrajectoryBuffer  # noqa: E402
 
 # tf2_ros 可选（Jazzy 标配；缺失不应拖垮整条导航拉起——软降级 + 响亮告警，不静默吞）。
 try:
@@ -165,14 +169,6 @@ SCENES = {
         # follow_dz=2.0：跟随镜头也压在天花板下（历史 3.6 会穿顶棚）。
         "cam": {"eye": (-2.5 + 3.2, -5.0 - 2.4, 0.42 + 2.0),
                 "target": (-2.5, -5.0, 0.42), "follow_dz": 2.0},
-        # Z-Manip M0.5 抓取测试角（CEO 已批 2026-07-10）：托盘垫台 + 3 个物理 YCB 罐/瓶，
-        # 为 M1 find(X)/M2 抓取供靶。摆位纪律（AGENTS §sim-safety + M0.5 铁律）：
-        # 锚 (-1.5,-6.5)=spawn(-2.5,-5.0) 往厅深处 -Y 1.5m 的空角；托盘顶>0.20m 进代价图
-        # 导航正常绕，罐高<0.20m 对导航失明（设计意图）故只放停车点侧向、绝不放行进直线上。
-        # 每条：name(短语义)/usd/pos(xyz)/physics。physics=True 走 RigidObjectCfg（可抓、
-        # 出 GT odom）；physics=False 走静态 UsdFileCfg（垫台，不进 GT）。z 由核验 bbox 算
-        # （见 PROPS_OFFICE 上方几何注释）。additive：其它场景无 props 键=[] 向后兼容。
-        "props": None,  # 占位；真值在 PROPS_OFFICE 定义后回填（见下）——避免前向引用
     },
 }
 SCENE_NAME = _os.environ.get("GO2W_SCENE", "warehouse")
@@ -209,53 +205,21 @@ BOX_CFG = RigidObjectCfg(
     init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POS),
 )
 
-# ===== Z-Manip M0.5 抓取测试角：托盘 + 3 物理 YCB（office 专属 props）=====
-# 资产全部复用 ISAAC_NUCLEUS_DIR 前缀（office.usd 同源，零新机制）。真名/质量/尺寸=
-# 容器内 headless 核验定案（verify_ycb_assets.py → var/evidence/m05/asset_verification.json，
-# meters_per_unit=1.0）。010_potted_meat_can 不存在 → 按预案换 004_sugar_box。
-_ITEM_DIR = f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics"
-_PALLET_DIR = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/Props"
-# 摆位锚（厅深处空角，见 SCENES["office"]["props"] 注释）。
-_ANCHOR_X, _ANCHOR_Y = -1.5, -6.5
-# 托盘 SM_PaletteA_01：核验 bbox=[1.213,1.003,0.211]，原点 XY 居中 / Z 基座对齐。
-# CEO 2026-07-10 reach 裁定：整托盘当"桌"太大（PiPER 626mm，臂基距鼻端~0.3m ⇒ 只有
-# 台缘 ~0.15-0.2m 窄带可达；中线物品离任何边 0.5m+ = 物理不可达）。修法：只缩 XY 不缩 Z
-# ——scale(0.5,0.4,1) ⇒ 台面 0.607×0.401m，顶面 0.21112 不变（可抓带一毫米不动）。
-_PALLET_SCALE = (0.5, 0.4, 1.0)
-_PALLET_TOP_Z = 0.21112  # 托盘顶面（核验 bbox z；Z 不缩故不变）
-# YCB Axis_Aligned_Physics 规范系是 Y 轴朝上——三件的"高度"全在 bbox Y 分量
-# （soup [.068,.102,.068] / sugar [.093,.176,.045] / mustard [.096,.191,.058]），
-# 默认姿态=躺（CEO 眼见实锤；躺姿圆罐还会滚位）。立正 = 绕 X 转 +90°（体 Y→世界 Z）。
-_UPRIGHT = (0.70711, 0.70711, 0.0, 0.0)  # quat(w,x,y,z) = Rx(+90°)
-# 落差裕量：0.02 弹跳曾致滚位，立姿收紧 0.01（不穿台、少弹跳）；G-p7 立正 gate 兜底。
-_DROP_CLR = 0.01
-def _rest_z(bbox_z: float) -> float:
-    """物体落托盘顶面后的中心 z（顶面 + 半高 + 落差裕量）。"""
-    return _PALLET_TOP_Z + bbox_z / 2.0 + _DROP_CLR
-# 入选 3 件的立高 = 核验 bbox Y 分量（立正后即竖直尺寸）：soup 首抓 Ø66×H102 /
-# sugar 薄盒立起 176 高、38mm 薄边呈爪 / mustard 瓶 191 高、瓶身 58mm 呈爪。
-_H_SOUP, _H_SUGAR, _H_MUSTARD = 0.10185, 0.17625, 0.1913
-# 一列贴 -Y 近边：行 Y = 锚-0.08（距缩放后 -Y 台缘 0.2006-0.08=0.12m ≤ reach gate
-# 0.15m）；X = 锚±0.18 间距（爪进入余量 + 单目标隔离；端件距 X 台缘 0.303-0.18=0.12m）。
-_ROW_Y = _ANCHOR_Y - 0.08
-# props 单一同源（z-manip tests/contract.py PROPS 引此为准；改摆位要同步测试常量）。
-# 间距沿 X 展开 0.35m（≥0.15m 门）、均落托盘 X 跨 [-2.11,-0.89] 内留边；Y 居锚线 -6.5。
-PROPS_OFFICE = [
-    # 垫台：静态托盘（physics=False，不进 GT）。落地 z=0，顶面 _PALLET_TOP_Z；XY 缩放见上。
-    {"name": "pallet", "usd": f"{_PALLET_DIR}/SM_PaletteA_01.usd",
-     "pos": (_ANCHOR_X, _ANCHOR_Y, 0.0), "physics": False, "scale": _PALLET_SCALE},
-    # 物理物体（physics=True，出 /objects/<name>/odom GT）：全部立正（_UPRIGHT），
-    # 一列贴 -Y 近边（reach 窄带内），z 按立高算。
-    {"name": "soup_can", "usd": f"{_ITEM_DIR}/005_tomato_soup_can.usd",
-     "pos": (_ANCHOR_X - 0.18, _ROW_Y, _rest_z(_H_SOUP)), "rot": _UPRIGHT, "physics": True},
-    {"name": "sugar_box", "usd": f"{_ITEM_DIR}/004_sugar_box.usd",
-     "pos": (_ANCHOR_X, _ROW_Y, _rest_z(_H_SUGAR)), "rot": _UPRIGHT, "physics": True},
-    {"name": "mustard", "usd": f"{_ITEM_DIR}/006_mustard_bottle.usd",
-     "pos": (_ANCHOR_X + 0.18, _ROW_Y, _rest_z(_H_MUSTARD)), "rot": _UPRIGHT, "physics": True},
-]
-SCENES["office"]["props"] = PROPS_OFFICE  # 回填占位（前向引用规避）
-# 其它场景无 props ⇒ 取 [] 向后兼容（main 用 SCENE.get("props") or []）。
-SCENE_PROPS = SCENE.get("props") or []
+# Office manipulation fixture is data, not algorithm code.  Operators may point at
+# another validated JSON file without rebuilding the simulator.  Other navigation
+# scenes remain unchanged and do not spawn this fixture.
+_DEFAULT_MANIP_CONFIG = Path(__file__).resolve().parents[2] / "configs/manip_office_scene.json"
+_MANIP_CONFIG_PATH = Path(_os.environ.get(
+    "GO2W_MANIP_SCENE_CONFIG", str(_DEFAULT_MANIP_CONFIG)))
+if SCENE_NAME == "office":
+    MANIP_SCENE = load_manip_scene(
+        _MANIP_CONFIG_PATH, {"ISAAC_NUCLEUS_DIR": ISAAC_NUCLEUS_DIR})
+    SCENE_SHELF_PARTS = MANIP_SCENE["shelf"]["parts"]
+    SCENE_OBJECTS = MANIP_SCENE["objects"]
+else:
+    MANIP_SCENE = None
+    SCENE_SHELF_PARTS = []
+    SCENE_OBJECTS = []
 
 GO2W_NAV_CFG = ArticulationCfg(
     prim_path="/World/Robot",
@@ -379,28 +343,86 @@ def main():
         }
     robot = Articulation(GO2W_NAV_CFG)
     box = RigidObject(BOX_CFG)
-    # Z-Manip M0.5 抓取测试角：静态垫台直落 prim，物理物体建 RigidObject（后续出 GT odom）。
-    # SCENE_PROPS 为场景专属（office 有托盘+3 YCB；其它场景=[] 向后兼容）。物理物体收进
-    # phys_props（name→RigidObject），供 GT 多路发布循环沿用 box 的组装逻辑（抽 _publish_odom）。
+    # Configured Office fixture: every shelf part is a static collider.  Object
+    # positions and assets are read only from JSON; none are an execution input.
+    for _part in SCENE_SHELF_PARTS:
+        _part_cfg = sim_utils.CuboidCfg(
+            size=_part["size"],
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=_part["color"]),
+        )
+        _part_cfg.func(
+            f"/World/ManipFixture/{_part['name']}", _part_cfg,
+            translation=_part["position"],
+            orientation=_part["orientation_wxyz"],
+        )
+        print(f"[MANIP_SCENE] static collider {_part['name']} "
+              f"size={_part['size']} pos={_part['position']}", flush=True)
+
+    def _proxy_shape_cfg(proxy):
+        common = {"collision_props": sim_utils.CollisionPropertiesCfg()}
+        if proxy["shape"] == "cuboid":
+            return sim_utils.CuboidCfg(size=proxy["size"], **common)
+        if proxy["shape"] == "cylinder":
+            return sim_utils.CylinderCfg(
+                radius=proxy["radius"], height=proxy["height"], **common)
+        if proxy["shape"] == "capsule":
+            return sim_utils.CapsuleCfg(
+                radius=proxy["radius"], height=proxy["height"], **common)
+        raise RuntimeError(f"unsupported validated proxy shape {proxy['shape']!r}")
+
+    # Physical objects are retained solely for simulation and external scoring.
+    # Physics-baked assets use their authored colliders.  Visual-only irregular YCB
+    # assets receive a rigid Xform and configurable compound primitive colliders.
     phys_props = {}
-    for _pd in SCENE_PROPS:
-        _pname, _pusd, _ppos = _pd["name"], _pd["usd"], _pd["pos"]
-        _prot = _pd.get("rot", (1.0, 0.0, 0.0, 0.0))   # quat(w,x,y,z)；YCB 立正用
-        _pscale = _pd.get("scale")                      # None=原尺寸；托盘缩 XY 用
-        if _pd["physics"]:
-            # 参照 BOX_CFG，仅把 spawn 源从 CuboidCfg 换成 UsdFileCfg（YCB 自带质量/collider）。
+    for _obj in SCENE_OBJECTS:
+        _name = _obj["name"]
+        _root = f"/World/ManipObjects/{_name}"
+        if _obj["physics_mode"] == "asset":
             _cfg = RigidObjectCfg(
-                prim_path=f"/World/Props/{_pname}",
-                spawn=sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale),
-                init_state=RigidObjectCfg.InitialStateCfg(pos=_ppos, rot=_prot),
+                prim_path=_root,
+                spawn=sim_utils.UsdFileCfg(
+                    usd_path=_obj["asset"], scale=_obj["scale"]),
+                init_state=RigidObjectCfg.InitialStateCfg(
+                    pos=_obj["position"], rot=_obj["orientation_wxyz"]),
             )
-            phys_props[_pname] = RigidObject(_cfg)
-            print(f"[NAV][M05] physics prop {_pname} @ {_ppos} rot={_prot} <- {_pusd}", flush=True)
+            phys_props[_name] = RigidObject(_cfg)
         else:
-            # 静态垫台：直落 USD prim（参照场景 USD 落法 env_cfg.func）。translate=落位。
-            _scfg = sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale)
-            _scfg.func(f"/World/Props/{_pname}", _scfg, translation=_ppos, orientation=_prot)
-            print(f"[NAV][M05] static prop {_pname} @ {_ppos} scale={_pscale} <- {_pusd}", flush=True)
+            sim_utils.create_prim(
+                _root, prim_type="Xform", position=_obj["position"],
+                orientation=_obj["orientation_wxyz"])
+            _visual_cfg = sim_utils.UsdFileCfg(
+                usd_path=_obj["asset"], scale=_obj["scale"])
+            _visual_cfg.func(
+                f"{_root}/Visual", _visual_cfg,
+                translation=(0.0, 0.0, 0.0), orientation=(1.0, 0.0, 0.0, 0.0))
+            sim_utils.define_rigid_body_properties(
+                _root, sim_utils.RigidBodyPropertiesCfg())
+            sim_utils.define_mass_properties(
+                _root, sim_utils.MassPropertiesCfg(mass=_obj["mass_kg"]))
+            for _proxy_index, _proxy in enumerate(_obj["collision_proxies"]):
+                _proxy_path = f"{_root}/Collision_{_proxy_index}"
+                _proxy_cfg = _proxy_shape_cfg(_proxy)
+                _proxy_cfg.func(
+                    _proxy_path, _proxy_cfg,
+                    translation=_proxy["position"],
+                    orientation=_proxy["orientation_wxyz"])
+                sim_utils.set_prim_visibility(
+                    get_current_stage().GetPrimAtPath(_proxy_path), False)
+            phys_props[_name] = RigidObject(RigidObjectCfg(
+                prim_path=_root,
+                spawn=None,
+                init_state=RigidObjectCfg.InitialStateCfg(
+                    pos=_obj["position"], rot=_obj["orientation_wxyz"]),
+            ))
+        print(f"[MANIP_SCENE] object {_name} family={_obj['shape_family']} "
+              f"physics={_obj['physics_mode']} pos={_obj['position']} "
+              f"asset={_obj['asset']}", flush=True)
+    if MANIP_SCENE is not None:
+        print(f"[MANIP_SCENE] loaded name={MANIP_SCENE['name']} "
+              f"shelf_parts={len(SCENE_SHELF_PARTS)} objects={len(SCENE_OBJECTS)} "
+              f"source={MANIP_SCENE['source']}", flush=True)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
         # Keep the physical IMU location. In this Isaac Lab integration the
@@ -467,17 +489,39 @@ def main():
     print(f"[NAV] timeline de-promoted: end_time={_tl.get_end_time()} "
           f"looping={_tl.is_looping()}", flush=True)
 
-    # PiPER 抓取控制器（臂 8 关节目标的唯一属主；README 抓取管线见 sim-plan M5）
-    # A/B 判决实验（GO2W_WITH_ARM=0，裸机对照）：裸机 URDF 无臂关节，跳过抓取控制器
-    # 与臂目标写入——臂/抓取管线全程 None-guarded，其余导航链一字不动。
+    # PiPER execution boundary.  IK, grasp-pose generation, collision checking and
+    # planning live outside Isaac and send a named JointTrajectory.  This bridge
+    # validates limits/timing, interpolates on simulation time, and never reads an
+    # object's simulator pose to decide arm motion.
     if WITH_ARM:
-        from piper_grasp import PiperGraspController
-        grasp = PiperGraspController(robot, args_cli.device or "cuda:0")
-        arm_ids_t = grasp.all_ids
+        arm_joint_ids, arm_joint_names = robot.find_joints("piper_joint[1-6]")
+        grip_joint_ids, grip_joint_names = robot.find_joints("piper_joint[78]")
+        piper_joint_ids = list(arm_joint_ids) + list(grip_joint_ids)
+        ee_body_ids, _ = robot.find_bodies("piper_gripper_base")
+        if len(arm_joint_ids) != 6 or len(grip_joint_ids) != 2 or not ee_body_ids:
+            raise RuntimeError(
+                f"invalid PiPER contract arm={arm_joint_names} grip={grip_joint_names} "
+                f"ee={ee_body_ids}")
+        _position_limits = {
+            name: tuple(float(v) for v in robot.data.joint_pos_limits[0, joint_id].tolist())
+            for joint_id, name in zip(arm_joint_ids, arm_joint_names)
+        }
+        _velocity_limits = {
+            name: float(robot.data.joint_vel_limits[0, joint_id].item())
+            for joint_id, name in zip(arm_joint_ids, arm_joint_names)
+        }
+        trajectory_executor = JointTrajectoryBuffer(
+            arm_joint_names, _position_limits, _velocity_limits)
+        ee_body_idx = ee_body_ids[0]
+        print(f"[PIPER_EXEC] ready arm={arm_joint_names} grip={grip_joint_names} "
+              f"limits={_position_limits}", flush=True)
     else:
-        grasp = None
-        arm_ids_t = None
-        print("[NAV] GO2W_WITH_ARM=0: bare trunk, PiPER grasp controller SKIPPED (A/B control)", flush=True)
+        arm_joint_ids = arm_joint_names = None
+        grip_joint_ids = grip_joint_names = None
+        piper_joint_ids = None
+        trajectory_executor = None
+        ee_body_idx = None
+        print("[NAV] GO2W_WITH_ARM=0: bare trunk, PiPER executor SKIPPED (A/B control)", flush=True)
 
     # rclpy: IMU 发布 + cmd_vel 订阅（桥扩展已带 jazzy 内部库）
     rclpy.init()
@@ -508,7 +552,7 @@ def main():
         print("[NAV][WARN] d435_link body 未找到，optical TF 不发布", flush=True)
     _depth_rng = np.random.default_rng(0)  # 深度噪声固定种子（可复现；GO2W_DEPTH_NOISE=0 关噪）
     clock_pub = node.create_publisher(Clock, "/clock", 10)
-    # 抓取管线话题：箱子 GT、EE GT、臂关节态/目标、抓取指令与状态
+    # Simulation-only truth outputs are scoring oracles, never command inputs.
     box_pub = node.create_publisher(Odometry, "/objects/box/odom", 5)
     # Z-Manip M0.5 GT 多路：每个物理 prop 一路 /objects/<name>/odom（沿用 box 5Hz 与组装
     # 逻辑，抽 _publish_odom 一处；/objects/box/odom 保持原样不动=既有 M0 测试依赖）。
@@ -540,20 +584,32 @@ def main():
     ee_pub = node.create_publisher(PoseStamped, "/piper/ee_pose", 10)
     js_pub = node.create_publisher(JointState, "/piper/state", 10)
     jc_pub = node.create_publisher(JointState, "/piper/cmd", 10)
-    gs_pub = node.create_publisher(String, "/piper/grasp_status", 5)
-    grasp_req = {"pending": False}
+    exec_status_pub = node.create_publisher(String, "/piper/execution_status", 5)
+    trajectory_req = {"message": None, "cancel": False, "aperture": None}
 
-    def on_grasp_cmd(msg: String):
-        grasp_req["pending"] = True
-        print(f"[GRASP] cmd received: {msg.data!r}", flush=True)
+    def on_joint_trajectory(msg: JointTrajectory):
+        trajectory_req["message"] = msg
+        print(f"[PIPER_EXEC] trajectory received joints={list(msg.joint_names)} "
+              f"points={len(msg.points)}", flush=True)
 
-    node.create_subscription(String, "/piper/grasp_cmd", on_grasp_cmd, 5)
+    def on_gripper_aperture(msg: Float32):
+        trajectory_req["aperture"] = float(msg.data)
+
+    def on_execution_cancel(msg: Bool):
+        if msg.data:
+            trajectory_req["cancel"] = True
+
+    node.create_subscription(
+        JointTrajectory, "/piper/joint_trajectory", on_joint_trajectory, 5)
+    node.create_subscription(
+        Float32, "/piper/gripper_aperture", on_gripper_aperture, 5)
+    node.create_subscription(Bool, "/piper/cancel", on_execution_cancel, 5)
 
     # Z-Manip M0：三姿态切换通道 /piper/named_pose(std_msgs/String ∈ {STOW,LOOKOUT,CARRY})。
-    # sim 内部 String 通道（与 /piper/grasp_cmd 同级），不经 HTTP 桥、不加 nav_owner 态。
+    # sim 内部 String 通道，不经 HTTP 桥、不加 nav_owner 态。
     # 回调只置目标姿态名（校验合法），主循环按属主协调写臂目标（见抓取块 if/else 排他分支）。
     # 默认目标=LOOKOUT：拉起后主循环把臂切到平视（当前 URDF init 视轴朝上 +27.9° 过不了 G-b）。
-    named_pose_req = {"name": wc.DEFAULT_POSE}
+    named_pose_req = {"name": wc.DEFAULT_POSE, "pending": True}
 
     def on_named_pose(msg: String):
         name = msg.data.strip()
@@ -562,22 +618,26 @@ def main():
                   flush=True)
             return
         named_pose_req["name"] = name
+        named_pose_req["pending"] = True
         print(f"[POSE] named_pose -> {name}", flush=True)
 
     node.create_subscription(String, "/piper/named_pose", on_named_pose, 5)
-    # 姿态目标张量缓存（按需构建，避免每拍新建）：名 → (arm_names+grip_names) 名序的 8 关节 tensor。
-    # 按 grasp 的关节名序装配（= arm_ids_t 顺序），彻底规避 find_joints 返回序≠数字名序的错位。
+    # Named poses remain an operator convenience.  Planned trajectories control
+    # arm joints only; gripper aperture is an independent channel.
     _pose_cache: dict = {}
-    _pose_joint_names = (list(grasp.arm_names) + list(grasp.grip_names)
-                         if grasp is not None else None)
 
     def _pose_tensor(name: str):
-        if _pose_joint_names is None:
+        if arm_joint_names is None:
             return None
         if name not in _pose_cache:
-            _pose_cache[name] = torch.tensor(
-                wc.pose_target_by_names(name, _pose_joint_names),
-                dtype=torch.float32, device=robot.data.joint_pos.device)
+            _pose_cache[name] = (
+                torch.tensor(
+                    wc.pose_target_by_names(name, arm_joint_names),
+                    dtype=torch.float32, device=robot.data.joint_pos.device),
+                torch.tensor(
+                    wc.pose_target_by_names(name, grip_joint_names),
+                    dtype=torch.float32, device=robot.data.joint_pos.device),
+            )
         return _pose_cache.get(name)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
@@ -696,9 +756,20 @@ def main():
         _stand_wheel_vel = torch.zeros(1, len(policy.wheel_ids), device=policy.device)
 
     step = 0
-    # 臂有效目标（属主协调后实际写入的 8 关节目标）——/piper/cmd 报此，杜绝与写入漂移。
-    # 缺省 = grasp 初始 q_tgt（idle 收臂态）；每拍在臂写入块按属主更新（named_pose 或 grasp）。
-    eff_arm_tgt = grasp.q_tgt if grasp is not None else None
+    # Effective targets are also published on /piper/cmd.  A completed trajectory
+    # holds its final point; cancel/rejection holds measured state; a named pose is
+    # used only when explicitly selected (LOOKOUT is the startup selection).
+    if trajectory_executor is not None:
+        _startup_arm, _startup_grip = _pose_tensor(wc.DEFAULT_POSE)
+        eff_arm_tgt = _startup_arm.clone()
+        gripper_tgt = _startup_grip.clone()
+        arm_owner = {"mode": "named_pose"}
+        gripper_status = {"value": "named_pose:LOOKOUT"}
+    else:
+        eff_arm_tgt = None
+        gripper_tgt = None
+        arm_owner = {"mode": "disabled"}
+        gripper_status = {"value": "disabled"}
     imu_msg = Imu()
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
@@ -723,8 +794,85 @@ def main():
             standstill_active = False
             standstill_blend = standstill_ramp = 0
             _blend_from = None
+            if trajectory_executor is not None:
+                reset_arm = _birth_jpos[0, arm_joint_ids].tolist()
+                trajectory_executor.cancel(reset_arm, reason="canceled:sim_reset")
+                named_pose_req["name"] = wc.DEFAULT_POSE
+                named_pose_req["pending"] = True
+                trajectory_req.update(message=None, cancel=False, aperture=None)
             print(f"[NAV][RESET] done at sim_t={sim_t['now']:.2f} "
                   f"root->birth {SCENE_SPAWN} (scene={SCENE_NAME}), vel=0", flush=True)
+
+        # Process arm commands in the physics thread.  Cancel has highest priority;
+        # a newly planned trajectory supersedes a pending named pose.  Every start
+        # state comes from measured joints, never an object truth topic.
+        if trajectory_executor is not None:
+            measured_arm = robot.data.joint_pos[0, arm_joint_ids].tolist()
+            if trajectory_req["cancel"]:
+                trajectory_req["cancel"] = False
+                trajectory_req["message"] = None
+                trajectory_executor.cancel(measured_arm)
+                arm_owner["mode"] = "hold"
+                eff_arm_tgt = torch.tensor(
+                    measured_arm, dtype=torch.float32,
+                    device=robot.data.joint_pos.device)
+                print("[PIPER_EXEC] canceled -> measured-state hold", flush=True)
+            elif trajectory_req["message"] is not None:
+                _msg = trajectory_req["message"]
+                trajectory_req["message"] = None
+                try:
+                    _times = [
+                        float(point.time_from_start.sec)
+                        + float(point.time_from_start.nanosec) * 1.0e-9
+                        for point in _msg.points
+                    ]
+                    trajectory_executor.submit(
+                        _msg.joint_names,
+                        [point.positions for point in _msg.points],
+                        _times,
+                        measured_arm,
+                        sim_t["now"],
+                    )
+                    named_pose_req["pending"] = False
+                    arm_owner["mode"] = "trajectory"
+                    print(f"[PIPER_EXEC] accepted duration={_times[-1]:.3f}s "
+                          f"points={len(_times)}", flush=True)
+                except Exception as exc:  # callback boundary must fail closed
+                    trajectory_executor.cancel(
+                        measured_arm, reason=f"rejected:{type(exc).__name__}:{exc}")
+                    arm_owner["mode"] = "hold"
+                    eff_arm_tgt = torch.tensor(
+                        measured_arm, dtype=torch.float32,
+                        device=robot.data.joint_pos.device)
+                    print(f"[PIPER_EXEC][REJECT] {exc}", flush=True)
+            elif named_pose_req["pending"]:
+                named_pose_req["pending"] = False
+                if trajectory_executor.active:
+                    trajectory_executor.cancel(
+                        measured_arm, reason="preempted:named_pose")
+                _named_arm, _named_grip = _pose_tensor(named_pose_req["name"])
+                eff_arm_tgt = _named_arm.clone()
+                gripper_tgt = _named_grip.clone()
+                arm_owner["mode"] = "named_pose"
+                gripper_status["value"] = f"named_pose:{named_pose_req['name']}"
+
+            if trajectory_req["aperture"] is not None:
+                aperture = trajectory_req["aperture"]
+                trajectory_req["aperture"] = None
+                max_aperture = (
+                    float(robot.data.joint_pos_limits[0, grip_joint_ids[0], 1])
+                    - float(robot.data.joint_pos_limits[0, grip_joint_ids[1], 0]))
+                if math.isfinite(aperture) and 0.0 <= aperture <= max_aperture:
+                    gripper_tgt = torch.tensor(
+                        [0.5 * aperture, -0.5 * aperture],
+                        dtype=torch.float32, device=robot.data.joint_pos.device)
+                    gripper_status["value"] = f"accepted:{aperture:.4f}"
+                    print(f"[PIPER_EXEC] gripper aperture={aperture:.4f}m", flush=True)
+                else:
+                    gripper_status["value"] = (
+                        f"rejected:{aperture!r}:range[0,{max_aperture:.4f}]")
+                    print(f"[PIPER_EXEC][REJECT] gripper aperture={aperture!r} "
+                          f"range=[0,{max_aperture:.4f}]", flush=True)
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
@@ -817,28 +965,22 @@ def main():
             for i in right:
                 vel_t[:, i] = wr
             robot.set_joint_velocity_target(vel_t)
-        # 抓取 + 三姿态：臂 8 关节目标的**单一属主排他**（Z-Manip M0）。
-        # 规则：抓取激活(status 以 "running:" 开头) → 属主=PiperGraspController，写 grasp.q_tgt
-        #       （现有语义一字不动）；否则(idle/done/failed) → 属主=named_pose，写当前姿态表。
-        # 任一拍臂目标只有一个逻辑写者，杜绝姿态与抓取每拍互相覆盖抖动。
-        # 裸机 A/B 对照（grasp is None）跳过全部臂/抓取写入（无臂关节）。
-        if grasp is not None:
-            if grasp_req["pending"]:
-                grasp_req["pending"] = False
-                box.update(physics_dt)
-                grasp.start(box.data.root_pos_w[0])
-            if step % 2 == 0:
-                grasp.step(2 * physics_dt)
-            grasp_active = grasp.status.startswith("running:")
-            if grasp_active:
-                # 属主=抓取：臂目标由伺服 q_tgt 提供（姿态让位）。
-                eff_arm_tgt = grasp.q_tgt
-            else:
-                # 属主=named_pose：写当前姿态 8 关节目标（arm_ids_t 名序=arm_names+grip_names）。
-                _ptgt = _pose_tensor(named_pose_req["name"])
-                eff_arm_tgt = _ptgt if _ptgt is not None else grasp.q_tgt
+        # Generic arm execution: interpolate the externally planned trajectory on
+        # sim time.  Gripper target is deliberately independent so approach,
+        # closure, retreat and re-grasp can be composed by the same stack in sim
+        # and on hardware.
+        if trajectory_executor is not None:
+            if arm_owner["mode"] == "trajectory":
+                _sample = trajectory_executor.sample(sim_t["now"])
+                eff_arm_tgt = torch.tensor(
+                    _sample.positions, dtype=torch.float32,
+                    device=robot.data.joint_pos.device)
+                if _sample.done:
+                    arm_owner["mode"] = "trajectory_hold"
+                    print("[PIPER_EXEC] trajectory succeeded -> final hold", flush=True)
+            _piper_target = torch.cat([eff_arm_tgt, gripper_tgt])
             robot.set_joint_position_target(
-                eff_arm_tgt.unsqueeze(0), joint_ids=arm_ids_t)
+                _piper_target.unsqueeze(0), joint_ids=piper_joint_ids)
         robot.write_data_to_sim()
         # 【3】自愈守卫：必须在 sim.step() 之前——step():565 的 PAUSE 旋等会先于守卫焊死主线程。
         if not sim.is_playing():
@@ -890,16 +1032,22 @@ def main():
             for _pname, _pobj in phys_props.items():
                 _pobj.update(physics_dt)
                 _publish_odom(prop_pubs[_pname], _pobj, _pname, sec, nsec)
-            if grasp is not None:
-                gs = String()
-                gs.data = f"{grasp.status};aperture={grasp.aperture():.4f};" \
-                          f"cmd_closed={int(grasp.cmd_closed())}"
-                gs_pub.publish(gs)
+            if trajectory_executor is not None:
+                _measured_grip = robot.data.joint_pos[0, grip_joint_ids]
+                _measured_aperture = float(
+                    (_measured_grip[0] - _measured_grip[1]).item())
+                _status = String()
+                _status.data = (
+                    f"{trajectory_executor.status};owner={arm_owner['mode']};"
+                    f"gripper={gripper_status['value']};"
+                    f"aperture={_measured_aperture:.4f}")
+                exec_status_pub.publish(_status)
 
-        if grasp is not None and step % 5 == 0:  # 臂状态 20Hz：EE GT 位姿（=夹持中心）+ 关节实测/目标
-            ep = grasp.grip_center().tolist()
-            _, eq = grasp.ee_pose()
-            eq = eq.tolist()
+        if trajectory_executor is not None and step % 5 == 0:
+            # Robot proprioception/command state.  /piper/ee_pose is a sim scoring
+            # convenience; task-object truth never flows back into this executor.
+            ep = robot.data.body_pos_w[0, ee_body_idx].tolist()
+            eq = robot.data.body_quat_w[0, ee_body_idx].tolist()
             em = PoseStamped()
             em.header.stamp.sec, em.header.stamp.nanosec = sec, nsec
             em.header.frame_id = "world"
@@ -909,15 +1057,13 @@ def main():
             ee_pub.publish(em)
             js = JointState()
             js.header.stamp.sec, js.header.stamp.nanosec = sec, nsec
-            js.name = grasp.arm_names + grasp.grip_names
-            js.position = robot.data.joint_pos[0, arm_ids_t].tolist()
+            js.name = list(arm_joint_names) + list(grip_joint_names)
+            js.position = robot.data.joint_pos[0, piper_joint_ids].tolist()
             js_pub.publish(js)
             jc = JointState()
             jc.header = js.header
             jc.name = js.name
-            # 报**有效**臂目标（属主协调后实际写入的目标）——G-c 用 /piper/state vs /piper/cmd
-            # 逐关节比对；若此处报 grasp.q_tgt 而实际写 named_pose，会假报大误差。
-            jc.position = eff_arm_tgt.tolist()
+            jc.position = torch.cat([eff_arm_tgt, gripper_tgt]).tolist()
             jc_pub.publish(jc)
 
         # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线

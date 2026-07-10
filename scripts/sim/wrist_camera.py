@@ -49,7 +49,7 @@ NAMED_POSES: dict[str, dict[str, float]] = {
     "LOOKOUT": {"piper_joint2": 0.43, "piper_joint3": -0.34,
                 "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
     "CARRY":   {"piper_joint2": 1.00, "piper_joint3": -0.71,
-                "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+                "piper_joint7": 0.0, "piper_joint8": 0.0},
 }
 # 默认启动姿态：LOOKOUT（当前 URDF init j2=0.8/j3=-1.2 视轴朝上 +27.9°，过不了 G-b；
 # 拉起后由主循环发一次内部 named_pose=LOOKOUT 切到平视，不动 init_state 落地态）。
@@ -92,8 +92,8 @@ CAM_CY = CAM_HEIGHT / 2.0   # 240.0
 # 帧 id（realsense2_camera 口径；sim=real 同名，见 z-manip §9.3）。
 CAM_OPTICAL_FRAME = "camera_color_optical_frame"
 # base→optical TF 的 parent frame 名。全链实际机体系名待 Verify 阶段以 TF 树核对
-# （SLAM/arise 可能叫 base_link/body）；经环境变量可改，免动代码+配对重启。默认 "base"。
-CAM_TF_PARENT_FRAME = os.environ.get("GO2W_CAM_TF_PARENT", "base")
+# （SLAM/arise 可能叫 base_link/body）；经环境变量可改，免动代码+配对重启。默认与 URDF 一致。
+CAM_TF_PARENT_FRAME = os.environ.get("GO2W_CAM_TF_PARENT", "base_link")
 
 # ROS 话题名（realsense2_camera 对齐口径）。
 TOPIC_COLOR = "/camera/color/image_raw"

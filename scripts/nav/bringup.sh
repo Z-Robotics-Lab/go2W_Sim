@@ -208,6 +208,8 @@ up() {
     -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
     -e GO2W_VIEWPORT_SLIM="${GO2W_VIEWPORT_SLIM:-0}" -e GO2W_CAM_SLOW="${GO2W_CAM_SLOW:-0}" \
     -e GO2W_DLSS_PERF="${GO2W_DLSS_PERF:-0}" -e GO2W_SCENE="${GO2W_SCENE:-warehouse}" \
+    -e GO2W_MANIP_SCENE_CONFIG="${GO2W_MANIP_SCENE_CONFIG:-/workspace/go2w/configs/manip_office_scene.json}" \
+    -e GO2W_CAM_TF_PARENT="${GO2W_CAM_TF_PARENT:-base_link}" \
     go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
     /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
     --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
