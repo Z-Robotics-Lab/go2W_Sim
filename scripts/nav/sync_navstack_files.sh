@@ -26,6 +26,9 @@ cp "$HERE/system_isaac_sim_with_exploration.launch.py.reference" \
    "$NAV/system_isaac_sim_with_exploration.launch.py"
 # RViz 面板去毒（坑29/32）：从 stock 配置生成去掉 TeleopPanel 的 go2w.rviz——
 # 面板发的 /joy 会关自主模式并锁死速度；操作者面板不属于 agent 产品面。
+# 另（CEO 2026-07-10 眼见要求）：stock 的两个 Image 面板订的 /camera/image 与
+# /camera/semantic_image 在本链不存在（面板全黑）——改指腕相机彩色/对齐深度，
+# RViz 里即是"狗眼第一视角"，抓取测试全程可肉眼盯。
 python3 - "$NAV" <<'PYEOF'
 import sys, re
 nav = sys.argv[1]
@@ -34,7 +37,13 @@ txt = open(src).read()
 # Panels 段里移除 teleop 面板条目（缩进块）；显示区不动
 txt = re.sub(r"  - Class: teleop_rviz_plugin.*?(?=  - Class: |Visualization Manager:)",
              "", txt, flags=re.S)
+# Image 面板重定向到腕相机（M0 realsense2 口径话题）+ 面板改名见名知意
+txt = txt.replace("Value: /camera/image", "Value: /camera/color/image_raw")
+txt = txt.replace("Name: Image", "Name: WristColor")
+txt = txt.replace("Value: /camera/semantic_image",
+                  "Value: /camera/aligned_depth_to_color/image_raw")
+txt = txt.replace("Name: SemanticImage", "Name: WristDepth")
 open(f"{nav}/go2w.rviz", "w").write(txt)
-print("[sync] go2w.rviz (TeleopPanel removed)")
+print("[sync] go2w.rviz (TeleopPanel removed; Image panels -> wrist cam)")
 PYEOF
 echo "[sync] scripts/nav -> $NAV OK"

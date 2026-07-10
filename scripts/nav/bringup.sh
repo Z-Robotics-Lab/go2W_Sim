@@ -207,6 +207,10 @@ up() {
     navstack:ready bash /ws/run_all_forever.sh >/dev/null
 
   _phase "isaac bridge (paired restart)"
+  # 眼见默认（CEO 2026-07-10）：Isaac 以 root 连宿主 X 开视口，授权必须在它启动之前。
+  # 原先只在第 5 步（RViz 前）放行——新开机首跑时 Isaac 连不上 X 会静默退化 headless
+  #（M0 验证"找不到 IsaacSim 窗口"的根因嫌疑）。此处提前放行；失败只 warn 不阻塞。
+  xhost +local: >/dev/null 2>&1 || echo "[bringup] warn: xhost 放行失败（无 X？Isaac 将 headless，不阻塞）"
   # 先清 Isaac 里的旧 sim（字符类防自杀），再起新实例
   docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
   docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
