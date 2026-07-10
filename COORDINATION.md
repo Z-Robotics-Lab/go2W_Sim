@@ -39,3 +39,14 @@
   init 定罪+修复+无漂移)·B线达门(slip≈0,转向回归零摔)·栈留 office ALL-GREEN(robot 静止)。
   详 DEBUG_extrinsic_friction.md。拉起面文件冻结解除。
 - 后续:fix-a 复验窗(CEO 排期)可按其预注册门重新 claim。
+
+## 冲突记录(2026-07-10 00:37-00:42,/piper/named_pose 双探针互污 — 流程缺口非违规)
+- zmanip-m0-verify 会话(增益 K400/D15 复测)与另一并发验收循环(疑=母会话"go2w开发";
+  nav_bridge.log [POSE] 行 972-1065,STOW/LOOKOUT/CARRY 周期循环)在 /piper/named_pose 交错:
+  **sim 110-162 两边姿态窗口数据全废**(该时段任何 G-b/G-c 读数不可入账)。
+- **教训成规**:主动指令话题(/piper/named_pose、grasp 触发等)与拉起面文件同级——发布前必须
+  在此 claim;把"复测"交接给子会话后,母会话不得再自跑同通道探针。
+- 复测已在安静通道完成(sim 232-272,foreign 守卫三窗全绿):**G-b PASS(LOOKOUT 峰值 1.97°<5°)
+  + G-c 3/3 PASS(0.0374/0.0289/0.0240<0.05rad)**,K400/D15 入账,数字详 git commit +
+  var/evidence/m0/。[RULING] sim 执行器 PD 整定非 CEO gate(不涉接口/依赖/安全/真机)。
+  zmanip-m0-verify claim 已释放(sim 槽位归还,勿再有会话双驱 named_pose)。
