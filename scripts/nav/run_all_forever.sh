@@ -39,6 +39,26 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
 
 echo "[SUPERVISOR] NAV_MODE=$NAV_MODE -> $SYSTEM_LAUNCH" >> /ws/supervisor.log
 (
+  THRE="${LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE:-0.2}"
+  APPLIED=""
+  while true; do
+    if ros2 node list 2>/dev/null | grep -qx "/localPlanner"; then
+      if ros2 param set /localPlanner obstacleHeightThre "$THRE" >/dev/null 2>&1; then
+        if [ "$APPLIED" != "$THRE" ]; then
+          echo "[SUPERVISOR] localPlanner obstacleHeightThre=$THRE" >> /ws/supervisor.log
+          APPLIED="$THRE"
+        fi
+        sleep 30
+      else
+        sleep 2
+      fi
+    else
+      APPLIED=""
+      sleep 2
+    fi
+  done
+) &
+(
   while true; do
     ros2 launch "/ws/$SYSTEM_LAUNCH" sensorOffsetX:=0.27 sensorOffsetY:=0.0 \
       >> /ws/system.log 2>&1

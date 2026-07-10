@@ -406,6 +406,7 @@ def main():
     node.create_subscription(String, "/piper/grasp_cmd", on_grasp_cmd, 5)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
+    timeline_stop = {"hit": False}
 
     # 【4】触发取证监听（坑40）：对 PLAY/PAUSE/STOP 打印带栈痕迹的事件——闭环触发源。
     #   进程内调用→栈给出调用者；栈只到事件泵→证明外部输入/UI 注入。放在 sim_t 定义后。
@@ -416,6 +417,8 @@ def main():
             return  # 只关心 PLAY/PAUSE/STOP，忽略 tick/time-changed 洪流
         print(f"[NAV][TIMELINE] {name} at sim_t={sim_t['now']:.2f} wall={_time.time():.3f}",
               flush=True)
+        if e.type == 2:
+            timeline_stop["hit"] = True
         if e.type in (1, 2):  # PAUSE/STOP 附栈痕迹
             traceback.print_stack()
     _tl_event_sub = _tl.get_timeline_event_stream().create_subscription_to_pop(  # noqa: F841
@@ -671,6 +674,11 @@ def main():
                 _tl.set_end_time(1.0e9)  # play() 可能复位 end_time；重申不可达端点
                 _tl.commit()
         sim.step()  # 渲染节拍由 SimulationCfg.render_interval 管理
+        if timeline_stop["hit"] or sim.is_stopped():
+            print(f"[NAV][FATAL] timeline STOPPED during sim.step at sim_t={sim_t['now']:.2f} "
+                  f"— exit before touching invalid PhysX views", flush=True)
+            stopped = True
+            break
         robot.update(physics_dt)
         imu.update(physics_dt)
         if step % 20 == 0:  # GT 位姿 5Hz
@@ -818,10 +826,11 @@ def main():
             print(f"[NAV] imu sample: acc={[round(a,2) for a in acc]} (水平化后期望 ~[0,0,9.8])")
         if args_cli.shot_dir and step % 3000 == 0:  # 30s @100Hz
             import os
-            from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
             os.makedirs(args_cli.shot_dir, exist_ok=True)
-            capture_viewport_to_file(get_active_viewport(),
-                                     f"{args_cli.shot_dir}/nav_{step//6000:04d}.png")
+            if _os.environ.get("GO2W_CAPTURE_VIEWPORT", "0") == "1":
+                from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
+                capture_viewport_to_file(get_active_viewport(),
+                                         f"{args_cli.shot_dir}/nav_{step//3000:04d}.png")
             # 跟随机器人视角（斜后上方俯视）。高度偏移=场景专属 follow_dz：
             # warehouse 3.6（无低顶）、office 2.0（压在天花板下，历史 3.6 会穿顶棚）。
             p = robot.data.root_pos_w[0].tolist()

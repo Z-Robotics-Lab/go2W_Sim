@@ -10,7 +10,9 @@ NAV="$(cd "$NAV" && pwd)"
 for f in pc2_to_livox.py run_navstack.sh agent_bridge.py run_all_forever.sh; do
   cp "$HERE/$f" "$NAV/$f"
 done
-# P5.2 探索变体 launch：.reference 快照即真相（与 patch 第5步产物逐字节一致已验证）
+# Isaac sim launch：.reference 快照即真相（与 patch 产物逐字节一致已验证）
+cp "$HERE/system_isaac_sim.launch.py.reference" \
+   "$NAV/system_isaac_sim.launch.py"
 cp "$HERE/system_isaac_sim_with_exploration.launch.py.reference" \
    "$NAV/system_isaac_sim_with_exploration.launch.py"
 # RViz 面板去毒（坑29/32）：从 stock 配置生成去掉 TeleopPanel 的 go2w.rviz——

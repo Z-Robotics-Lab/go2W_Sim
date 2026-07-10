@@ -7,12 +7,12 @@
 set -e
 GO2W="$(cd "$(dirname "$0")/../.." && pwd)"
 NAV="$GO2W/refs/Navigation-Physical-Experiment"
-# RL locomotion 策略（robot_lab 训练；差速在 Go2W 上物理不可行——README 坑 26）
-# 旧默认(出厂 ckpt,回滚即换回): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt
-# 切换记录: 2026-07-07 配方 v2 Round-3(model_3497)产品裁定落地,见 docs/sim-plan.md
-# 回滚点(2026-07-07 载荷轮前默认;已在 6.46kg 新体重锚验证 ①0.0049/④0.0337+0.0063): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_06-51-14/model_3497.pt
+# RL locomotion 策略（差速在 Go2W 上物理不可行——README 坑 26）。默认指向
+# git 追踪的 assets/policies/；容器 bind-mount 仓库到 /workspace/go2w，路径直接可见。
+# 回滚锚: /workspace/go2w/assets/policies/go2w_flat_payload_3497/model_3497.pt
+# 出厂锚: /workspace/go2w/assets/policies/go2w_flat_factory_1999/model_1999.pt
 # 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
-POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_07-53-57/model_5495.pt}"
+POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt}"
 
 bash "$GO2W/scripts/nav/sync_navstack_files.sh" "$NAV"  # 真相源同步（防旧拷贝）
 echo "[1/4] navstack supervisor 重启"
@@ -28,6 +28,7 @@ echo "[2/4] Isaac 桥重启"
 docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
 docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+  -e GO2W_SCENE="${GO2W_SCENE:-warehouse}" \
   -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
   go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
   /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \

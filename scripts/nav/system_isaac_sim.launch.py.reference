@@ -94,6 +94,12 @@ def generate_launch_description():
       [get_package_share_directory('livox_ros_driver2'), '/launch_ROS2/msg_MID360_launch.py']),
   )
 
+  start_cmd_vel_mux = IncludeLaunchDescription(
+    PythonLaunchDescriptionSource(os.path.join(
+      get_package_share_directory('cmd_vel_mux'), 'launch', 'cmd_vel_mux-launch.py')
+    )
+  )
+
   ld = LaunchDescription()
 
   # Add the actions
@@ -111,5 +117,6 @@ def generate_launch_description():
   ld.add_action(start_sensor_scan_generation)
   ld.add_action(start_arise_slam)
   ld.add_action(start_visualization_tools)
+  ld.add_action(start_cmd_vel_mux)
 
   return ld

@@ -96,6 +96,12 @@ def generate_launch_description():
       [get_package_share_directory('livox_ros_driver2'), '/launch_ROS2/msg_MID360_launch.py']),
   )
 
+  start_cmd_vel_mux = IncludeLaunchDescription(
+    PythonLaunchDescriptionSource(os.path.join(
+      get_package_share_directory('cmd_vel_mux'), 'launch', 'cmd_vel_mux-launch.py')
+    )
+  )
+
   # TARE 探索规划器（照抄 system_*_with_exploration_planner.launch 的 start_tare_planner，
   # 追加 use_sim_time:='true' —— Isaac /clock 全链仿真时钟，缺它 TARE 时间戳错乱）。
   start_tare_planner = IncludeLaunchDescription(
@@ -125,6 +131,7 @@ def generate_launch_description():
   ld.add_action(start_sensor_scan_generation)
   ld.add_action(start_arise_slam)
   ld.add_action(start_visualization_tools)
+  ld.add_action(start_cmd_vel_mux)
   ld.add_action(start_tare_planner)
 
   return ld

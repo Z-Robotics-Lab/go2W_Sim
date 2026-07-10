@@ -22,12 +22,13 @@ LOG="$REPO/logs/nav_bridge.log"
 PHASE_FILE="$REPO/logs/.bringup.phase"
 MEM_MIN_GB="${GO2W_MEM_MIN_GB:-20}"     # 可用内存低于此值拒绝启动（防双开 OOM 共享 64G 宿主）
 ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
-# RL locomotion 策略（容器内路径；README 坑 26：差速在 Go2W 物理不可行，必须 RL 策略）
-# 旧默认(出厂 ckpt,回滚即换回): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-04_15-52-42/model_1999.pt
-# 切换记录: 2026-07-07 配方 v2 Round-3(model_3497)产品裁定落地,见 docs/sim-plan.md
-# 回滚点(2026-07-07 载荷轮前默认;已在 6.46kg 新体重锚验证 ①0.0049/④0.0337+0.0063): /workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_06-51-14/model_3497.pt
+# RL locomotion 策略（容器内路径；README 坑 26：差速在 Go2W 物理不可行，必须 RL 策略）。
+# 默认指向 git 追踪的 assets/policies/；容器 bind-mount 仓库到 /workspace/go2w，
+# 故此路径在容器内直接可见。
+# 回滚锚: /workspace/go2w/assets/policies/go2w_flat_payload_3497/model_3497.pt
+# 出厂锚: /workspace/go2w/assets/policies/go2w_flat_factory_1999/model_1999.pt
 # 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
-POLICY="${GO2W_POLICY:-/workspace/go2w/robot_lab/logs/rsl_rl/unitree_go2w_flat/2026-07-07_07-53-57/model_5495.pt}"
+POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt}"
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
