@@ -88,7 +88,7 @@ import omni.graph.core as og  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 import rclpy  # noqa: E402
 import torch  # noqa: E402
-from geometry_msgs.msg import PoseStamped, TransformStamped, TwistStamped  # noqa: E402
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist, TwistStamped  # noqa: E402
 from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 from rosgraph_msgs.msg import Clock  # noqa: E402
@@ -622,6 +622,12 @@ def main():
                 dtype=torch.float32, device=robot.data.joint_pos.device)
         return _pose_cache.get(name)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
+    # 近段直控通道（Z-Manip M1）：伺服节点排他发 /manip/cmd_vel(Twist)；消费端仲裁——
+    # manip 新鲜(<0.5 sim-s)则优先、否则回落 pathFollower 的 /cmd_vel。单一逻辑生产者由
+    # 消费端保证，绝不双写 /cmd_vel 原话题。t 用本地 sim 时钟在收到帧时打戳（不读 header，
+    # 与 /cmd_vel 新鲜度判据同源、同系）。
+    manip_cmd = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "t": -1.0}
+    manip_src = {"active": False, "last_log_t": -1e9}  # 仲裁源迟滞日志（限频）
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
 
     # 【4】触发取证监听（坑40）：对 PLAY/PAUSE/STOP 打印带栈痕迹的事件——闭环触发源。
@@ -650,6 +656,15 @@ def main():
         cmd["t"] = sim_t["now"]
 
     node.create_subscription(TwistStamped, "/cmd_vel", on_cmd, 10)
+
+    def on_manip_cmd(msg: Twist):
+        # 近段直控（M1 伺服节点）：Twist（无 header）——收到即以本地 sim 时钟打戳。
+        manip_cmd["vx"] = msg.linear.x
+        manip_cmd["vy"] = msg.linear.y
+        manip_cmd["wz"] = msg.angular.z
+        manip_cmd["t"] = sim_t["now"]
+
+    node.create_subscription(Twist, "/manip/cmd_vel", on_manip_cmd, 10)
 
     # 运维复位通道（仿真专属，真机无此语义——真机没有"传送回出生点"）：桥 POST /reset
     # → /sim/reset(Bool true) → 主循环把 root 状态写回出生位姿 + 清零所有速度。用于摔倒/
@@ -769,12 +784,30 @@ def main():
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
+            # selftest 不走 manip 仲裁（vy 沿用既有 /cmd_vel 门控读法，语义不变）。
+            vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
         else:
-            vx = cmd["vx"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
-            wz = cmd["wz"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            # ---- 近段直控仲裁（M1）：manip 新鲜(<0.5 sim-s)则排他优先，否则回落 pathFollower ----
+            # 单一逻辑生产者由此消费端保证；/cmd_vel 原订阅语义不变（仍是回落面）。
+            manip_fresh = (sim_t["now"] - manip_cmd["t"]) < 0.5
+            if manip_fresh:
+                vx, vy, wz = manip_cmd["vx"], manip_cmd["vy"], manip_cmd["wz"]
+            else:
+                vx = cmd["vx"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+                wz = cmd["wz"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+                vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            # 仲裁源切换打一行日志（限频：源变化 且 距上次日志 ≥1 sim-s）。
+            if manip_fresh != manip_src["active"] \
+                    and (sim_t["now"] - manip_src["last_log_t"]) >= 1.0:
+                print(f"[NAV][CMDMUX] source -> "
+                      f"{'MANIP(/manip/cmd_vel)' if manip_fresh else 'PATHFOLLOWER(/cmd_vel)'} "
+                      f"at sim_t={sim_t['now']:.2f} "
+                      f"(vx={vx:.3f} vy={vy:.3f} wz={wz:.3f})", flush=True)
+                manip_src["last_log_t"] = sim_t["now"]
+            manip_src["active"] = manip_fresh
 
         if policy is not None:
-            vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            # vy 已在上方仲裁/门控确定（manip 优先或 pathFollower 回落）。
             if step % 2 == 0:  # 策略 50Hz（sim 100Hz）
                 # ---- 死区 v2 迟滞状态机：命令 3D 范数 + 双阈值 + 柔性过渡 ----
                 cmd_norm = math.sqrt(vx * vx + vy * vy + wz * wz)
