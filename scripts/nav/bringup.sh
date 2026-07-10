@@ -22,6 +22,7 @@ LOG="$REPO/logs/nav_bridge.log"
 PHASE_FILE="$REPO/logs/.bringup.phase"
 MEM_MIN_GB="${GO2W_MEM_MIN_GB:-20}"     # 可用内存低于此值拒绝启动（防双开 OOM 共享 64G 宿主）
 ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
+NAV_TIMEOUT_S="${GO2W_NAV_TIMEOUT_S:-60}"        # navstack/RViz 启动及 SLAM 收敛上限
 # RL locomotion 策略（容器内路径；README 坑 26：差速在 Go2W 物理不可行，必须 RL 策略）。
 # 默认指向 git 追踪的 assets/policies/；容器 bind-mount 仓库到 /workspace/go2w，
 # 故此路径在容器内直接可见。
@@ -186,7 +187,8 @@ up() {
   fi
 
   # 3) 配对重启（内联 restart_all.sh 主体；铁律：navstack 与 Isaac 桥一起重启）------
-  #    顺序: navstack(PID-1 supervisor) -> Isaac 桥 -> 门控。
+  #    顺序: Isaac 桥 -> 8s 仿真稳定标记 -> navstack/RViz -> 门控。
+  #    ARISE 只在启动时估计一次重力；navstack 先起会把机器人落地瞬态固化成地图倾角。
   bash "$HERE/sync_navstack_files.sh" "$NAV"   # 真相源 scripts/nav -> refs（防旧拷贝）
   if [ "${NAV_MODE:-waypoint}" = "explore" ] && \
      [ ! -x "$NAV/install/tare_planner/lib/tare_planner/tare_planner_node" ]; then
@@ -196,18 +198,10 @@ up() {
     echo "    'source /opt/ros/jazzy/setup.bash && colcon build --packages-select tare_planner'"
     exit 1
   fi
-  _phase "navstack supervisor (paired restart)"
-  docker rm -f navstack >/dev/null 2>&1 || true
-  docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
-    -e ROS_DOMAIN_ID=42 -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
-    -e NAV_MODE="${NAV_MODE:-waypoint}" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
-    -v "$NAV":/ws -w /ws \
-    navstack:ready bash /ws/run_all_forever.sh >/dev/null
-
   _phase "isaac bridge (paired restart)"
   # 先清 Isaac 里的旧 sim（字符类防自杀），再起新实例
   docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
+  : > "$LOG"
   docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
@@ -218,36 +212,52 @@ up() {
     /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
     --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
 
-  # 4) 等 Isaac 就绪——有界等待（替换 restart_all 的无限 until）------------------
-  _phase "wait isaac ready (<=${ISAAC_TIMEOUT_S}s)"
+  # 4) 等 Isaac 站稳——有界等待（替换 restart_all 的无限 until）------------------
+  _phase "wait isaac sensor settle (<=${ISAAC_TIMEOUT_S}s)"
   local deadline=$(( $(date +%s) + ISAAC_TIMEOUT_S ))
-  # 就绪判据同 status.sh L2：出现 imu sample（sim 在真发传感器数据）
-  until grep -qa "imu sample" "$LOG" 2>/dev/null; do
+  # step=800 是 8 s 仿真时间；此后才允许 ARISE 做一次性重力初始化。
+  until grep -qa "imu settled" "$LOG" 2>/dev/null; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "[bringup] 超时：${ISAAC_TIMEOUT_S}s 内 Isaac 未就绪（nav_bridge.log 无 imu sample）。" >&2
+      echo "[bringup] 超时：${ISAAC_TIMEOUT_S}s 内 Isaac 未站稳（nav_bridge.log 无 imu settled）。" >&2
       echo "[bringup] ===== nav_bridge.log 尾 20 行诊断 =====" >&2
       tail -20 "$LOG" 2>/dev/null >&2 || echo "[bringup] （日志文件不存在: $LOG）" >&2
-      _phase "FAILED: isaac ready timeout"
+      _phase "FAILED: isaac sensor settle timeout"
       exit 1
     fi
-    sleep 15
+    sleep 2
   done
 
-  # 5) xhost 放行（起 RViz 前；失败只 warn，headless 无 X 时不阻塞）
+  # 5) xhost 放行后再起 navstack/RViz。
   _phase "xhost +local:"
   xhost +local: >/dev/null 2>&1 || echo "[bringup] warn: xhost +local: 失败（无 X/headless？RViz 可能起不来，不阻塞链路）"
 
-  # 6) 门控复核：用 status.sh 判 green -----------------------------------------
-  _phase "gate (status.sh green check)"
-  if bash "$HERE/status.sh"; then
-    _phase "up (green)"
-    echo "[bringup] ALL-GREEN: 全链就绪"
-    exit 0
-  else
-    echo "[bringup] GATE-FAILED: Isaac 已出数据但链路未达 green（SLAM 未收敛？查 status.sh 各层）。" >&2
-    _phase "FAILED: gate not green"
-    exit 1
-  fi
+  _phase "navstack supervisor (paired restart)"
+  docker rm -f navstack >/dev/null 2>&1 || true
+  docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
+    -e ROS_DOMAIN_ID=42 -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
+    -e NAV_MODE="${NAV_MODE:-waypoint}" \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v "$NAV":/ws -w /ws \
+    navstack:ready bash /ws/run_all_forever.sh >/dev/null
+
+  # 6) 门控复核：navstack 刚创建时需要数秒完成发现和 SLAM 初始化。
+  _phase "gate (wait green <=${NAV_TIMEOUT_S}s)"
+  deadline=$(( $(date +%s) + NAV_TIMEOUT_S ))
+  until bash "$HERE/status.sh" >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "[bringup] GATE-FAILED: ${NAV_TIMEOUT_S}s 内链路未达 green。" >&2
+      bash "$HERE/status.sh" >&2 || true
+      echo "[bringup] ===== system.log 尾 30 行诊断 =====" >&2
+      tail -30 "$NAV/system.log" 2>/dev/null >&2 || true
+      _phase "FAILED: gate timeout"
+      exit 1
+    fi
+    sleep 2
+  done
+  bash "$HERE/status.sh"
+  _phase "up (green)"
+  echo "[bringup] ALL-GREEN: 全链就绪"
+  exit 0
 }
 
 # ---------------------------------------------------------------------------

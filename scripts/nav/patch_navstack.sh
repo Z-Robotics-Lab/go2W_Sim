@@ -15,10 +15,24 @@ sed -i 's/use_sim_time: false/use_sim_time: true/g' "$NAV"/src/slam/arise_slam_m
 sed -i "s/SetParameter(name='use_sim_time', value='false')/SetParameter(name='use_sim_time', value='true')/" \
   "$NAV"/src/slam/arise_slam_mid360/launch/arize_slam.launch.py
 
-# 1b. 斜装雷达补偿：雷达相对（虚拟平装）IMU 前倾 20 度（单位: 度）。
-# 背景：栈的 imu_acc 限幅假设 IMU 水平，Isaac 侧 IMU 已用 -20° 姿态偏置拉平。
-sed -i 's/data: \[0.0, 0.0, 0.0\] #\[0.0, 0.5, 0.0\]/data: [0.0, 20.0, 0.0] # lidar pitched 20 deg vs level imu/' \
-  "$NAV"/src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml
+# 1b. 这里只允许雷达与 IMU 的相对外参。Isaac 发布的两路数据已经在同一导航系，
+# 物理模型里的 20 度安装角不能再写入这里，否则 registered_scan 会重复旋转 20 度。
+python3 - "$NAV" <<'PYEOF'
+import re
+import sys
+from pathlib import Path
+
+calib = (Path(sys.argv[1]) /
+         "src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml")
+text = calib.read_text()
+key = "imu_laser_rotation_offset"
+target = "data: [0.0, 0.0, 0.0] # Isaac lidar and IMU already share the navigation frame"
+pattern = rf"({key}:.*?\n(?:.*\n){{0,4}}\s*)data:\s*\[[^]]+\][^\n]*"
+updated, count = re.subn(pattern, rf"\1{target}", text, count=1)
+if count != 1:
+    raise RuntimeError(f"could not normalize {key} in {calib}")
+calib.write_text(updated)
+PYEOF
 
 # 2. XML launch 注入（只对非自闭合 <node ...> 块）
 python3 - "$NAV" <<'PYEOF'
@@ -41,7 +55,13 @@ python3 - "$NAV" <<'PYEOF'
 import sys
 from pathlib import Path
 nav = Path(sys.argv[1])
-src = (nav / "src/base_autonomy/vehicle_simulator/launch/system_real_robot.launch").read_text()
+launch_dir = nav / "src/base_autonomy/vehicle_simulator/launch"
+real_launch = launch_dir / "system_real_robot.launch.py"
+if not real_launch.exists():
+    real_launch = launch_dir / "system_real_robot.launch"  # legacy checkout
+if not real_launch.exists():
+    raise FileNotFoundError("system_real_robot launch file not found")
+src = real_launch.read_text()
 out = src.replace("  ld.add_action(start_joy)\n", "").replace("  ld.add_action(start_mid360)\n", "")
 # realRobot=false：关掉 pathFollower 的 /dev/ttyACM0 串口重试（T-Bot 真机底盘用，
 # 我们走 /cmd_vel topic）；autonomyMode=true：无手柄自主使能

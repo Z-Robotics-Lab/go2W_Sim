@@ -14,6 +14,8 @@
 import argparse
 import math
 
+from sensor_frame_contract import to_navigation_imu
+
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
@@ -302,10 +304,9 @@ def main():
     box = RigidObject(BOX_CFG)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
-        # rot: -20° 俯仰抵消雷达前倾 -> IMU 帧水平（等效"IMU 平装在车体"）。
-        # CMU 栈的 imu_acc_x_limit 限幅假设 IMU 水平：斜装 IMU 的重力 x 分量会被
-        # 剪掉导致重力初始化错 13°、vehicle 系歪（RViz 路径扇面竖起，已实锤）。
-        # 雷达相对 IMU 的 20° 俯仰改由标定文件 imu_laser_rotation_offset 声明。
+        # Keep the physical IMU location. In this Isaac Lab integration the
+        # measured vectors are already articulation/navigation-frame values;
+        # the fixed-joint visual pitch must not be applied to them again.
         offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR),
         update_period=1 / 100,
         gravity_bias=(0.0, 0.0, 0.0),  # 纯运动学加速度；重力在发布时按姿态正确投影
@@ -746,16 +747,14 @@ def main():
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec
         clock_pub.publish(clock_msg)
 
-        # IMU 发布：比力（斜帧）-> 恒定 Ry(+20°) 旋到水平帧。
-        # isaaclab OffsetCfg.rot 实测不作用于测量值（样本仍斜帧），故自己旋。
-        # 与 SLAM 标定 imu_laser_rotation_offset=[0,20,0]（雷达相对水平 IMU 俯仰 20°）自洽。
+        # Isaac 输出已经在导航对齐系。2026-07-10 在线拟合：固定 +20° 前，
+        # /lidar/points 地面倾角 2.11°；旧手工旋转后 IMU 重力倾角 17.94°，
+        # registered_scan 倾角 20.54°。因此这里只做契约封装，不再叠加安装角。
         g_b = math_utils.quat_apply_inverse(
             imu.data.quat_w, torch.tensor([[0.0, 0.0, 9.81]], device=imu.data.quat_w.device))
         ax, ay, az = (imu.data.lin_acc_b + g_b)[0].tolist()
         gx_, gy_, gz_ = imu.data.ang_vel_b[0].tolist()
-        CY, SY = 0.9396926, 0.3420201  # cos/sin(20°)
-        acc = (CY * ax + SY * az, ay, -SY * ax + CY * az)
-        gyr = (CY * gx_ + SY * gz_, gy_, -SY * gx_ + CY * gz_)
+        acc, gyr = to_navigation_imu((ax, ay, az), (gx_, gy_, gz_))
         quat = imu.data.quat_w[0].tolist()  # wxyz（arise use_imu_roll_pitch=false，仅参考）
         imu_msg.header.stamp.sec, imu_msg.header.stamp.nanosec = sec, nsec
         imu_msg.header.frame_id = "imu"
@@ -824,6 +823,10 @@ def main():
                 break
         if step == 200:
             print(f"[NAV] imu sample: acc={[round(a,2) for a in acc]} (水平化后期望 ~[0,0,9.8])")
+        if step == 800:
+            # ARISE estimates gravity once. Do not let it initialize from the
+            # spawn/landing transient; bringup waits for this 8 s sim-time marker.
+            print(f"[NAV] imu settled: step={step} acc={[round(a,2) for a in acc]}")
         if args_cli.shot_dir and step % 3000 == 0:  # 30s @100Hz
             import os
             os.makedirs(args_cli.shot_dir, exist_ok=True)

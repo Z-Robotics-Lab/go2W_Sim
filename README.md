@@ -71,6 +71,9 @@ Isaac 当机器人、CMU 导航栈（refs 见 docs/sim-plan.md）当大脑，全
 waypoint → FAR/local planner → cmd_vel → 差速轮速 → Go2W 在 full_warehouse 自主行驶
 至目标（SLAM 与地面真值交叉验证一致，静止漂移 5cm/20s）。
 
+传感器坐标约束：Mid-360 的物理 20° 姿态只存在于 URDF/USD；当前 Isaac ROS 输出已经
+导航对齐，桥与 `imu_laser_rotation_offset` 均不得再次叠加 20°。
+
 ```bash
 # 1) Isaac 侧（传感器桥：/lidar/points /imu/data /clock 出、/cmd_vel 入，DDS 域 42）
 docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \

@@ -10,6 +10,10 @@ NAV="$(cd "$NAV" && pwd)"
 for f in pc2_to_livox.py run_navstack.sh agent_bridge.py run_all_forever.sh; do
   cp "$HERE/$f" "$NAV/$f"
 done
+# ARISE's calibration install rule creates a regular file rather than a symlink.
+# Validate the sim-only zero relative rotation, then refresh the exact file loaded
+# by ros2 launch. This prevents source/install drift from silently restoring +20 deg.
+python3 "$HERE/sync_runtime_config.py" "$NAV"
 # Isaac sim launch：.reference 快照即真相（与 patch 产物逐字节一致已验证）
 cp "$HERE/system_isaac_sim.launch.py.reference" \
    "$NAV/system_isaac_sim.launch.py"
