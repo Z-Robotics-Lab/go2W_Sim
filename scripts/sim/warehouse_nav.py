@@ -240,7 +240,13 @@ GO2W_NAV_CFG = ArticulationCfg(
             effort_limit_sim=60.0, velocity_limit_sim=30.0, stiffness=0.0, damping=8.0),
         "arm": ImplicitActuatorCfg(
             joint_names_expr=["piper_joint[1-6]"],
-            effort_limit_sim=30.0, velocity_limit_sim=5.0, stiffness=100.0, damping=5.0),
+            # Z-Manip M0 姿态保持：K=100/D=5 太软，j2/j3 扛臂重力矩下 j3 稳态下垂
+            # ~0.049rad、j2 欠阻尼振荡 ptp=0.114rad → G-c(关节误差<0.05)/G-b(视轴≤5°)
+            # 双双失守（对照夹爪 K=800 稳态误差仅 0.0001rad）。稳态 PD 误差 ∝ τ/K：
+            # K 100→400 把 j3 下垂压到 ~0.012rad（4× 余量过 0.05 门）；阻尼比 ∝ D/√K，
+            # K 翻 4×(√=2×) 需 D 至少翻倍，取 D=15 对齐夹爪 D/√K=0.707≈临界阻尼，
+            # 压掉 j2 振荡。effort 30N·m 对稳态需求(~5N·m)余量充足。不放宽任何 gate 阈值。
+            effort_limit_sim=30.0, velocity_limit_sim=5.0, stiffness=400.0, damping=15.0),
         "gripper": ImplicitActuatorCfg(
             joint_names_expr=["piper_joint[78]"],
             effort_limit_sim=50.0, velocity_limit_sim=1.0, stiffness=800.0, damping=20.0),
