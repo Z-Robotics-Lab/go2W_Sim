@@ -85,20 +85,35 @@ if _os.environ.get("GO2W_DLSS_PERF", "0") == "1":
     _dst.set("/rtx-transient/dlssg/enabled", False)  # frame generation off
     print("[NAV] DLSS_PERF on: dlss performance, dlssg off (rtx effects untouched)", flush=True)
 
+import numpy as np  # noqa: E402
 import omni.graph.core as og  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 import rclpy  # noqa: E402
 import torch  # noqa: E402
-from geometry_msgs.msg import PoseStamped, TwistStamped  # noqa: E402
+from geometry_msgs.msg import PoseStamped, TransformStamped, TwistStamped  # noqa: E402
 from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 from rosgraph_msgs.msg import Clock  # noqa: E402
+from sensor_msgs.msg import CameraInfo  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
 from std_msgs.msg import Bool  # noqa: E402
 from std_msgs.msg import Float32  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
+
+# Z-Manip M0：腕相机口径 + 三姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
+import wrist_camera as wc  # noqa: E402
+
+# tf2_ros 可选（Jazzy 标配；缺失不应拖垮整条导航拉起——软降级 + 响亮告警，不静默吞）。
+try:
+    from tf2_ros import TransformBroadcaster  # noqa: E402
+    _HAS_TF2 = True
+except Exception as _tf_e:  # noqa: BLE001
+    TransformBroadcaster = None
+    _HAS_TF2 = False
+    print(f"[NAV][WARN] tf2_ros 不可用，camera_color_optical_frame TF 不发布 "
+          f"(G-b 将无 TF 可核): {_tf_e}", flush=True)
 
 import isaaclab.sim as sim_utils  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
@@ -313,13 +328,17 @@ def main():
     ))
     # 注意：isaaclab 默认 gravity_bias=(0,0,9.81) 是在传感器本体系直接加常量，
     # 只对水平安装成立；我们的 Mid-360 前倾 20°，必须按姿态投影（否则 SLAM 拿到错误重力方向）
-    # D435 RGB+深度（挂手眼 d435_link，X 前向=convention world；69deg HFOV）
+    # D435 RGB+深度（挂手眼 d435_link，X 前向=convention world；69deg HFOV）。
+    # Z-Manip M0：分辨率 640→848×480（D435i color 口径）；focal/aperture 原样不动，
+    # 仅改 W → fx=fy=617.6px、HFOV≈69°（对齐 D435 标称）。内参源在 wrist_camera.py。
     d435 = Camera(CameraCfg(
         prim_path="/World/Robot/d435_link/d435_cam",
-        update_period=CAM_UPDATE_PERIOD, height=480, width=640,
+        update_period=CAM_UPDATE_PERIOD, height=wc.CAM_HEIGHT, width=wc.CAM_WIDTH,
         data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
-            focal_length=1.93, horizontal_aperture=2.65, clipping_range=(0.11, 20.0)),
+            focal_length=wc.CAM_FOCAL_LENGTH_MM,
+            horizontal_aperture=wc.CAM_HORIZONTAL_APERTURE_MM,
+            clipping_range=(wc.CAM_CLIPPING_NEAR, wc.CAM_CLIPPING_FAR)),
         offset=CameraCfg.OffsetCfg(pos=(0.0, 0.0, 0.0), rot=(1.0, 0.0, 0.0, 0.0),
                                    convention="world"),
     ))
@@ -391,6 +410,19 @@ def main():
     up_z_msg = Float32()
     rgb_pub = node.create_publisher(Image, "/camera/image", 5)
     depth_pub = node.create_publisher(Image, "/camera/depth", 5)
+    # Z-Manip M0：realsense2_camera 对齐口径（新增，与旧 /camera/image·/camera/depth 并存——
+    # 旧话题被 refs CMU 栈 RViz 消费，不可删；新话题供 z-manip / M0 gate）。sim=real 同名同编码。
+    color_pub = node.create_publisher(Image, wc.TOPIC_COLOR, 5)
+    cam_info_pub = node.create_publisher(CameraInfo, wc.TOPIC_COLOR_INFO, 5)
+    depth_aligned_pub = node.create_publisher(Image, wc.TOPIC_DEPTH_ALIGNED, 5)
+    # base→camera_color_optical_frame 动态 TF（相机挂运动臂，逐拍位姿变；G-b 数值核对源）。
+    tf_broadcaster = TransformBroadcaster(node) if _HAS_TF2 else None
+    # d435_link body 索引（发动态 TF 用；prim 名 d435_link）。找不到不阻断，软降级留痕。
+    _d435_body_ids, _ = robot.find_bodies("d435_link")
+    _d435_body_idx = _d435_body_ids[0] if _d435_body_ids else None
+    if _d435_body_idx is None:
+        print("[NAV][WARN] d435_link body 未找到，optical TF 不发布", flush=True)
+    _depth_rng = np.random.default_rng(0)  # 深度噪声固定种子（可复现；GO2W_DEPTH_NOISE=0 关噪）
     clock_pub = node.create_publisher(Clock, "/clock", 10)
     # 抓取管线话题：箱子 GT、EE GT、臂关节态/目标、抓取指令与状态
     box_pub = node.create_publisher(Odometry, "/objects/box/odom", 5)
@@ -405,6 +437,37 @@ def main():
         print(f"[GRASP] cmd received: {msg.data!r}", flush=True)
 
     node.create_subscription(String, "/piper/grasp_cmd", on_grasp_cmd, 5)
+
+    # Z-Manip M0：三姿态切换通道 /piper/named_pose(std_msgs/String ∈ {STOW,LOOKOUT,CARRY})。
+    # sim 内部 String 通道（与 /piper/grasp_cmd 同级），不经 HTTP 桥、不加 nav_owner 态。
+    # 回调只置目标姿态名（校验合法），主循环按属主协调写臂目标（见抓取块 if/else 排他分支）。
+    # 默认目标=LOOKOUT：拉起后主循环把臂切到平视（当前 URDF init 视轴朝上 +27.9° 过不了 G-b）。
+    named_pose_req = {"name": wc.DEFAULT_POSE}
+
+    def on_named_pose(msg: String):
+        name = msg.data.strip()
+        if name not in wc.NAMED_POSES:
+            print(f"[POSE][WARN] 未知 named_pose {name!r}；合法={sorted(wc.NAMED_POSES)}，忽略",
+                  flush=True)
+            return
+        named_pose_req["name"] = name
+        print(f"[POSE] named_pose -> {name}", flush=True)
+
+    node.create_subscription(String, "/piper/named_pose", on_named_pose, 5)
+    # 姿态目标张量缓存（按需构建，避免每拍新建）：名 → (arm_names+grip_names) 名序的 8 关节 tensor。
+    # 按 grasp 的关节名序装配（= arm_ids_t 顺序），彻底规避 find_joints 返回序≠数字名序的错位。
+    _pose_cache: dict = {}
+    _pose_joint_names = (list(grasp.arm_names) + list(grasp.grip_names)
+                         if grasp is not None else None)
+
+    def _pose_tensor(name: str):
+        if _pose_joint_names is None:
+            return None
+        if name not in _pose_cache:
+            _pose_cache[name] = torch.tensor(
+                wc.pose_target_by_names(name, _pose_joint_names),
+                dtype=torch.float32, device=robot.data.joint_pos.device)
+        return _pose_cache.get(name)
     cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
     timeline_stop = {"hit": False}
@@ -522,6 +585,9 @@ def main():
         _stand_wheel_vel = torch.zeros(1, len(policy.wheel_ids), device=policy.device)
 
     step = 0
+    # 臂有效目标（属主协调后实际写入的 8 关节目标）——/piper/cmd 报此，杜绝与写入漂移。
+    # 缺省 = grasp 初始 q_tgt（idle 收臂态）；每拍在臂写入块按属主更新（named_pose 或 grasp）。
+    eff_arm_tgt = grasp.q_tgt if grasp is not None else None
     imu_msg = Imu()
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
@@ -640,8 +706,11 @@ def main():
             for i in right:
                 vel_t[:, i] = wr
             robot.set_joint_velocity_target(vel_t)
-        # 抓取：指令接收 -> 状态机启动；50Hz 伺服；臂目标最后写覆盖 default 保持
-        # 裸机 A/B 对照（grasp is None）跳过全部臂/抓取写入。
+        # 抓取 + 三姿态：臂 8 关节目标的**单一属主排他**（Z-Manip M0）。
+        # 规则：抓取激活(status 以 "running:" 开头) → 属主=PiperGraspController，写 grasp.q_tgt
+        #       （现有语义一字不动）；否则(idle/done/failed) → 属主=named_pose，写当前姿态表。
+        # 任一拍臂目标只有一个逻辑写者，杜绝姿态与抓取每拍互相覆盖抖动。
+        # 裸机 A/B 对照（grasp is None）跳过全部臂/抓取写入（无臂关节）。
         if grasp is not None:
             if grasp_req["pending"]:
                 grasp_req["pending"] = False
@@ -649,8 +718,16 @@ def main():
                 grasp.start(box.data.root_pos_w[0])
             if step % 2 == 0:
                 grasp.step(2 * physics_dt)
+            grasp_active = grasp.status.startswith("running:")
+            if grasp_active:
+                # 属主=抓取：臂目标由伺服 q_tgt 提供（姿态让位）。
+                eff_arm_tgt = grasp.q_tgt
+            else:
+                # 属主=named_pose：写当前姿态 8 关节目标（arm_ids_t 名序=arm_names+grip_names）。
+                _ptgt = _pose_tensor(named_pose_req["name"])
+                eff_arm_tgt = _ptgt if _ptgt is not None else grasp.q_tgt
             robot.set_joint_position_target(
-                grasp.q_tgt.unsqueeze(0), joint_ids=arm_ids_t)
+                eff_arm_tgt.unsqueeze(0), joint_ids=arm_ids_t)
         robot.write_data_to_sim()
         # 【3】自愈守卫：必须在 sim.step() 之前——step():565 的 PAUSE 旋等会先于守卫焊死主线程。
         if not sim.is_playing():
@@ -735,7 +812,9 @@ def main():
             jc = JointState()
             jc.header = js.header
             jc.name = js.name
-            jc.position = grasp.q_tgt.tolist()
+            # 报**有效**臂目标（属主协调后实际写入的目标）——G-c 用 /piper/state vs /piper/cmd
+            # 逐关节比对；若此处报 grasp.q_tgt 而实际写 named_pose，会假报大误差。
+            jc.position = eff_arm_tgt.tolist()
             jc_pub.publish(jc)
 
         # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线
@@ -763,26 +842,78 @@ def main():
         imu_msg.orientation.w, imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z = quat
         imu_pub.publish(imu_msg)
 
-        # 相机发布 RGB + 深度：CAM_STRIDE 步一帧（10Hz 默认，2Hz 若 CAM_SLOW）
+        # 相机发布：CAM_STRIDE 步一帧（10Hz 默认，2Hz 若 CAM_SLOW）。
+        # Z-Manip M0：分辨率 848×480；同一帧发两套——
+        #   旧口径（refs CMU 栈 RViz 消费，保留不删）：/camera/image(rgb8)、/camera/depth(32FC1 米)。
+        #   新口径（realsense2_camera 对齐，供 z-manip / M0 gate）：/camera/color/image_raw(rgb8)、
+        #     /camera/color/camera_info、/camera/aligned_depth_to_color/image_raw(16UC1 mm)、
+        #     base→camera_color_optical_frame 动态 TF。
+        # 尺寸/step 全用 wrist_camera 常量，杜绝与实际张量口径漂移（旧块曾写死 640，现 848）。
         if step % CAM_STRIDE == 0 and "rgb" in d435.data.output:
+            W, H = wc.CAM_WIDTH, wc.CAM_HEIGHT
             rgb = d435.data.output["rgb"][0]
             if rgb.shape[-1] == 4:
                 rgb = rgb[..., :3]
             rgb_np = rgb.to("cpu", non_blocking=False).numpy().tobytes() if hasattr(rgb, "to") else rgb.tobytes()
+            # 旧口径 RGB（frame_id=d435 不变，尺寸随实际 848×480）
             im = Image()
             im.header.stamp.sec, im.header.stamp.nanosec = sec, nsec
             im.header.frame_id = "d435"
-            im.height, im.width = 480, 640
-            im.encoding, im.step = "rgb8", 640 * 3
+            im.height, im.width = H, W
+            im.encoding, im.step = "rgb8", W * 3
             im.data = rgb_np
             rgb_pub.publish(im)
-            dep = d435.data.output["distance_to_image_plane"][0]
+            # 新口径 color（frame_id=camera_color_optical_frame）
+            cim = Image()
+            cim.header.stamp.sec, cim.header.stamp.nanosec = sec, nsec
+            cim.header.frame_id = wc.CAM_OPTICAL_FRAME
+            cim.height, cim.width = H, W
+            cim.encoding, cim.step = "rgb8", W * 3
+            cim.data = rgb_np
+            color_pub.publish(cim)
+            # camera_info（与 color 同 stamp/frame；K/D/P/R 由 wrist_camera 填）
+            ci = CameraInfo()
+            wc.fill_camera_info(ci, sec, nsec)
+            cam_info_pub.publish(ci)
+            # 深度：一次取张量转 numpy(米)
+            dep_t = d435.data.output["distance_to_image_plane"][0]
+            dep_m = dep_t.to("cpu").numpy() if hasattr(dep_t, "to") else np.asarray(dep_t)
+            # 旧口径 depth（32FC1 米，frame_id=d435 不变；尺寸随 848×480）
             dm = Image()
             dm.header = im.header
-            dm.height, dm.width = 480, 640
-            dm.encoding, dm.step = "32FC1", 640 * 4
-            dm.data = dep.to("cpu").numpy().astype("float32").tobytes() if hasattr(dep, "to") else dep.astype("float32").tobytes()
+            dm.height, dm.width = H, W
+            dm.encoding, dm.step = "32FC1", W * 4
+            dm.data = dep_m.astype("float32").tobytes()
             depth_pub.publish(dm)
+            # 新口径 aligned depth（16UC1 mm；近裁 0.28 + 无效清零 + 可选轻噪，见 wrist_camera）
+            dep_mm = wc.process_depth(dep_m, _depth_rng)
+            da = Image()
+            da.header.stamp.sec, da.header.stamp.nanosec = sec, nsec
+            da.header.frame_id = wc.CAM_OPTICAL_FRAME
+            da.height, da.width = H, W
+            da.encoding, da.step = "16UC1", W * 2
+            da.data = dep_mm.tobytes()
+            depth_aligned_pub.publish(da)
+            # base→camera_color_optical_frame 动态 TF（读 d435_link body 世界位姿实时算）
+            if tf_broadcaster is not None and _d435_body_idx is not None:
+                cam_p = robot.data.body_pos_w[0, _d435_body_idx].tolist()
+                cam_q = robot.data.body_quat_w[0, _d435_body_idx].tolist()  # wxyz
+                base_p = robot.data.root_pos_w[0].tolist()
+                base_q = robot.data.root_quat_w[0].tolist()                 # wxyz
+                opt_p, opt_q = wc.base_to_optical_transform(
+                    cam_p, cam_q, base_p, base_q)
+                tfm = TransformStamped()
+                tfm.header.stamp.sec, tfm.header.stamp.nanosec = sec, nsec
+                tfm.header.frame_id = wc.CAM_TF_PARENT_FRAME
+                tfm.child_frame_id = wc.CAM_OPTICAL_FRAME
+                tfm.transform.translation.x = float(opt_p[0])
+                tfm.transform.translation.y = float(opt_p[1])
+                tfm.transform.translation.z = float(opt_p[2])
+                (tfm.transform.rotation.w, tfm.transform.rotation.x,
+                 tfm.transform.rotation.y, tfm.transform.rotation.z) = (
+                    float(opt_q[0]), float(opt_q[1]),
+                    float(opt_q[2]), float(opt_q[3]))
+                tf_broadcaster.sendTransform(tfm)
 
         step += 1
         if args_cli.selftest:
