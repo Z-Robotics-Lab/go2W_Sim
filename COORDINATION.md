@@ -62,3 +62,7 @@
 - **02:4x 更新**:workflow 的 Verify 被 CEO 直令重启打断(TaskStop;旧布局 gate 数据不再入账)。
   claim 转由主编排会话继续持有,执行 CEO reach+立正裁定(托盘缩 XY/三件 Rx90° 立正/贴边一列/
   G-p7 立正 gate)后配对重启+复测;完成后释放,链留 ALL-GREEN。
+- **已完成并释放(2026-07-10 03:1x)**:新布局配对重启达门——M0.5 props 18/18 PASS(位置贴点/
+  三件立正 G-p7/reach 窄带合规/GT 四路≥4Hz-sim)+ 全量回归 20 pass 0 fail(M0 面无退化)。
+  入账 go2w 09cf0cb+7009c57、z-manip 5e3a7c3(均已推)。链留 office ALL-GREEN(robot 静止
+  LOOKOUT,CEO 眼见)。sim 槽位归还;/piper/named_pose 无人持有。
