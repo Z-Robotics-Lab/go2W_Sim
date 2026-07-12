@@ -79,3 +79,29 @@
   必须动则最小 diff 并在此记录)、红线参数、props 摆位(刚达门)。
 - 释放条件:M1 gates 数字入 commit 后本节改"已释放";链留 ALL-GREEN。
 - **已释放(2026-07-10 晚)**:M1 五层根因逐层实证收口(感知 PASS conf0.529/伺服 spoke 化/TABLE_VIEW −20.21°落地/RTF0.282/GPU9.6G),唯一遗留 BLOCKER=底盘原地 yaw ~2% 失效(frozen 链,CEO gate,待专项轮)。链留 ALL-GREEN idle,servo IDLE;槽位归还。
+
+## 已释放(2026-07-12 · z-manip-m2 会话 = 抓取候选管道)
+- **交付入账**:antipodal 后端+grasp 节点+单测 14/14+回归 107 过(z-manip 8356d5b/5a1b3fb/
+  5ffb911;go2w 7992d4d rviz 面板)。**活链 gate = BLOCKED-BY-M1 如实入账不虚判**:管道行为
+  全程正确(合格帧全为家具误锁,孔径/θ_app 正确拒绝);真罐从未入镜——底盘 yaw 死区(既有
+  CEO gate)+ SLAM 旋转漂移(θ 11°→28°实测,fix-a 范围)+ SEARCH first-past-the-post 锁定
+  三缺陷联合复现 6 次,卷宗见 z-manip 5ffb911。别名宽网误检已根修(canned food→高特异性)。
+- **M3/M4 关键路径(CEO 决策输入)**:上述三缺陷不解则 M2 gate 数字/M3 抓起/M4 20 连跑全部
+  无法稳定过门。链留 ALL-GREEN(robot 静止 STOW,l0-l5 全真);sim 槽位归还;
+  /piper/named_pose、/manip/find、/way_point 无人持有。
+
+## (原 claim 存档)2026-07-12 · z-manip-m2 会话(CEO"继续工作"令)
+- **z-manip-m2 会话**持有(M2 = 几何 antipodal 通管道 + RViz 候选可视化,plan.md §5 M2 行):
+  - ~/Desktop/z-manip 全仓(models/antipodal + grasp 节点 + tests + docker/perception/node.sh)
+  - **zmanip-perception 容器重启权**(z-manip 自有容器,attach-only 消费者,重启不碰 Isaac/navstack 配对)
+  - go2w scripts/nav/sync_navstack_files.sh **rviz 生成器段**(仅加 /manip/grasp/markers 面板)+
+    容器内 rviz 进程重启(viewer,supervisor 自动拉回,非链)
+  - **主动指令通道(按 00:37 冲突新规)**:/manip/find(触发 SEARCH/LOCK);Verify 期如需进近:
+    servo 既有 /piper/named_pose、/way_point、/manip/cmd_vel(M1 机制,不新增写者)
+  - 活链**只读**复用(45h ALL-GREEN 实测 l0-l5 全真);**无配对重启计划**(不改 warehouse_nav/拉起面)
+- **[RULING] M2 无 CEO gate 项**:/manip/grasp/{candidates,markers,status} 全用标准 msg
+  (PoseArray/MarkerArray/String-JSON),沿 M1 /manip/* 命名空间先例,z-manip 内部 L1→viz 数据流,
+  消费端(M3 grasp_exec)同仓——非新 msg/srv/action、非跨包契约变更;实现纯 numpy **零新外部依赖**;
+  HGGD(需 sm_120 重编实测=风险项)本轮不接,留后续轮。
+- **不碰**:local_planner(fix-a 持有)、refs/、DEBUG*.md、红线、warehouse_nav.py、props 摆位。
+- 释放条件:M2 机器 gate 数字入 commit 后本节改"已释放";链留 ALL-GREEN。
