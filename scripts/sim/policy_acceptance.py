@@ -58,6 +58,8 @@ args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
+import os  # noqa: E402
+
 import torch  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
@@ -66,8 +68,42 @@ from isaaclab.assets import Articulation, ArticulationCfg  # noqa: E402
 from isaaclab.sim import SimulationCfg, SimulationContext  # noqa: E402
 
 DEVICE = args_cli.device or "cuda:0"
-PHYS_DT = 1.0 / 100.0          # 100 Hz physics (matches warehouse_nav.py)
-POLICY_EVERY = 2              # act every 2 physics steps -> 50 Hz policy
+
+# ---------------------------------------------------------------------------
+# OFAT physics-knob switches (yaw断崖单因子隔离矩阵, 2026-07-13).
+# EVERY switch defaults to the tool's PRE-EXISTING behaviour, so running with
+# NO env var set reproduces历史 acceptance rows EXACTLY (zero regression).
+# These vary ONLY the eval instrument (non-redline); they do NOT touch the
+# deployment / go2w_policy.py / gates thresholds. Honest measurement tool.
+#
+#   knob                 default(=训练态,现行为)   deploy态(warehouse_nav.py)
+#   GO2W_EVAL_WHEEL_KP   0.0                        0.0
+#   GO2W_EVAL_WHEEL_KD   0.5                        8.0
+#   GO2W_EVAL_WHEEL_EFFORT 23.5                     60.0
+#   GO2W_EVAL_LEG_KP     25.0                       100.0
+#   GO2W_EVAL_LEG_KD     0.5                        5.0
+#   GO2W_EVAL_GROUND_MU_S  (unset -> 默认地面)       1.8   (轮 collider 绑材质)
+#   GO2W_EVAL_GROUND_MU_D  (unset -> 默认地面)       1.6
+#   GO2W_EVAL_GROUND_COMBINE (unset -> "average")    "max"
+#   GO2W_EVAL_PHYS_HZ    100                        100
+# ---------------------------------------------------------------------------
+EVAL_WHEEL_KP = float(os.environ.get("GO2W_EVAL_WHEEL_KP", "0.0"))
+EVAL_WHEEL_KD = float(os.environ.get("GO2W_EVAL_WHEEL_KD", "0.5"))
+EVAL_WHEEL_EFFORT = float(os.environ.get("GO2W_EVAL_WHEEL_EFFORT", "23.5"))
+EVAL_LEG_KP = float(os.environ.get("GO2W_EVAL_LEG_KP", "25.0"))
+EVAL_LEG_KD = float(os.environ.get("GO2W_EVAL_LEG_KD", "0.5"))
+# ground/wheel friction: UNSET => leave the default GroundPlaneCfg untouched
+# and bind NO wheel material (exact pre-existing behaviour). Setting mu_s
+# activates the deployment-style per-wheel material bind in main().
+EVAL_GROUND_MU_S = os.environ.get("GO2W_EVAL_GROUND_MU_S")  # None if unset
+EVAL_GROUND_MU_D = os.environ.get("GO2W_EVAL_GROUND_MU_D")
+EVAL_GROUND_COMBINE = os.environ.get("GO2W_EVAL_GROUND_COMBINE", "average")
+EVAL_PHYS_HZ = float(os.environ.get("GO2W_EVAL_PHYS_HZ", "100"))
+
+PHYS_DT = 1.0 / EVAL_PHYS_HZ     # default 100 Hz physics (matches warehouse_nav.py)
+# policy stays 50 Hz regardless of physics Hz: act every round(hz/50) steps.
+# 100Hz -> 2 (pre-existing); 50Hz -> 1. Keeps the trained 50 Hz cadence honest.
+POLICY_EVERY = max(1, int(round(EVAL_PHYS_HZ / 50.0)))
 SPAWN_Z = 0.42               # match warehouse_nav.py init height
 TRANSIENT_S = 0.5            # discard this much spin-up before steady-state averaging
 
@@ -87,13 +123,17 @@ def build_robot_cfg():
         ".*_foot_joint": 0.0,
     }
     actuators = {
-        # TRAINING gains (robot_lab UNITREE_GO2W_CFG): legs 25/0.5, wheels 0/0.5.
+        # Gains default to TRAINING (robot_lab UNITREE_GO2W_CFG): legs 25/0.5,
+        # wheels 0/0.5. OFAT switches (GO2W_EVAL_*) override individually; unset
+        # => training values => pre-existing behaviour.
         "legs": ImplicitActuatorCfg(
             joint_names_expr=["(FL|FR|RL|RR)_(hip|thigh|calf)_joint"],
-            effort_limit_sim=23.5, velocity_limit_sim=30.0, stiffness=25.0, damping=0.5),
+            effort_limit_sim=23.5, velocity_limit_sim=30.0,
+            stiffness=EVAL_LEG_KP, damping=EVAL_LEG_KD),
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*_foot_joint"],
-            effort_limit_sim=23.5, velocity_limit_sim=30.0, stiffness=0.0, damping=0.5),
+            effort_limit_sim=EVAL_WHEEL_EFFORT, velocity_limit_sim=30.0,
+            stiffness=EVAL_WHEEL_KP, damping=EVAL_WHEEL_KD),
     }
     if HAS_ARM:
         joint_pos.update({
@@ -237,7 +277,25 @@ def main():
     robot = Articulation(build_robot_cfg())
     sim.reset()
 
-    import sys, os  # noqa: E402
+    # OFAT friction knob: if GO2W_EVAL_GROUND_MU_S is set, replicate the
+    # deployment wheel-material bind (warehouse_nav.py:449-455) — a per-wheel
+    # RigidBodyMaterial with the given mu_s/mu_d and friction_combine_mode.
+    # UNSET => skip entirely => default GroundPlaneCfg only (pre-existing).
+    if EVAL_GROUND_MU_S is not None:
+        mu_s = float(EVAL_GROUND_MU_S)
+        mu_d = float(EVAL_GROUND_MU_D) if EVAL_GROUND_MU_D is not None else mu_s
+        wheel_mat = sim_utils.RigidBodyMaterialCfg(
+            static_friction=mu_s, dynamic_friction=mu_d, restitution=0.0,
+            friction_combine_mode=EVAL_GROUND_COMBINE,
+            restitution_combine_mode=EVAL_GROUND_COMBINE)
+        wheel_mat.func("/World/Materials/wheel_rubber", wheel_mat)
+        for foot in ("FL", "FR", "RL", "RR"):
+            sim_utils.bind_physics_material(f"/World/Robot/{foot}_foot",
+                                            "/World/Materials/wheel_rubber")
+        print(f"[OFAT] wheel material bound mu_s={mu_s} mu_d={mu_d} "
+              f"combine={EVAL_GROUND_COMBINE}", flush=True)
+
+    import sys  # noqa: E402
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from go2w_policy import Go2WPolicy
     policy = Go2WPolicy(args_cli.policy, robot, DEVICE)
@@ -249,7 +307,15 @@ def main():
 
     meta = {"ckpt": args_cli.policy, "body": args_cli.body, "urdf": URDF_PATH,
             "drift_thresh": args_cli.drift_thresh, "track_tol": args_cli.track_tol,
-            "fall_deg": args_cli.fall_deg}
+            "fall_deg": args_cli.fall_deg,
+            # OFAT knob provenance so each ledger row is attributable to a matrix cell.
+            "ofat": {"wheel_kp": EVAL_WHEEL_KP, "wheel_kd": EVAL_WHEEL_KD,
+                     "wheel_effort": EVAL_WHEEL_EFFORT, "leg_kp": EVAL_LEG_KP,
+                     "leg_kd": EVAL_LEG_KD, "phys_hz": EVAL_PHYS_HZ,
+                     "policy_every": POLICY_EVERY,
+                     "mu_s": EVAL_GROUND_MU_S, "mu_d": EVAL_GROUND_MU_D,
+                     "combine": (EVAL_GROUND_COMBINE
+                                 if EVAL_GROUND_MU_S is not None else None)}}
 
     # -------- Segment 1: zero-cmd 30 s (creep test) --------
     reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
