@@ -107,7 +107,12 @@ from trajectory_msgs.msg import JointTrajectory  # noqa: E402
 # Z-Manip M0：腕相机口径 + 三姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
 import wrist_camera as wc  # noqa: E402
 from manip_scene import load_manip_scene  # noqa: E402
-from piper_trajectory import JointTrajectoryBuffer  # noqa: E402
+from piper_trajectory import (  # noqa: E402
+    format_execution_status,
+    GripperCommandBuffer,
+    GripperValidationError,
+    JointTrajectoryBuffer,
+)
 
 # tf2_ros 可选（Jazzy 标配；缺失不应拖垮整条导航拉起——软降级 + 响亮告警，不静默吞）。
 try:
@@ -512,6 +517,10 @@ def main():
         }
         trajectory_executor = JointTrajectoryBuffer(
             arm_joint_names, _position_limits, _velocity_limits)
+        _max_aperture = (
+            float(robot.data.joint_pos_limits[0, grip_joint_ids[0], 1])
+            - float(robot.data.joint_pos_limits[0, grip_joint_ids[1], 0]))
+        gripper_executor = GripperCommandBuffer(0.0, _max_aperture)
         ee_body_idx = ee_body_ids[0]
         print(f"[PIPER_EXEC] ready arm={arm_joint_names} grip={grip_joint_names} "
               f"limits={_position_limits}", flush=True)
@@ -520,6 +529,7 @@ def main():
         grip_joint_ids = grip_joint_names = None
         piper_joint_ids = None
         trajectory_executor = None
+        gripper_executor = None
         ee_body_idx = None
         print("[NAV] GO2W_WITH_ARM=0: bare trunk, PiPER executor SKIPPED (A/B control)", flush=True)
 
@@ -764,12 +774,12 @@ def main():
         eff_arm_tgt = _startup_arm.clone()
         gripper_tgt = _startup_grip.clone()
         arm_owner = {"mode": "named_pose"}
-        gripper_status = {"value": "named_pose:LOOKOUT"}
+        gripper_executor.note_external_owner(
+            f"named_pose:{wc.DEFAULT_POSE}", sim_t["now"])
     else:
         eff_arm_tgt = None
         gripper_tgt = None
         arm_owner = {"mode": "disabled"}
-        gripper_status = {"value": "disabled"}
     imu_msg = Imu()
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
@@ -826,17 +836,19 @@ def main():
                         + float(point.time_from_start.nanosec) * 1.0e-9
                         for point in _msg.points
                     ]
-                    trajectory_executor.submit(
+                    _command_id = trajectory_executor.submit(
                         _msg.joint_names,
                         [point.positions for point in _msg.points],
                         _times,
                         measured_arm,
                         sim_t["now"],
+                        segment=_msg.header.frame_id,
                     )
                     named_pose_req["pending"] = False
                     arm_owner["mode"] = "trajectory"
-                    print(f"[PIPER_EXEC] accepted duration={_times[-1]:.3f}s "
-                          f"points={len(_times)}", flush=True)
+                    print(f"[PIPER_EXEC] accepted command_id={_command_id} "
+                          f"segment={trajectory_executor.segment} "
+                          f"duration={_times[-1]:.3f}s points={len(_times)}", flush=True)
                 except Exception as exc:  # callback boundary must fail closed
                     trajectory_executor.cancel(
                         measured_arm, reason=f"rejected:{type(exc).__name__}:{exc}")
@@ -854,25 +866,23 @@ def main():
                 eff_arm_tgt = _named_arm.clone()
                 gripper_tgt = _named_grip.clone()
                 arm_owner["mode"] = "named_pose"
-                gripper_status["value"] = f"named_pose:{named_pose_req['name']}"
+                gripper_executor.note_external_owner(
+                    f"named_pose:{named_pose_req['name']}", sim_t["now"])
 
             if trajectory_req["aperture"] is not None:
                 aperture = trajectory_req["aperture"]
                 trajectory_req["aperture"] = None
-                max_aperture = (
-                    float(robot.data.joint_pos_limits[0, grip_joint_ids[0], 1])
-                    - float(robot.data.joint_pos_limits[0, grip_joint_ids[1], 0]))
-                if math.isfinite(aperture) and 0.0 <= aperture <= max_aperture:
+                try:
+                    accepted = gripper_executor.submit(aperture, sim_t["now"])
                     gripper_tgt = torch.tensor(
-                        [0.5 * aperture, -0.5 * aperture],
+                        [0.5 * accepted.aperture, -0.5 * accepted.aperture],
                         dtype=torch.float32, device=robot.data.joint_pos.device)
-                    gripper_status["value"] = f"accepted:{aperture:.4f}"
-                    print(f"[PIPER_EXEC] gripper aperture={aperture:.4f}m", flush=True)
-                else:
-                    gripper_status["value"] = (
-                        f"rejected:{aperture!r}:range[0,{max_aperture:.4f}]")
-                    print(f"[PIPER_EXEC][REJECT] gripper aperture={aperture!r} "
-                          f"range=[0,{max_aperture:.4f}]", flush=True)
+                    print(f"[PIPER_EXEC] gripper command_id={accepted.command_id} "
+                          f"aperture={accepted.aperture:.4f}m", flush=True)
+                except GripperValidationError as exc:
+                    gripper_executor.reject(exc, sim_t["now"])
+                    print(f"[PIPER_EXEC][REJECT] gripper aperture={aperture!r}: {exc}",
+                          flush=True)
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
@@ -1037,10 +1047,12 @@ def main():
                 _measured_aperture = float(
                     (_measured_grip[0] - _measured_grip[1]).item())
                 _status = String()
-                _status.data = (
-                    f"{trajectory_executor.status};owner={arm_owner['mode']};"
-                    f"gripper={gripper_status['value']};"
-                    f"aperture={_measured_aperture:.4f}")
+                _status.data = format_execution_status(
+                    trajectory_executor,
+                    gripper_executor,
+                    physical_owner=arm_owner["mode"],
+                    measured_aperture=_measured_aperture,
+                )
                 exec_status_pub.publish(_status)
 
         if trajectory_executor is not None and step % 5 == 0:

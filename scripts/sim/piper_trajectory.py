@@ -1,4 +1,4 @@
-"""Pure validation and sim-time interpolation for PiPER joint trajectories."""
+"""Pure PiPER trajectory, gripper-command, and execution-status contracts."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,16 +8,50 @@ from typing import Iterable, Sequence
 
 
 ARM_JOINT_NAMES = tuple(f"piper_joint{i}" for i in range(1, 7))
+TRAJECTORY_SEGMENTS = frozenset((
+    "transit",
+    "approach",
+    "lift",
+    "carry",
+    "place_transit",
+    "place_approach",
+    "place_retreat",
+))
 
 
 class TrajectoryValidationError(ValueError):
     """A command was rejected before it could own the arm."""
 
 
+class GripperValidationError(ValueError):
+    """A command was rejected before it could own the gripper."""
+
+
 @dataclass(frozen=True)
 class TrajectorySample:
     positions: tuple[float, ...]
     done: bool
+
+
+@dataclass(frozen=True)
+class GripperCommand:
+    """One accepted aperture command with executor-assigned identity."""
+
+    command_id: int
+    aperture: float
+    received_at: float
+
+
+def _clean_status_token(value: object) -> str:
+    """Keep the semicolon status protocol parseable and single-line."""
+
+    text = str(value).strip().replace(";", ":").replace("=", ":")
+    text = "_".join(text.split())
+    return text or "unspecified"
+
+
+def _format_optional(value: float | None, *, digits: int = 6) -> str:
+    return "none" if value is None else f"{value:.{digits}f}"
 
 
 class JointTrajectoryBuffer:
@@ -50,6 +84,10 @@ class JointTrajectoryBuffer:
         self.velocity_margin = float(velocity_margin)
         self.max_duration = float(max_duration)
         self.status = "idle"
+        self.owner = "none"
+        self.command_id = 0
+        self.segment = "none"
+        self.received_at: float | None = None
         self._times: tuple[float, ...] = ()
         self._positions: tuple[tuple[float, ...], ...] = ()
         self._started_at = 0.0
@@ -76,7 +114,17 @@ class JointTrajectoryBuffer:
         time_from_start: Sequence[float],
         current_positions: Sequence[float],
         sim_time: float,
-    ) -> None:
+        *,
+        segment: str,
+    ) -> int:
+        segment_name = str(segment).strip()
+        if segment_name not in TRAJECTORY_SEGMENTS:
+            raise TrajectoryValidationError(
+                f"segment must be one of {sorted(TRAJECTORY_SEGMENTS)}, got {segment_name!r}",
+            )
+        received_at = float(sim_time)
+        if not math.isfinite(received_at) or received_at < 0.0:
+            raise TrajectoryValidationError("sim_time must be finite and non-negative")
         names = tuple(command_joint_names)
         if len(names) != len(set(names)):
             raise TrajectoryValidationError("joint_names contains duplicates")
@@ -137,9 +185,14 @@ class JointTrajectoryBuffer:
 
         self._times = tuple(check_times)
         self._positions = tuple(check_positions)
-        self._started_at = float(sim_time)
+        self._started_at = received_at
         self._hold = current
+        self.command_id += 1
+        self.segment = segment_name
+        self.received_at = received_at
+        self.owner = "trajectory"
         self.status = "active"
+        return self.command_id
 
     def sample(self, sim_time: float) -> TrajectorySample:
         if not self._positions:
@@ -177,4 +230,114 @@ class JointTrajectoryBuffer:
         self._times = ()
         self._positions = ()
         self._hold = current
-        self.status = reason
+        self.status = _clean_status_token(reason)
+
+    def status_fields(self, physical_owner: str) -> tuple[str, ...]:
+        """Return the compatible status prefix plus strict command identity."""
+
+        owner = str(physical_owner).strip()
+        if owner in ("trajectory", "trajectory_hold"):
+            owner = "trajectory"
+        else:
+            owner = _clean_status_token(owner or self.owner)
+        return (
+            self.status,
+            f"owner={owner}",
+            f"command_id={self.command_id}",
+            f"segment={self.segment}",
+            f"trajectory_received_at={_format_optional(self.received_at)}",
+        )
+
+
+class GripperCommandBuffer:
+    """Validate apertures and retain the last accepted command identity.
+
+    Rejections are observable status events, but never increment or replace the
+    ID, aperture, or receive time of the last accepted command.
+    """
+
+    def __init__(self, minimum_aperture: float, maximum_aperture: float) -> None:
+        minimum = float(minimum_aperture)
+        maximum = float(maximum_aperture)
+        if (
+            not math.isfinite(minimum)
+            or not math.isfinite(maximum)
+            or minimum < 0.0
+            or maximum <= minimum
+        ):
+            raise ValueError("gripper aperture limits must be finite and increasing")
+        self.minimum_aperture = minimum
+        self.maximum_aperture = maximum
+        self.command_id = 0
+        self.aperture: float | None = None
+        self.received_at: float | None = None
+        self.event_received_at: float | None = None
+        self.status = "idle"
+
+    def submit(self, aperture: float, received_at: float) -> GripperCommand:
+        """Accept one command transactionally and allocate its next ID."""
+
+        value = float(aperture)
+        stamp = float(received_at)
+        if not math.isfinite(value):
+            raise GripperValidationError("aperture is non-finite")
+        if not self.minimum_aperture <= value <= self.maximum_aperture:
+            raise GripperValidationError(
+                f"aperture {value:.6f} outside "
+                f"[{self.minimum_aperture:.6f}, {self.maximum_aperture:.6f}]",
+            )
+        if not math.isfinite(stamp) or stamp < 0.0:
+            raise GripperValidationError("received_at must be finite and non-negative")
+        self.command_id += 1
+        self.aperture = value
+        self.received_at = stamp
+        self.event_received_at = stamp
+        self.status = f"accepted:{value:.4f}"
+        return GripperCommand(self.command_id, value, stamp)
+
+    def reject(self, reason: object, received_at: float) -> None:
+        """Report a rejection without changing the last accepted identity."""
+
+        stamp = float(received_at)
+        if not math.isfinite(stamp) or stamp < 0.0:
+            raise GripperValidationError("received_at must be finite and non-negative")
+        self.event_received_at = stamp
+        self.status = f"rejected:{_clean_status_token(reason)}"
+
+    def note_external_owner(self, state: object, received_at: float) -> None:
+        """Expose named-pose ownership without allocating a gripper command ID."""
+
+        stamp = float(received_at)
+        if not math.isfinite(stamp) or stamp < 0.0:
+            raise GripperValidationError("received_at must be finite and non-negative")
+        self.event_received_at = stamp
+        self.status = _clean_status_token(state)
+
+    def status_fields(self) -> tuple[str, ...]:
+        aperture = "none" if self.aperture is None else f"{self.aperture:.4f}"
+        return (
+            f"gripper={self.status}",
+            f"gripper_command_id={self.command_id}",
+            f"gripper_command_aperture={aperture}",
+            f"gripper_received_at={_format_optional(self.received_at)}",
+            f"gripper_event_received_at={_format_optional(self.event_received_at)}",
+        )
+
+
+def format_execution_status(
+    trajectory: JointTrajectoryBuffer,
+    gripper: GripperCommandBuffer,
+    *,
+    physical_owner: str,
+    measured_aperture: float,
+) -> str:
+    """Build the backward-compatible String payload with strict identities."""
+
+    measured = float(measured_aperture)
+    if not math.isfinite(measured) or measured < 0.0:
+        raise ValueError("measured aperture must be finite and non-negative")
+    return ";".join((
+        *trajectory.status_fields(physical_owner),
+        *gripper.status_fields(),
+        f"aperture={measured:.4f}",
+    ))

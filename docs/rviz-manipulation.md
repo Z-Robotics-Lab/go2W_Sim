@@ -49,6 +49,29 @@ bridge additionally exposes its input/output names, fixed frame, stale timeout,
 and publish period as ROS parameters.  The generated runtime file is
 `refs/Navigation-Physical-Experiment/go2w.rviz`.
 
+## PiPER execution identity
+
+`/piper/execution_status` remains a semicolon-delimited `std_msgs/String`; its
+first field is still the trajectory state and the legacy `gripper` and measured
+`aperture` fields remain present. Accepted commands now add executor-owned,
+strictly increasing identities:
+
+```text
+active;owner=trajectory;command_id=4;segment=approach;
+trajectory_received_at=81.230000;gripper=accepted:0.0440;
+gripper_command_id=2;gripper_command_aperture=0.0440;
+gripper_received_at=81.110000;gripper_event_received_at=81.110000;
+aperture=0.0452
+```
+
+The trajectory `segment` is read from `JointTrajectory.header.frame_id` and
+must be exactly `transit`, `approach`, `lift`, or `carry`. The executor assigns
+`command_id` only after joint names, limits, timing, velocity, start state, sim
+time, and segment all validate. The independent `gripper_command_id` is
+allocated only after an aperture and its sim receive time validate. A rejected
+message may report a rejection state, but it cannot increment or replace the
+last accepted command ID, segment, aperture, or accepted receive time.
+
 ## Plugin policy
 
 The configuration uses only `rviz_common/Group` and plugins shipped by

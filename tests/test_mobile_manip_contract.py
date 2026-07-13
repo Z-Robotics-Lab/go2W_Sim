@@ -13,6 +13,9 @@ sys.path.insert(0, str(SIM_SCRIPTS))
 from manip_scene import SceneConfigError, load_manip_scene  # noqa: E402
 from piper_trajectory import (  # noqa: E402
     ARM_JOINT_NAMES,
+    format_execution_status,
+    GripperCommandBuffer,
+    GripperValidationError,
     JointTrajectoryBuffer,
     TrajectoryValidationError,
 )
@@ -117,6 +120,7 @@ class PiperExecutionContractTest(unittest.TestCase):
             [0.0, 1.0],
             [0.0] * 6,
             sim_time=12.0,
+            segment="transit",
         )
         halfway = buffer.sample(12.5)
         for actual, expected in zip(halfway.positions, final):
@@ -136,7 +140,14 @@ class PiperExecutionContractTest(unittest.TestCase):
         for names, positions, times in cases:
             with self.subTest(names=names, times=times, positions=positions):
                 with self.assertRaises(TrajectoryValidationError):
-                    make_buffer().submit(names, positions, times, [0.0] * 6, 0.0)
+                    make_buffer().submit(
+                        names,
+                        positions,
+                        times,
+                        [0.0] * 6,
+                        0.0,
+                        segment="transit",
+                    )
 
     def test_cancel_holds_measured_state(self):
         buffer = make_buffer()
@@ -146,11 +157,122 @@ class PiperExecutionContractTest(unittest.TestCase):
             [0.0, 1.0],
             [0.0] * 6,
             0.0,
+            segment="approach",
         )
         measured = [0.03 * i for i in range(6)]
         buffer.cancel(measured)
         self.assertEqual(buffer.status, "canceled")
         self.assertEqual(buffer.sample(100.0).positions, tuple(measured))
+
+    def test_trajectory_identity_is_strictly_increasing_and_transactional(self):
+        buffer = make_buffer()
+        first = buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            2.0,
+            segment="transit",
+        )
+        self.assertEqual(first, 1)
+        self.assertEqual(buffer.command_id, 1)
+        self.assertEqual(buffer.segment, "transit")
+        self.assertEqual(buffer.received_at, 2.0)
+
+        with self.assertRaises(TrajectoryValidationError):
+            buffer.submit(
+                ARM_JOINT_NAMES,
+                [[0.0] * 6, [0.1] * 6],
+                [0.0, 1.0],
+                [0.0] * 6,
+                3.0,
+                segment="not-a-segment",
+            )
+        self.assertEqual(buffer.command_id, 1)
+        self.assertEqual(buffer.segment, "transit")
+        self.assertEqual(buffer.received_at, 2.0)
+
+        second = buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.2] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            4.0,
+            segment="carry",
+        )
+        self.assertEqual(second, 2)
+        self.assertEqual(buffer.command_id, 2)
+        self.assertEqual(buffer.segment, "carry")
+
+        third = buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.2] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.2] * 6,
+            5.0,
+            segment="place_retreat",
+        )
+        self.assertEqual(third, 3)
+        self.assertEqual(buffer.segment, "place_retreat")
+
+    def test_gripper_identity_is_independent_and_rejection_keeps_last_command(self):
+        gripper = GripperCommandBuffer(0.0, 0.07)
+        first = gripper.submit(0.06, 1.25)
+        self.assertEqual(first.command_id, 1)
+        self.assertEqual(first.aperture, 0.06)
+
+        with self.assertRaises(GripperValidationError):
+            gripper.submit(0.08, 2.0)
+        self.assertEqual(gripper.command_id, 1)
+        self.assertEqual(gripper.aperture, 0.06)
+        self.assertEqual(gripper.received_at, 1.25)
+
+        gripper.reject("out of range", 2.0)
+        fields = gripper.status_fields()
+        self.assertIn("gripper=rejected:out_of_range", fields)
+        self.assertIn("gripper_command_id=1", fields)
+        self.assertIn("gripper_command_aperture=0.0600", fields)
+        self.assertIn("gripper_received_at=1.250000", fields)
+        self.assertIn("gripper_event_received_at=2.000000", fields)
+
+        second = gripper.submit(0.04, 3.0)
+        self.assertEqual(second.command_id, 2)
+
+    def test_execution_status_echoes_command_segment_and_gripper_ack(self):
+        trajectory = make_buffer()
+        trajectory.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            7.5,
+            segment="lift",
+        )
+        gripper = GripperCommandBuffer(0.0, 0.07)
+        gripper.submit(0.042, 7.75)
+        status = format_execution_status(
+            trajectory,
+            gripper,
+            physical_owner="trajectory_hold",
+            measured_aperture=0.043,
+        )
+        self.assertTrue(status.startswith("active;owner=trajectory"))
+        for expected in (
+            "command_id=1",
+            "segment=lift",
+            "trajectory_received_at=7.500000",
+            "gripper=accepted:0.0420",
+            "gripper_command_id=1",
+            "gripper_command_aperture=0.0420",
+            "gripper_received_at=7.750000",
+            "aperture=0.0430",
+        ):
+            self.assertIn(expected, status.split(";"))
+
+    def test_bridge_reads_segment_from_joint_trajectory_header(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn("segment=_msg.header.frame_id", source)
+        self.assertIn("format_execution_status(", source)
 
 
 if __name__ == "__main__":
