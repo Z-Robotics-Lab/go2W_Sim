@@ -36,10 +36,20 @@ fi
 cp "$HERE/payload_env_cfg.py" "$RL/$CFG_DIR/payload_env_cfg.py"
 echo "[apply] plan-a: payload_env_cfg.py installed"
 
-# 2) plan-d + plan-a registration patch (idempotent: skip if already applied).
+# The two patches STACK on rough_env_cfg.py (yaw's inserted block shifts the envelope hunk
+# offsets), so a `git apply --reverse --check` on the envelope patch FAILS once yaw sits on
+# top — it is NOT a reliable "already applied?" probe here. Detect application by a unique
+# SENTINEL comment each patch introduces (order-independent). Anchors:
+INIT_FILE="$RL/$CFG_DIR/__init__.py"
+ROUGH_FILE="$RL/$CFG_DIR/rough_env_cfg.py"
+ENV_SENTINEL="Plan-a fallback (CEO-approved retrain 2026-07-07)"   # from the envelope patch (__init__.py)
+YAW_SENTINEL="YAW ROUND (CEO B-plan, 2026-07-12)"                  # from the yaw patch (rough_env_cfg.py)
+
 cd "$RL"
-if git apply --reverse --check "$HERE/go2w_payload_envelope.patch" >/dev/null 2>&1; then
-  echo "[apply] patch already applied — skipping (idempotent)"
+
+# 2) plan-d + plan-a registration patch (idempotent via sentinel).
+if grep -qF "$ENV_SENTINEL" "$INIT_FILE" 2>/dev/null; then
+  echo "[apply] envelope patch already applied — skipping (idempotent)"
 elif git apply --check "$HERE/go2w_payload_envelope.patch" >/dev/null 2>&1; then
   git apply "$HERE/go2w_payload_envelope.patch"
   echo "[apply] plan-d + plan-a registration patch applied"
@@ -49,5 +59,21 @@ else
   exit 1
 fi
 
+# 3) YAW-round patch (CEO B-plan 2026-07-12): pure-yaw command distribution + deployment
+#    wheel-friction domain + ang_vel tracking-weight bump. LAYERS ON TOP of the envelope
+#    patch (anchors on rough_env_cfg.py lines that exist only after step 2). Idempotent via
+#    sentinel. See docs/retrain-yaw.md for the pre-registered gates.
+if grep -qF "$YAW_SENTINEL" "$ROUGH_FILE" 2>/dev/null; then
+  echo "[apply] yaw patch already applied — skipping (idempotent)"
+elif git apply --check "$HERE/go2w_yaw_command_friction.patch" >/dev/null 2>&1; then
+  git apply "$HERE/go2w_yaw_command_friction.patch"
+  echo "[apply] yaw command+friction patch applied"
+else
+  echo "[apply] ERROR: yaw patch does not apply cleanly to $RL (envelope patch missing/changed?)." >&2
+  echo "[apply] inspect: git -C $RL apply --check $HERE/go2w_yaw_command_friction.patch" >&2
+  exit 1
+fi
+
 echo "[apply] DONE. plan-d is now the default for RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-v0."
 echo "[apply] plan-a opt-in task id: RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-Payload-v0"
+echo "[apply] yaw-round edits (rel_heading_envs 0.5, ang_vel_z ±1.5, wheel-friction max 1.4-2.0/1.2-1.8, track_ang_vel_z 2.0) layered on."

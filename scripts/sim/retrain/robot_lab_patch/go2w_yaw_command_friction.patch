@@ -1,0 +1,77 @@
+diff --git a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
+index e876040..cf90b92 100644
+--- a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
++++ b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
+@@ -131,6 +131,30 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+         self.events.randomize_com_positions.params["asset_cfg"].body_names = [self.base_link_name]
+         self.events.randomize_apply_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
+ 
++        # ==== YAW ROUND (CEO B-plan, 2026-07-12): deployment wheel-friction domain =========
++        # Root cause #2 for the zero-yaw symptom (wz=1.4 -> 0.48 deg/s, in-place-yaw ~2%):
++        # deployment binds the 4 fixed-axis wheels to a HIGH-traction material
++        # (warehouse_nav.py:193-451  mu_s=1.8 / mu_d=1.6, friction_combine_mode="max",
++        # office marble). A 4-wheel skid-steer body can ONLY spin in place by SCRUBBING the
++        # wheels laterally against the ground — that costs traction the trained policy never
++        # had. Training ground is static=1.0/dynamic=1.0 combine="multiply"
++        # (velocity_env_cfg.py:53-58) and the robot-material randomization is capped at
++        # static<=1.0 / dynamic<=0.8 (velocity_env_cfg.py:267-268). With combine="multiply"
++        # the effective wheel-ground friction TOPS OUT at ~1.0 and averages far below the
++        # deployment 1.6-1.8 -> the scrub regime required for in-place yaw is OUT of training.
++        # FIX: center the robot-material friction randomization on the deployment values and
++        # switch the terrain combine mode to "max" so the effective friction MATCHES the
++        # office marble the policy is deployed on. Random domain (not a single point) keeps
++        # the policy robust to floor variation; the deployment 1.8/1.6 sits INSIDE it.
++        # Deployment-consistency RED LINE untouched: actuator gains, decimation, obs57/act16
++        # unchanged -> new ckpt stays isomorphic to the go2w_policy.py shim.
++        self.events.randomize_rigid_body_material.params["static_friction_range"] = (1.4, 2.0)
++        self.events.randomize_rigid_body_material.params["dynamic_friction_range"] = (1.2, 1.8)
++        # combine="max" so effective mu = max(robot_mat, ground_mat) tracks the high wheel
++        # value (mirrors warehouse_nav.py:451 friction_combine_mode="max"), instead of the
++        # parent "multiply" which suppresses it below either operand.
++        self.scene.terrain.physics_material.friction_combine_mode = "max"
++
+         # ---- Plan-d payload-envelope widening (CEO-approved retrain 2026-07-07) --------
+         # Root cause (vx-audit): the shipped model_1999.pt trained on a 6.92kg BARE trunk;
+         # deployment adds a ~6.5kg front-offset payload (PiPER 4.66kg + NUC/mounts, CoM
+@@ -232,7 +256,15 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+ 
+         # Velocity-tracking rewards
+         self.rewards.track_lin_vel_xy_exp.weight = 3.0
+-        self.rewards.track_ang_vel_z_exp.weight = 1.5
++        # YAW ROUND (CEO B-plan, 2026-07-12): 1.5 -> 2.0. Rationale for the 2:3 ratio vs
++        # lin: during an in-place spin lin_vel~=0 so track_lin_vel_xy_exp is near-saturated
++        # (exp(-err^2/std^2) ~= 1, tiny gradient), leaving too little pressure on the yaw
++        # channel to drive the wheel differential against the (now high) wheel scrub cost.
++        # Bumping to 2.0 strengthens the yaw-tracking gradient WITHOUT letting it dominate
++        # lin tracking (over-weighting risks residual yaw-drift under zero cmd, a ①-gate
++        # regression). std stays 0.5 (unchanged) so the reward shape is comparable to 5495.
++        # 5495 value kept for rollback: self.rewards.track_ang_vel_z_exp.weight = 1.5
++        self.rewards.track_ang_vel_z_exp.weight = 2.0
+ 
+         # Others
+         self.rewards.feet_air_time.weight = 0
+@@ -286,3 +318,24 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
+         # share suffices to teach standing without drowning the tracking gradient.
+         # v1 (from-scratch, FAILED §4b): self.commands.base_velocity.rel_standing_envs = 0.25
+         self.commands.base_velocity.rel_standing_envs = 0.12
++
++        # ==== YAW ROUND (CEO B-plan, 2026-07-12): pure-yaw command distribution ============
++        # Root cause #1 for the zero-yaw symptom. In the shipped 5495 recipe
++        # heading_command=True with rel_heading_envs=1.0 (env.yaml:1685) -> for 100% of
++        # non-standing envs, _update_command (velocity_command.py:150-160) OVERWRITES the
++        # directly-sampled ang_vel_z (velocity_command.py:134) with
++        #   heading_control_stiffness(0.5) * heading_error   clipped to +/-ang_vel_z.
++        # Consequences the policy learned from:
++        #   (a) it NEVER saw a directly-commanded, sustained pure wz -- wz was always a
++        #       small transient byproduct of re-orienting to a heading, and
++        #   (b) it saw wz almost exclusively COUPLED with a nonzero vx/vy (arc), never
++        #       vx~=0 & |wz| large (in-place spin).
++        # Deployment /manip/cmd_vel sets ang_vel_z DIRECTLY (no heading loop), so a pure
++        # wz=0.5/1.0 at vx~=0 is doubly OOD -> policy outputs near-zero wheel differential.
++        # FIX: drop rel_heading_envs to 0.5 so HALF the envs keep the directly-sampled
++        # ang_vel_z (including the vx~=0 & |wz| large corner the deployment issues), while
++        # the other half retain heading-mode for turn-while-driving. Widen ang_vel_z to
++        # +/-1.5 to bracket the deployment ladder (wz up to 1.4). rel_standing_envs stays
++        # 0.12 so the zero-cmd-creep fix from the 5495 round is preserved (regression gate).
++        self.commands.base_velocity.rel_heading_envs = 0.5
++        self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
