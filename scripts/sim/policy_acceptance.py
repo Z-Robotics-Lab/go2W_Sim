@@ -69,6 +69,7 @@ DEVICE = args_cli.device or "cuda:0"
 PHYS_DT = 1.0 / 100.0          # 100 Hz physics (matches warehouse_nav.py)
 POLICY_EVERY = 2              # act every 2 physics steps -> 50 Hz policy
 SPAWN_Z = 0.42               # match warehouse_nav.py init height
+TRANSIENT_S = 0.5            # discard this much spin-up before steady-state averaging
 
 URDF_LOADED = "/workspace/go2w/assets/urdf/go2w_sensored.urdf"
 URDF_BARE = "/workspace/go2w/assets/urdf/go2w_bare.urdf"
@@ -180,11 +181,15 @@ def settle(sim, robot, policy, default_pos, steps=100):
 def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duration_s, fall_deg):
     """Drive the policy at a fixed cmd for duration_s; return GT trajectory stats."""
     n_steps = int(round(duration_s / PHYS_DT))
+    # discard the first TRANSIENT_S of transient before averaging steady-state signals
+    # (yaw rate / speed spin-up). Yaw command tracking (G1) reads the steady window only.
+    settle_steps = min(int(round(TRANSIENT_S / PHYS_DT)), max(0, n_steps - 1))
     p0 = robot.data.root_pos_w[0, :2].clone()
     fell = False
     max_tilt = 0.0
     speeds = []
     pitches = []
+    yaw_rates = []          # signed GT yaw rate (rad/s), steady window only
     for i in range(n_steps):
         if i % POLICY_EVERY == 0:
             apply_policy(robot, policy, default_pos, (cmd_vx, cmd_vy, cmd_wz))
@@ -200,18 +205,25 @@ def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duratio
         max_tilt = max(max_tilt, tilt)
         if tilt > math.radians(fall_deg):
             fell = True
+        if i >= settle_steps:
+            # GT world-frame yaw rate = root_ang_vel_w z; the actor cannot author it.
+            yaw_rates.append(float(robot.data.root_ang_vel_w[0, 2].item()))
     p1 = robot.data.root_pos_w[0, :2].clone()
     disp = float(torch.linalg.norm(p1 - p0).item())
     mean_speed = sum(speeds) / len(speeds) if speeds else 0.0
     # pitch variance (rad^2): body-pitch instability discriminator for the OOD A/B judgement.
     pmean = sum(pitches) / len(pitches) if pitches else 0.0
     pitch_var = sum((p - pmean) ** 2 for p in pitches) / len(pitches) if pitches else 0.0
+    # steady-state yaw rate: signed mean (matches cmd sign) + magnitude of the mean.
+    yaw_rate_signed = sum(yaw_rates) / len(yaw_rates) if yaw_rates else 0.0
     return {
         "disp_m": round(disp, 4),
         "mean_speed_mps": round(mean_speed, 4),
         "displacement_speed_mps": round(disp / duration_s, 4),
         "max_tilt_deg": round(math.degrees(max_tilt), 2),
         "pitch_var_rad2": round(pitch_var, 6),
+        "yaw_rate_rad_s": round(yaw_rate_signed, 4),
+        "yaw_rate_abs_rad_s": round(abs(yaw_rate_signed), 4),
         "fell": fell,
     }
 
@@ -286,6 +298,25 @@ def main():
                              "max_tilt_deg": max_tilt_overall,
                              "criterion": "fall_rate == 0",
                              "pass": falls == 0})
+
+    # -------- Segment 3b: pure-wz yaw TRACKING (wz=1.0/1.4, vx=0), loaded body --------
+    # This is the G1 face: steady-state achieved yaw rate under a sustained pure-yaw command,
+    # the exact behaviour the old policy never learned (heading-env override coupled wz to vx).
+    # Segment 3 only tested FALLING under wz steps; it never measured achieved yaw rate.
+    for wz in (1.0, 1.4):
+        reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
+        settle(sim, robot, policy, default_pos, steps=100)
+        r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, wz, 5.0, args_cli.fall_deg)
+        achieved = r["yaw_rate_abs_rad_s"]
+        rel_err = abs(achieved - wz) / wz if wz > 0 else 0.0
+        write_row(args_cli.out, {**meta, "segment": f"3b_wz_track_{wz}",
+                                 "cmd": [0.0, 0.0, wz], **r,
+                                 "cmd_wz": wz, "achieved_yaw_rate_rad_s": achieved,
+                                 "rel_err": round(rel_err, 4),
+                                 "criterion": f"achieved yaw >= 0.98 rad/s AND rel_err <= 0.30"
+                                              f" (binding at wz=1.4)",
+                                 "pass": (achieved >= 0.98) and (rel_err <= 0.30)
+                                         and not r["fell"]})
 
     # -------- Segment 4: arc (vx=0.3, wz=0.5), 10 s --------
     reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
