@@ -1,0 +1,20 @@
+--- a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
++++ b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
+@@ -264,7 +264,16 @@
+         # lin tracking (over-weighting risks residual yaw-drift under zero cmd, a ①-gate
+         # regression). std stays 0.5 (unchanged) so the reward shape is comparable to 5495.
+         # 5495 value kept for rollback: self.rewards.track_ang_vel_z_exp.weight = 1.5
+-        self.rewards.track_ang_vel_z_exp.weight = 2.0
++        # YAW ROUND-2 VARIANT A (conservative, 2026-07-13; go2w_yaw_variant_a.patch):
++        # 2.0 -> 1.75. Round-1 (model_7494) PASSED G1 (0.9843 rad/s pure-wz, vs 5495 0.8633)
++        # but FAILED G3-1 zero-cmd drift (0.0337 m/s > 0.020 gate; 3x the 5495 0.0112) -
++        # exactly the "over-weight -> zero-cmd yaw-drift, hurts gate-1" risk pre-registered
++        # in docs/retrain-yaw.md line 27. 1.75 is the midpoint between the 5495 baseline 1.5
++        # (no drift) and round-1's 2.0 (G1 pass, drift): keep most of the yaw gradient that
++        # cleared G1 while backing off the over-pressure that broke standing. Everything else
++        # (rel_standing 0.12, stand_still -2.0, wheel_vel_penalty -0.005, friction domain,
++        # command distribution) is UNCHANGED from round-1. std=0.5 unchanged.
++        self.rewards.track_ang_vel_z_exp.weight = 1.75
+ 
+         # Others
+         self.rewards.feet_air_time.weight = 0

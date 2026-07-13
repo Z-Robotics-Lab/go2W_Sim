@@ -44,6 +44,18 @@ INIT_FILE="$RL/$CFG_DIR/__init__.py"
 ROUGH_FILE="$RL/$CFG_DIR/rough_env_cfg.py"
 ENV_SENTINEL="Plan-a fallback (CEO-approved retrain 2026-07-07)"   # from the envelope patch (__init__.py)
 YAW_SENTINEL="YAW ROUND (CEO B-plan, 2026-07-12)"                  # from the yaw patch (rough_env_cfg.py)
+VAR_A_SENTINEL="YAW ROUND-2 VARIANT A (conservative, 2026-07-13"   # from variant-A patch (rough_env_cfg.py)
+VAR_B_SENTINEL="YAW ROUND-2 VARIANT B (targeted anti-drift, 2026-07-13"  # from variant-B patch (rough_env_cfg.py)
+
+# YAW ROUND-2 variant selector (CEO B-plan retrain 2nd round, 2026-07-13). Round-1 (model_7494)
+# FAILED G3-1 zero-cmd drift. Two mutually-exclusive fix variants LAYER on top of the round-1
+# yaw patch; pick ONE via GO2W_YAW_VARIANT. Default 'none' = round-1 recipe verbatim (do NOT
+# silently ship a variant). See docs/retrain-yaw.md "第 2 轮" for definitions + decision rule.
+#   none (default) : round-1 recipe (track_ang_vel_z=2.0) — the un-tuned baseline.
+#   a  (conservative): track_ang_vel_z_exp.weight 2.0 -> 1.75, all else round-1.
+#   b  (targeted)  : weight stays 2.0; stand_still -2.0->-3.0, wheel_vel_penalty -0.005->-0.0075,
+#                    rel_standing_envs 0.12->0.20 (attack the drift at its standing-term source).
+YAW_VARIANT="${GO2W_YAW_VARIANT:-none}"
 
 cd "$RL"
 
@@ -74,6 +86,45 @@ else
   exit 1
 fi
 
+# 4) YAW ROUND-2 variant (CEO B-plan 2nd round 2026-07-13): opt-in fix for round-1's G3-1
+#    zero-cmd drift. LAYERS ON TOP of the yaw patch. MUTUALLY EXCLUSIVE (a XOR b) — each is
+#    idempotent via its own sentinel; requesting a variant while the OTHER is already applied
+#    is an ERROR (dirty checkout — reset robot_lab and re-apply from pristine).
+apply_variant() {  # $1=letter  $2=patch-basename  $3=this-sentinel  $4=other-sentinel  $5=other-letter
+  local letter="$1" patch="$2" mine="$3" other="$4" other_letter="$5"
+  if grep -qF "$other" "$ROUGH_FILE" 2>/dev/null; then
+    echo "[apply] ERROR: variant '$letter' requested but variant '$other_letter' is already applied to $RL." >&2
+    echo "[apply] variants are mutually exclusive. Reset: git -C $RL checkout -- $CFG_DIR && re-run apply.sh with the desired GO2W_YAW_VARIANT." >&2
+    exit 1
+  fi
+  if grep -qF "$mine" "$ROUGH_FILE" 2>/dev/null; then
+    echo "[apply] yaw-round-2 variant '$letter' already applied — skipping (idempotent)"
+  elif git apply --check "$HERE/$patch" >/dev/null 2>&1; then
+    git apply "$HERE/$patch"
+    echo "[apply] yaw-round-2 variant '$letter' applied ($patch)"
+  else
+    echo "[apply] ERROR: variant '$letter' patch does not apply cleanly to $RL (yaw patch missing/changed?)." >&2
+    echo "[apply] inspect: git -C $RL apply --check $HERE/$patch" >&2
+    exit 1
+  fi
+}
+
+case "$YAW_VARIANT" in
+  none)
+    # Guard: a stale variant left in the checkout would silently contaminate a 'none' run.
+    if grep -qF "$VAR_A_SENTINEL" "$ROUGH_FILE" 2>/dev/null || grep -qF "$VAR_B_SENTINEL" "$ROUGH_FILE" 2>/dev/null; then
+      echo "[apply] ERROR: GO2W_YAW_VARIANT=none but a round-2 variant is already applied to $RL." >&2
+      echo "[apply] reset to the round-1 baseline: git -C $RL checkout -- $CFG_DIR && re-run apply.sh." >&2
+      exit 1
+    fi
+    echo "[apply] yaw-round-2 variant: none (round-1 recipe, track_ang_vel_z=2.0)."
+    ;;
+  a) apply_variant a go2w_yaw_variant_a.patch "$VAR_A_SENTINEL" "$VAR_B_SENTINEL" b ;;
+  b) apply_variant b go2w_yaw_variant_b.patch "$VAR_B_SENTINEL" "$VAR_A_SENTINEL" a ;;
+  *) echo "[apply] ERROR: GO2W_YAW_VARIANT must be none|a|b (got '$YAW_VARIANT')" >&2; exit 2 ;;
+esac
+
 echo "[apply] DONE. plan-d is now the default for RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-v0."
 echo "[apply] plan-a opt-in task id: RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-Payload-v0"
 echo "[apply] yaw-round edits (rel_heading_envs 0.5, ang_vel_z ±1.5, wheel-friction max 1.4-2.0/1.2-1.8, track_ang_vel_z 2.0) layered on."
+echo "[apply] yaw-round-2 variant = '$YAW_VARIANT' (none|a|b via GO2W_YAW_VARIANT)."

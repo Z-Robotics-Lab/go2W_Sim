@@ -1,0 +1,52 @@
+--- a/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
++++ b/source/robot_lab/robot_lab/tasks/manager_based/locomotion/velocity/config/wheeled/unitree_go2w/rough_env_cfg.py
+@@ -211,7 +211,17 @@
+         self.rewards.joint_vel_limits.params["asset_cfg"].joint_names = self.wheel_joint_names
+         self.rewards.joint_power.weight = -2e-5
+         self.rewards.joint_power.params["asset_cfg"].joint_names = self.leg_joint_names
+-        self.rewards.stand_still.weight = -2.0
++        # YAW ROUND-2 VARIANT B (targeted anti-drift, 2026-07-13; go2w_yaw_variant_b.patch):
++        # -2.0 -> -3.0 (1.5x). Round-1 (model_7494, weight track_ang_vel_z=2.0) PASSED G1 but
++        # FAILED G3-1: zero-cmd drift 0.0337 m/s (>0.020 gate), tilt 5.46 deg (vs 5495 1.93),
++        # mean_speed 0.102 (vs 0.046) - a WHOLE-BODY zero-cmd creep (legs deviate + wheels
++        # roll), the collateral of the +0.5 yaw over-pressure. stand_still (mdp/rewards.py)
++        # penalizes LEG joint_deviation_l1 when ||cmd||<0.1 - the direct lever against the leg
++        # half of the creep/tilt. 1.5x restores standing pressure the yaw gradient eroded,
++        # WITHOUT the 2.5x+ overshoot that post-mortem H1 (recipe-v1) linked to lazy-basin
++        # collapse. track_ang_vel_z stays 2.0 (variant B keeps the G1-winning yaw gradient;
++        # it fixes the drift at its SOURCE - the standing terms - not by weakening yaw).
++        self.rewards.stand_still.weight = -3.0
+         self.rewards.stand_still.params["asset_cfg"].joint_names = self.leg_joint_names
+         self.rewards.joint_pos_penalty.weight = -1.0
+         self.rewards.joint_pos_penalty.params["asset_cfg"].joint_names = self.leg_joint_names
+@@ -236,7 +246,13 @@
+         #   — doubling the tax in fine-tune overshot; tax is maxed out):  weight = -0.01
+         # ROUND-3 (final, 3rd fire order 2026-07-07): r1 recipe UNCHANGED — the knob that
+         # worked — with a longer runway (+1000 iters from model_2498; r1 had not plateaued).
+-        self.rewards.wheel_vel_penalty.weight = -0.005
++        # YAW ROUND-2 VARIANT B (2026-07-13): -0.005 -> -0.0075 (1.5x). The wheel half of the
++        # round-1 zero-cmd creep (mean_speed 0.102 m/s). wheel_vel_penalty is the ONLY direct
++        # anti-wheel-roll tax (penalizes sum|wheel joint_vel| when cmd<=0.1 & body_vel<=0.5).
++        # CAP: stays STRICTLY below -0.01 - the earlier payload round proved -0.01 OVERSHOOTS
++        # in fine-tune (drift REGRESSED 0.0277->0.0488, arc 0.29->0.40; see the -0.01 v2-round-2
++        # comment below). -0.0075 is the largest step that stays under that documented ceiling.
++        self.rewards.wheel_vel_penalty.weight = -0.0075
+         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = [self.foot_link_name]
+         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
+         self.rewards.joint_mirror.weight = -0.05
+@@ -317,7 +333,14 @@
+         # run 2026-07-07_05-53-47); v2 fine-tunes from the shipped ckpt, so a moderate
+         # share suffices to teach standing without drowning the tracking gradient.
+         # v1 (from-scratch, FAILED §4b): self.commands.base_velocity.rel_standing_envs = 0.25
+-        self.commands.base_velocity.rel_standing_envs = 0.12
++        # YAW ROUND-2 VARIANT B (2026-07-13): 0.12 -> 0.20. Round-1 halved rel_heading_envs
++        # to 0.5 (so half the envs sample direct ang_vel_z incl. pure-wz spins) - that raised
++        # the share of MOVING-yaw samples and correspondingly THINNED the fraction the policy
++        # spends genuinely standing, feeding the G3-1 drift. Raising the true-standing share
++        # 0.12->0.20 gives the policy more zero-cmd practice to re-anchor standing, WITHOUT
++        # returning to the v1 0.25 that (with -0.01 wheel tax, from-scratch) collapsed into a
++        # lazy basin (docs comment above / post-mortem H1). 0.20 < 0.25 keeps clear of that.
++        self.commands.base_velocity.rel_standing_envs = 0.20
+ 
+         # ==== YAW ROUND (CEO B-plan, 2026-07-12): pure-yaw command distribution ============
+         # Root cause #1 for the zero-yaw symptom. In the shipped 5495 recipe
