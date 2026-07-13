@@ -106,6 +106,20 @@ imu_laser_rotation_offset: !!opencv-matrix
             bringup.index('_phase "navstack supervisor (paired restart)"'),
         )
 
+    def test_sim_dds_is_local_and_uses_unique_default_domain(self):
+        bringup = (ROOT / "scripts/nav/bringup.sh").read_text()
+        supervisor = (ROOT / "scripts/nav/run_all_forever.sh").read_text()
+        self.assertIn('GO2W_ROS_DOMAIN_ID:-184', bringup)
+        self.assertIn('GO2W_ROS_LOCALHOST_ONLY:-1', bringup)
+        self.assertIn('-e ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY"', bringup)
+        self.assertIn('ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-184}"', supervisor)
+        self.assertIn('ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"', supervisor)
+        self.assertIn('/registered_scan /state_estimation', bringup)
+        self.assertIn('publisher_count=', bringup)
+        self.assertIn('_runtime_dds_matches', bringup)
+        self.assertIn('&& _ros_graph_unique', bringup)
+        self.assertIn('ros_stream_gate.py --duration 12', bringup)
+
 
 if __name__ == "__main__":
     unittest.main()

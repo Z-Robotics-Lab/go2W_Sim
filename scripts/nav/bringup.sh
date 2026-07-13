@@ -23,6 +23,11 @@ PHASE_FILE="$REPO/logs/.bringup.phase"
 MEM_MIN_GB="${GO2W_MEM_MIN_GB:-20}"     # 可用内存低于此值拒绝启动（防双开 OOM 共享 64G 宿主）
 ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 NAV_TIMEOUT_S="${GO2W_NAV_TIMEOUT_S:-180}"       # 低 RTF Office 下 SLAM 首次收敛墙钟上限
+# 仿真 DDS 默认只在本机通信。184 是合法且不常见的 Fast DDS domain；调用方仍可
+# 显式覆盖，但 Isaac、navstack、RViz 和诊断命令必须共享同一组值。
+ROS_DOMAIN_ID="${GO2W_ROS_DOMAIN_ID:-184}"
+ROS_LOCALHOST_ONLY="${GO2W_ROS_LOCALHOST_ONLY:-1}"
+export ROS_DOMAIN_ID ROS_LOCALHOST_ONLY
 # RL locomotion 策略（容器内路径；README 坑 26：差速在 Go2W 物理不可行，必须 RL 策略）。
 # 默认指向 git 追踪的 assets/policies/；容器 bind-mount 仓库到 /workspace/go2w，
 # 故此路径在容器内直接可见。
@@ -35,6 +40,38 @@ _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
   echo "$1  $(date -Is)" > "$PHASE_FILE"
   echo "[bringup] $1"
+}
+
+_ros_graph_unique() {
+  # 远端同 domain 的第二套传感器/SLAM 会让时间戳倒退并清空聚合缓冲。
+  # 关键链路必须各自只有一个发布者，缺失或多发布者都 fail closed。
+  docker exec navstack bash -c '
+    source /opt/ros/jazzy/setup.bash
+    source /ws/install/setup.bash
+    for topic in /clock /imu/data /lidar/points /lidar/scan /registered_scan /state_estimation; do
+      count="$(ros2 topic info "$topic" 2>/dev/null | sed -n "s/^Publisher count: //p")"
+      if [ "$count" != "1" ]; then
+        echo "$topic publisher_count=${count:-missing}" >&2
+        exit 1
+      fi
+    done
+    python3 /ws/ros_stream_gate.py --duration 12 --min-clock 10 --min-regscan 2
+  ' > "$REPO/logs/ros_graph_gate.log" 2>&1
+}
+
+_runtime_dds_matches() {
+  # 防止旧容器在不同 domain/scope 下仍因 HTTP freshness 被误判 already-up。
+  local nav_env isaac_env
+  nav_env="$(docker inspect navstack --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null)" || return 1
+  grep -qx "ROS_DOMAIN_ID=$ROS_DOMAIN_ID" <<<"$nav_env" || return 1
+  grep -qx "ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY" <<<"$nav_env" || return 1
+  isaac_env="$(docker exec -u 0 go2w-isaac bash -c '
+    pid="$(pgrep -f "kit/pytho[n].*warehouse_nav.py" | head -1)"
+    [ -n "$pid" ] || exit 1
+    tr "\0" "\n" < "/proc/$pid/environ"
+  ' 2>/dev/null)" || return 1
+  grep -qx "ROS_DOMAIN_ID=$ROS_DOMAIN_ID" <<<"$isaac_env" || return 1
+  grep -qx "ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY" <<<"$isaac_env" || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -140,9 +177,11 @@ teardown() {
 # up: 幂等拉起
 # ---------------------------------------------------------------------------
 up() {
-  # 0) 幂等短路：已 green 直接返回
+  # 0) 幂等短路：健康、DDS 配置一致且关键发布者唯一才允许直接返回。
   _phase "probe (idempotency check)"
-  if bash "$HERE/status.sh" >/dev/null 2>&1; then
+  if bash "$HERE/status.sh" >/dev/null 2>&1 \
+     && _runtime_dds_matches \
+     && _ros_graph_unique; then
     echo "already-up"
     _phase "already-up"
     exit 0
@@ -203,7 +242,8 @@ up() {
   docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
   : > "$LOG"
   rm -f "$REPO/logs/.isaac_heartbeat"
-  docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
+  docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy \
+    -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY" \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
     -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
@@ -237,7 +277,8 @@ up() {
   _phase "navstack supervisor (paired restart)"
   docker rm -f navstack >/dev/null 2>&1 || true
   docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
-    -e ROS_DOMAIN_ID=42 -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
+    -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY" \
+    -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
     -e NAV_MODE="${NAV_MODE:-waypoint}" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "$NAV":/ws -w /ws \
@@ -246,18 +287,21 @@ up() {
   # 6) 门控复核：navstack 刚创建时需要数秒完成发现和 SLAM 初始化。
   _phase "gate (wait green <=${NAV_TIMEOUT_S}s)"
   deadline=$(( $(date +%s) + NAV_TIMEOUT_S ))
-  until bash "$HERE/status.sh" >/dev/null 2>&1; do
+  until bash "$HERE/status.sh" >/dev/null 2>&1 && _ros_graph_unique; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
       echo "[bringup] GATE-FAILED: ${NAV_TIMEOUT_S}s 内链路未达 green。" >&2
       bash "$HERE/status.sh" >&2 || true
       echo "[bringup] ===== system.log 尾 30 行诊断 =====" >&2
       tail -30 "$NAV/system.log" 2>/dev/null >&2 || true
+      echo "[bringup] ===== ROS graph gate =====" >&2
+      cat "$REPO/logs/ros_graph_gate.log" 2>/dev/null >&2 || true
       _phase "FAILED: gate timeout"
       exit 1
     fi
     sleep 2
   done
   bash "$HERE/status.sh"
+  echo "[bringup] DDS domain=$ROS_DOMAIN_ID localhost_only=$ROS_LOCALHOST_ONLY; critical publishers unique"
   _phase "up (green)"
   echo "[bringup] ALL-GREEN: 全链就绪"
   exit 0

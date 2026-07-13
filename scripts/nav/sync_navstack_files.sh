@@ -8,7 +8,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 NAV="${1:-$HERE/../../refs/Navigation-Physical-Experiment}"
 NAV="$(cd "$NAV" && pwd)"
 for f in pc2_to_livox.py run_navstack.sh agent_bridge.py manip_rviz_bridge.py \
-         run_all_forever.sh; do
+         ros_stream_gate.py run_all_forever.sh; do
   cp "$HERE/$f" "$NAV/$f"
 done
 # ARISE's calibration install rule creates a regular file rather than a symlink.

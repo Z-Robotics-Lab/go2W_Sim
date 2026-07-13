@@ -31,7 +31,9 @@
 18. isaaclab 的 `Imu.gravity_bias` 是本体系加常量，只对水平安装正确——斜装传感器必须
     自己按姿态投影重力（quat_apply_inverse），否则 SLAM 拿到错误重力方向。
 19. 物理 100Hz 时腿部 PD 60/2 站不稳会摔（截图实锤）；100/5 稳。
-20. DDS 必须隔离域（本仓库约定 ROS_DOMAIN_ID=42）：域 0 会和主机上其他 ROS 项目串台。
+20. DDS 必须隔离（仿真默认 `ROS_DOMAIN_ID=184`、`ROS_LOCALHOST_ONLY=1`）：只改域 0
+    会和主机或局域网其他 ROS 项目串台。真机跨主机时两端保持同域并显式设
+    `ROS_LOCALHOST_ONLY=0`。
 21. 手动 cmake install 到 /usr/local 后要 `ldconfig`，否则节点起不来（libgtsam 找不到）。
 22. 编排脚本别用 `set -u`（ROS setup.bash 有 unbound 变量，直接静默死）。
 23. **宿主机上其他项目的定时清理会跨命名空间杀容器内同 uid 进程**（本机实证：
@@ -92,7 +94,7 @@
     `scripts/nav/teardown_matrix.md`。
 37. **`rosm clean` / `rosm nuke` 对 go2w 栈无效——别用**：rosm 是 vector_os_nano 时代的
     **宿主**进程清理器，目标模式是宿主上的 MuJoCo/ROS 进程；Isaac 跑在 go2w-isaac 容器
-    **内部**，navstack 跑在 navstack 容器内部（ROS_DOMAIN_ID=42、`--user 0`）。rosm 既
+    **内部**，navstack 跑在 navstack 容器内部（仿真默认 ROS_DOMAIN_ID=184、`--user 0`）。rosm 既
     定位不到容器内 kit-python（不是它的目标模式），非 root 清理器对 root 容器进程还
     EPERM。历史上 rosm 对本栈的唯一效果是**跨命名空间误伤** navstack 里同 uid 的 ROS
     进程（坑 23）——是要防的对象，不是清理工具。正确姿势同坑 36：走 `bringup.sh

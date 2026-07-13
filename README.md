@@ -71,12 +71,14 @@ Isaac 当机器人、CMU 导航栈（refs 见 docs/sim-plan.md）当大脑，全
 waypoint → FAR/local planner → cmd_vel → 差速轮速 → Go2W 在 full_warehouse 自主行驶
 至目标（SLAM 与地面真值交叉验证一致，静止漂移 5cm/20s）。
 
-传感器坐标约束：Mid-360 的物理 20° 姿态只存在于 URDF/USD；当前 Isaac ROS 输出已经
-导航对齐，桥与 `imu_laser_rotation_offset` 均不得再次叠加 20°。
+传感器坐标约束：Mid-360 LiDAR 与 IMU 的 Isaac ROS 输出共享同一个物理斜装坐标系；
+ARISE 用静止重力对两路数据施加同一水平化旋转。二者的相对外参为零，桥与
+`imu_laser_rotation_offset` 均不得再次叠加 20°。
 
 ```bash
-# 1) Isaac 侧（传感器桥：/lidar/points /imu/data /clock 出、/cmd_vel 入，DDS 域 42）
-docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
+# 1) Isaac 侧（传感器桥：/lidar/points /imu/data /clock 出、/cmd_vel 入）
+docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=184 \
+  -e ROS_LOCALHOST_ONLY=1 \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
   -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
   go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
@@ -85,7 +87,7 @@ docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
 #    再按其 docker/README 构建 jazzy-dev 镜像 + colcon build）
 docker exec -d navstack bash /ws/run_navstack.sh
 # 3) 发导航目标
-docker exec navstack bash -c "export ROS_DOMAIN_ID=42 && source /opt/ros/jazzy/setup.bash && \
+docker exec navstack bash -c "export ROS_DOMAIN_ID=184 ROS_LOCALHOST_ONLY=1 && source /opt/ros/jazzy/setup.bash && \
   source /ws/install/setup.bash && ros2 topic pub --once /way_point \
   geometry_msgs/msg/PointStamped '{header: {frame_id: map}, point: {x: 2.5, y: 0.0, z: 0.0}}'"
 ```

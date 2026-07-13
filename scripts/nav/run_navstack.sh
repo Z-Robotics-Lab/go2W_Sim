@@ -3,7 +3,8 @@
 # 用法（宿主机）: docker exec -d navstack bash /ws/run_navstack.sh
 # 日志: /ws/converter.log  /ws/system.log  /ws/orchestrator.log
 # set -u  # ROS setup.bash 有 unbound 变量，不能开
-export ROS_DOMAIN_ID=42
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-184}"
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp  # rclpy+cyclonedds 搬大点云会崩（context invalid），强制 fastdds
 source /opt/ros/jazzy/setup.bash
 source /ws/install/setup.bash
