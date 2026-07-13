@@ -12,6 +12,11 @@ for f in pc2_to_livox.py run_navstack.sh agent_bridge.py diagnostic_level.py \
          ros_stream_gate.py run_all_forever.sh; do
   cp "$HERE/$f" "$NAV/$f"
 done
+# One tracked mux contract is shared by simulation and real-robot launch files.
+# The cmd_vel_mux install is symlinked to this source path in the nav workspace.
+MUX_CONTRACT="$HERE/../../configs/nav/cmd_vel_mux_params.yaml"
+MUX_RUNTIME="$NAV/src/utilities/cmd_vel_mux/config/cmd_vel_mux_params.yaml"
+install -D -m 0644 "$MUX_CONTRACT" "$MUX_RUNTIME"
 # ARISE's calibration install rule creates a regular file rather than a symlink.
 # Validate the sim-only zero relative rotation, then refresh the exact file loaded
 # by ros2 launch. This prevents source/install drift from silently restoring +20 deg.

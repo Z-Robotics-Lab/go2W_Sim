@@ -1,0 +1,29 @@
+cmd_vel_mux:
+  ros__parameters:
+    output_stamped: true
+    subscribers:
+      navigation:
+        topic: "/navigation_cmd_vel"
+        timeout: 0.5
+        priority: 3
+        short_desc: "Autonomous navigation stack"
+        stamped: true
+      safety:
+        topic: "/safety_cmd_vel"
+        # Three 10 Hz periods tolerate scheduler jitter without releasing safety.
+        timeout: 0.3
+        priority: 100
+        short_desc: "Safety controller / obstacle avoidance"
+        stamped: true
+      local_movement:
+        topic: "/local_movement_cmd_vel"
+        timeout: 0.3
+        priority: 5
+        short_desc: "Local precise movements"
+        stamped: true
+      teleop:
+        topic: "/teleop_cmd_vel"
+        timeout: 0.1
+        priority: 10
+        short_desc: "Teleoperation / joystick"
+        stamped: true
