@@ -83,6 +83,27 @@ class MobileManipSceneContractTest(unittest.TestCase):
 
 
 class PiperExecutionContractTest(unittest.TestCase):
+    def test_camera_streams_use_nonblocking_sensor_qos(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn("from rclpy.qos import qos_profile_sensor_data", source)
+        for endpoint in (
+            'Image, "/camera/image", qos_profile_sensor_data',
+            'Image, "/camera/depth", qos_profile_sensor_data',
+            "Image, wc.TOPIC_COLOR, qos_profile_sensor_data",
+            "CameraInfo, wc.TOPIC_COLOR_INFO, qos_profile_sensor_data",
+            "Image, wc.TOPIC_DEPTH_ALIGNED, qos_profile_sensor_data",
+        ):
+            self.assertIn(endpoint, source)
+
+    def test_health_requires_live_isaac_process_and_loop_heartbeat(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        status = (ROOT / "scripts/nav/status.sh").read_text(encoding="utf-8")
+        bringup = BRINGUP.read_text(encoding="utf-8")
+        self.assertIn(".isaac_heartbeat", source)
+        self.assertIn("_heartbeat_fresh", status)
+        self.assertIn("warehouse_nav.py", status)
+        self.assertIn("执行成对 teardown 后自愈重启", bringup)
+
     def test_bridge_exposes_generic_execution_topics_without_gt_driven_grasp(self):
         source = WAREHOUSE.read_text(encoding="utf-8")
         for topic in (

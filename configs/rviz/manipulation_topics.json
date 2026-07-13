@@ -3,6 +3,7 @@
   "fixed_frame": "map",
   "status_frame": "base_link",
   "topics": {
+    "raw_lidar": "/lidar/points",
     "wrist_rgb": "/camera/color/image_raw",
     "aligned_depth": "/camera/aligned_depth_to_color/image_raw",
     "camera_info": "/camera/color/camera_info",

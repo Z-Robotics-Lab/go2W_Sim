@@ -15,11 +15,29 @@
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 LOG="$REPO/logs/nav_bridge.log"
+HEARTBEAT="$REPO/logs/.isaac_heartbeat"
+HEARTBEAT_MAX_AGE_S="${GO2W_ISAAC_HEARTBEAT_MAX_AGE_S:-10}"
+
+_heartbeat_fresh() {
+  local now mtime age
+  [ -f "$HEARTBEAT" ] || return 1
+  now="$(date +%s)"
+  mtime="$(stat -c %Y "$HEARTBEAT" 2>/dev/null)" || return 1
+  age=$((now - mtime))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$HEARTBEAT_MAX_AGE_S" ]
+}
 
 # --- L0: 两容器都在跑 ---------------------------------------------------------
 # docker inspect 对不存在的容器会报错退出，2>/dev/null 吞掉；只有输出恰好 "true" 才算起。
 _running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
-if _running go2w-isaac && _running navstack; then l0=true; else l0=false; fi
+_isaac_process_running() {
+  docker exec go2w-isaac pgrep -f 'kit/pytho[n].*warehouse_nav.py' >/dev/null 2>&1
+}
+if _running go2w-isaac && _running navstack && _isaac_process_running; then
+  l0=true
+else
+  l0=false
+fi
 
 # --- L1: Isaac 关节就绪 -------------------------------------------------------
 # grep -qa: -q 只看有无匹配（静默），-a 把日志当文本（防二进制字符打断匹配）。
@@ -30,7 +48,8 @@ if _running go2w-isaac && _running navstack; then l0=true; else l0=false; fi
 if [ "$l0" = true ] && grep -qaE 'joints\([0-9]+\) ready' "$LOG" 2>/dev/null; then l1=true; else l1=false; fi
 
 # --- L2: Isaac 在出传感器数据 -------------------------------------------------
-if [ "$l1" = true ] && grep -qa "imu sample" "$LOG" 2>/dev/null; then l2=true; else l2=false; fi
+if [ "$l1" = true ] && grep -qa "imu sample" "$LOG" 2>/dev/null \
+   && _heartbeat_fresh; then l2=true; else l2=false; fi
 
 # --- L3: HTTP 桥活 + 地面真值可读 --------------------------------------------
 # curl -sf: -s 静默，-f 非 2xx 返回非零退出码（--max-time 3 防桥卡死时探针挂住）。

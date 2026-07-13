@@ -91,6 +91,7 @@ import omni.graph.core as og  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 import rclpy  # noqa: E402
 import torch  # noqa: E402
+from rclpy.qos import qos_profile_sensor_data  # noqa: E402
 from geometry_msgs.msg import PoseStamped, TransformStamped, TwistStamped  # noqa: E402
 from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
@@ -485,6 +486,20 @@ def main():
     import traceback  # noqa: E402
     import time as _time  # noqa: E402
 
+    # Dedicated liveness evidence. Container state and boot log markers remain
+    # true after Kit leaves the simulation loop, so they cannot prove that
+    # /clock and sensors are advancing. Refresh this only after a complete
+    # physics/publish iteration; status.sh treats it as fail-closed.
+    _heartbeat_path = Path(_os.environ.get(
+        "GO2W_ISAAC_HEARTBEAT_FILE",
+        "/workspace/go2w/logs/.isaac_heartbeat",
+    ))
+    _heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+    _heartbeat_path.unlink(missing_ok=True)
+    _heartbeat_period_s = max(
+        0.5, float(_os.environ.get("GO2W_ISAAC_HEARTBEAT_PERIOD_S", "2.0")))
+    _heartbeat_next_wall = _time.monotonic()
+
     # 【1】anti-wedge：把 STOP 焊死回调变 no-op（IsaacLab 自身 reset():513 同款用法）。
     #      必须在 sim.reset() 之后——reset 尾部会把 flag 回置 False。
     assert hasattr(sim, "_disable_app_control_on_stop_handle"), \
@@ -558,13 +573,22 @@ def main():
     # /ground_truth/pose 的 PoseStamped schema 一字不动（桥与旧订阅者全兼容）。
     up_z_pub = node.create_publisher(Float32, "/ground_truth/up_z", 10)
     up_z_msg = Float32()
-    rgb_pub = node.create_publisher(Image, "/camera/image", 5)
-    depth_pub = node.create_publisher(Image, "/camera/depth", 5)
+    # Camera payloads are high-bandwidth sensor streams. Reliable writers can
+    # block the single physics/publish loop while a dead RViz or perception
+    # reader remains in DDS discovery, freezing /clock with the images. Match
+    # real camera drivers and every critical consumer with SensorDataQoS.
+    rgb_pub = node.create_publisher(
+        Image, "/camera/image", qos_profile_sensor_data)
+    depth_pub = node.create_publisher(
+        Image, "/camera/depth", qos_profile_sensor_data)
     # Z-Manip M0：realsense2_camera 对齐口径（新增，与旧 /camera/image·/camera/depth 并存——
     # 旧话题被 refs CMU 栈 RViz 消费，不可删；新话题供 z-manip / M0 gate）。sim=real 同名同编码。
-    color_pub = node.create_publisher(Image, wc.TOPIC_COLOR, 5)
-    cam_info_pub = node.create_publisher(CameraInfo, wc.TOPIC_COLOR_INFO, 5)
-    depth_aligned_pub = node.create_publisher(Image, wc.TOPIC_DEPTH_ALIGNED, 5)
+    color_pub = node.create_publisher(
+        Image, wc.TOPIC_COLOR, qos_profile_sensor_data)
+    cam_info_pub = node.create_publisher(
+        CameraInfo, wc.TOPIC_COLOR_INFO, qos_profile_sensor_data)
+    depth_aligned_pub = node.create_publisher(
+        Image, wc.TOPIC_DEPTH_ALIGNED, qos_profile_sensor_data)
     # base→camera_color_optical_frame 动态 TF（相机挂运动臂，逐拍位姿变；G-b 数值核对源）。
     tf_broadcaster = TransformBroadcaster(node) if _HAS_TF2 else None
     # d435_link body 索引（发动态 TF 用；prim 名 d435_link）。找不到不阻断，软降级留痕。
@@ -1249,10 +1273,33 @@ def main():
             )
             print(f"[POSE] step={step} root=({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})")
 
+        # A fresh heartbeat proves sim.step and every ROS publisher block
+        # returned. It deliberately uses wall time so low RTF cannot look dead.
+        _heartbeat_wall = _time.monotonic()
+        if _heartbeat_wall >= _heartbeat_next_wall:
+            _heartbeat_path.write_text(
+                f"pid={_os.getpid()} sim_time={sim_t['now']:.6f} "
+                f"wall_time={_time.time():.6f}\n",
+                encoding="ascii",
+            )
+            _heartbeat_next_wall = _heartbeat_wall + _heartbeat_period_s
+
+    # A GUI/editor quit makes SimulationApp.is_running() false without entering
+    # the timeline STOP branch. Treat it as failure rather than a clean exit so
+    # bringup can reconcile Isaac and RViz together on the next `up`.
+    if not stopped:
+        stopped = True
+        print(f"[NAV][FATAL] SimulationApp left run loop at sim_t={sim_t['now']:.2f} "
+              "— paired restart required", flush=True)
+
     # 收尾照旧；stopped=True 时响亮死给 status.sh/监管看，绝不再留 527% CPU 焊死僵尸。
+    print("[NAV][CLEANUP] destroy ROS node", flush=True)
     node.destroy_node()
+    print("[NAV][CLEANUP] shutdown rclpy", flush=True)
     rclpy.shutdown()
+    print("[NAV][CLEANUP] close SimulationApp", flush=True)
     simulation_app.close()
+    _heartbeat_path.unlink(missing_ok=True)
     if stopped:
         import sys
         sys.exit(3)

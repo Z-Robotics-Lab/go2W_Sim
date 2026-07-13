@@ -21,6 +21,7 @@ import yaml
 ENV_OVERRIDES = {
     "fixed_frame": "GO2W_RVIZ_FIXED_FRAME",
     "status_frame": "GO2W_RVIZ_STATUS_FRAME",
+    "raw_lidar": "GO2W_RVIZ_RAW_LIDAR_TOPIC",
     "wrist_rgb": "GO2W_RVIZ_WRIST_RGB_TOPIC",
     "aligned_depth": "GO2W_RVIZ_ALIGNED_DEPTH_TOPIC",
     "camera_info": "GO2W_RVIZ_CAMERA_INFO_TOPIC",
@@ -96,6 +97,7 @@ def _point_cloud(
     color: str,
     enabled: bool = False,
     size_m: float = 0.006,
+    decay_time: float = 0.0,
 ) -> dict[str, Any]:
     return {
         "Alpha": 0.85,
@@ -106,7 +108,7 @@ def _point_cloud(
         "Class": "rviz_default_plugins/PointCloud2",
         "Color": color,
         "Color Transformer": "FlatColor",
-        "Decay Time": 0,
+        "Decay Time": decay_time,
         "Enabled": enabled,
         "Invert Rainbow": False,
         "Max Color": "255; 255; 255",
@@ -194,13 +196,22 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
     ]
 
     manager = result.setdefault("Visualization Manager", {})
-    manager.setdefault("Global Options", {})["Fixed Frame"] = contract["fixed_frame"]
+    # Manipulation is usable before SLAM has created map->base_link. Defaulting
+    # RViz to map made a healthy local lidar cloud appear as a few remote points
+    # (or disappear entirely). Navigation remains available as a saved view.
+    manager.setdefault("Global Options", {})["Fixed Frame"] = contract["status_frame"]
     displays = manager.setdefault("Displays", [])
     displays[:] = [
         display for display in displays
         if display.get("Class") != "rviz_default_plugins/Image"
         and not str(display.get("Name", "")).startswith(("Perception |", "Manipulation |"))
     ]
+    # /registered_scan is in map and cannot render until SLAM publishes map TF.
+    # Keep it available but disabled in the base_link-first operator surface.
+    for display in displays:
+        if display.get("Name") == "RegScan":
+            display["Enabled"] = False
+            display["Value"] = False
     topics = contract["topics"]
 
     image_displays = [
@@ -217,6 +228,17 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
             enabled=False,
         ),
     ]
+    local_lidar = _point_cloud(
+        "Local LiDAR [LIVE, accumulated]",
+        topics["raw_lidar"],
+        color="255; 215; 0",
+        enabled=True,
+        size_m=0.012,
+        # Mid-360 completes multiple sweeps in this window. Keeping one full
+        # simulated second retained roughly 100 incremental clouds in RViz.
+        decay_time=0.2,
+    )
+    local_lidar.update({"Alpha": 0.7, "Size (Pixels)": 2, "Style": "Points"})
     perception = _group(
         "Perception 3D (measured RGB-D only)",
         [
@@ -332,7 +354,7 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         "Update Interval": 0,
         "Value": True,
     }
-    displays[:0] = image_displays
+    displays[:0] = image_displays + [local_lidar]
     displays.extend([tf_display, perception, manipulation, diagnostics])
 
     views = manager.setdefault("Views", {})
@@ -363,6 +385,7 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
             },
         )
         views["Saved"] = [navigation, manipulation_view, wrist_view]
+        views["Current"] = copy.deepcopy(manipulation_view)
 
     geometry = result.setdefault("Window Geometry", {})
     geometry["Perception | Wrist RGB [LIVE]"] = {"collapsed": False}

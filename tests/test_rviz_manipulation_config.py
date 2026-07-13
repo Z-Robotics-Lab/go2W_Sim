@@ -68,6 +68,11 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     by_name = {display["Name"]: display for display in displays}
     assert by_name["Navigation map"]["Enabled"] is True
     assert "legacy image" not in by_name
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Enabled"] is True
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Decay Time"] == 0.2
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Style"] == "Points"
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Topic"]["Value"] == "/lidar/points"
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Topic"]["Reliability Policy"] == "Best Effort"
     assert by_name["Perception | Wrist RGB [LIVE]"]["Enabled"] is True
     assert by_name["Perception | Aligned Depth [LIVE]"]["Enabled"] is True
     assert by_name["Perception | Detections + Mask [upstream required]"]["Enabled"] is False
@@ -85,6 +90,15 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
         "Mobile Manipulation",
         "Wrist Camera TF",
     }
+    navigation = next(view for view in saved if view["Name"] == "Navigation Overview")
+    assert navigation["Target Frame"] == "map"
+
+    current = result["Visualization Manager"]["Views"]["Current"]
+    assert result["Visualization Manager"]["Global Options"]["Fixed Frame"] == "base_link"
+    assert current["Name"] == "Mobile Manipulation"
+    assert current["Target Frame"] == "base_link"
+    assert current["Distance"] == 3.0
+    assert current["Focal Point"] == {"X": 0.45, "Y": 0.0, "Z": 0.75}
 
 
 def test_topic_contract_is_absolute_parameterized_and_contains_no_gt():
@@ -97,6 +111,7 @@ def test_topic_contract_is_absolute_parameterized_and_contains_no_gt():
     builder_text = BUILDER_PATH.read_text()
     for environment_name in (
         "GO2W_RVIZ_WRIST_RGB_TOPIC",
+        "GO2W_RVIZ_RAW_LIDAR_TOPIC",
         "GO2W_RVIZ_ALIGNED_DEPTH_TOPIC",
         "GO2W_RVIZ_TARGET_CLOUD_TOPIC",
         "GO2W_RVIZ_SCENE_CLOUD_TOPIC",
@@ -147,4 +162,4 @@ def test_builder_writes_loadable_yaml(tmp_path):
     stock.write_text(yaml.safe_dump(_minimal_stock()))
     builder.build(stock, CONTRACT_PATH, output)
     parsed = yaml.safe_load(output.read_text())
-    assert parsed["Visualization Manager"]["Global Options"]["Fixed Frame"] == "map"
+    assert parsed["Visualization Manager"]["Global Options"]["Fixed Frame"] == "base_link"

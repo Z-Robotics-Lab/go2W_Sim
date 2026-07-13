@@ -150,11 +150,11 @@ up() {
 
   # 1) 防双开守卫 -----------------------------------------------------------
   _phase "guard (double-launch / memory)"
-  # 1a. 已有 kit-python（Isaac sim）在跑 => 疑似另一实例，拒绝（README 坑 15：一次一个 sim）
+  # 1a. `up` 已知当前栈未 green。若仍有 Kit，可能是 editor-quit 后 ROS 已死的
+  # 假存活实例；必须先成对拆掉 navstack/RViz 和 Isaac，再继续同一次 up。
   if pgrep -f "kit/pytho[n]" >/dev/null 2>&1; then
-    echo "[bringup] 拒绝启动：检测到 kit-python（Isaac sim）已在运行——一次只跑一个 sim 实例。" >&2
-    echo "[bringup] 若确为僵尸残留，请先 bash scripts/nav/bringup.sh teardown。" >&2
-    exit 1
+    echo "[bringup] 检测到非 green 的 Kit 实例；执行成对 teardown 后自愈重启。" >&2
+    teardown
   fi
   # 1b. 可用内存不足 => 拒绝（共享 64G 宿主，双 sim 会 OOM 连累其他会话/桌面）
   local avail_gb
@@ -202,6 +202,7 @@ up() {
   # 先清 Isaac 里的旧 sim（字符类防自杀），再起新实例
   docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
   : > "$LOG"
+  rm -f "$REPO/logs/.isaac_heartbeat"
   docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
