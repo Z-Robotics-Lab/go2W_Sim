@@ -23,6 +23,7 @@ PHASE_FILE="$REPO/logs/.bringup.phase"
 MEM_MIN_GB="${GO2W_MEM_MIN_GB:-20}"     # 可用内存低于此值拒绝启动（防双开 OOM 共享 64G 宿主）
 ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 NAV_TIMEOUT_S="${GO2W_NAV_TIMEOUT_S:-180}"       # 低 RTF Office 下 SLAM 首次收敛墙钟上限
+REQUIRE_GUI="${GO2W_REQUIRE_GUI:-0}"              # 1=RViz/X11 也是启动成功合同
 # 184 是合法且不常见的 Fast DDS domain；调用方仍可显式覆盖，但 Isaac、
 # navstack、RViz、Z-Manip 和诊断命令必须共享同一个值。
 ROS_DOMAIN_ID="${GO2W_ROS_DOMAIN_ID:-184}"
@@ -65,6 +66,10 @@ _ros_stream_healthy() {
       --min-clock 10 --min-imu 2 --min-raw 2 --min-custom 2 \
       --min-regscan 2 --min-state 2 --min-odom 2
   ' > "$REPO/logs/ros_stream_gate.log" 2>&1
+}
+
+_gui_healthy() {
+  [ "$REQUIRE_GUI" != "1" ] || docker exec navstack pgrep -x rviz2 >/dev/null 2>&1
 }
 
 _runtime_dds_matches() {
@@ -283,7 +288,14 @@ up() {
 
   # 5) xhost 放行后再起 navstack/RViz。
   _phase "xhost +local:"
-  xhost +local: >/dev/null 2>&1 || echo "[bringup] warn: xhost +local: 失败（无 X/headless？RViz 可能起不来，不阻塞链路）"
+  if ! xhost +local: >/dev/null 2>&1; then
+    if [ "$REQUIRE_GUI" = "1" ]; then
+      echo "[bringup] FAILED: GO2W_REQUIRE_GUI=1 但 DISPLAY='${DISPLAY:-}' 无法通过 xhost 访问" >&2
+      _phase "FAILED: X11 authorization"
+      exit 1
+    fi
+    echo "[bringup] warn: xhost +local: 失败（无 X/headless？RViz 可能起不来，不阻塞链路）"
+  fi
 
   _phase "navstack supervisor (paired restart)"
   docker rm -f navstack >/dev/null 2>&1 || true
@@ -301,7 +313,8 @@ up() {
   deadline=$(( $(date +%s) + NAV_TIMEOUT_S ))
   until bash "$HERE/status.sh" >/dev/null 2>&1 \
         && _ros_graph_unique \
-        && _ros_stream_healthy; do
+        && _ros_stream_healthy \
+        && _gui_healthy; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
       echo "[bringup] GATE-FAILED: ${NAV_TIMEOUT_S}s 内链路未达 green。" >&2
       bash "$HERE/status.sh" >&2 || true
@@ -317,7 +330,7 @@ up() {
     sleep 2
   done
   bash "$HERE/status.sh"
-  echo "[bringup] DDS domain=$ROS_DOMAIN_ID; critical publishers unique and streams advancing"
+  echo "[bringup] DDS domain=$ROS_DOMAIN_ID; critical publishers unique and streams advancing; require_gui=$REQUIRE_GUI"
   _phase "up (green)"
   echo "[bringup] ALL-GREEN: 全链就绪"
   exit 0

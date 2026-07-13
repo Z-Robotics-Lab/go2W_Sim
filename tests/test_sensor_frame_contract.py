@@ -124,6 +124,8 @@ imu_laser_rotation_offset: !!opencv-matrix
         self.assertIn('&& _ros_graph_unique', bringup)
         self.assertIn('ros_stream_gate.py --duration 30', bringup)
         self.assertIn('_ros_stream_healthy', bringup)
+        self.assertIn('GO2W_REQUIRE_GUI', bringup)
+        self.assertIn('&& _gui_healthy', bringup)
 
 
 if __name__ == "__main__":

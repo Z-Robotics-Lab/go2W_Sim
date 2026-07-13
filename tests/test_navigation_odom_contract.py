@@ -19,6 +19,10 @@ def test_sim_launches_separate_raw_mount_from_level_arise_frame_and_publish_base
         assert "default_value='0.27'" in source
         assert "default_value='0.10'" in source
         assert "default_value='0.3490658503988659'" in source
+        for axis in ("X", "Y", "Z"):
+            assert f"rawSensorOffset{axis} = LaunchConfiguration('rawSensorOffset{axis}')" in source
+            assert f"default_value=sensorOffset{axis}" in source
+            assert f"ld.add_action(declare_rawSensorOffset{axis})" in source
         for offset in ("sensorOffsetX", "sensorOffsetY", "sensorOffsetZ"):
             assert f"PythonExpression(['str(-float(', {offset}, '))'])" in source
 
@@ -36,9 +40,9 @@ def test_sim_launches_separate_raw_mount_from_level_arise_frame_and_publish_base
         # the positional Euler-order ambiguity and keep it out of ARISE sensor.
         assert "package='tf2_ros'" in source
         assert "executable='static_transform_publisher'" in source
-        assert "'--x', sensorOffsetX" in source
-        assert "'--y', sensorOffsetY" in source
-        assert "'--z', sensorOffsetZ" in source
+        assert "'--x', rawSensorOffsetX" in source
+        assert "'--y', rawSensorOffsetY" in source
+        assert "'--z', rawSensorOffsetZ" in source
         assert "'--roll', '0.0'" in source
         assert "'--pitch', sensorMountPitch" in source
         assert "'--yaw', '0.0'" in source

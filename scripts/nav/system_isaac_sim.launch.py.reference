@@ -12,6 +12,9 @@ def generate_launch_description():
   sensorOffsetX = LaunchConfiguration('sensorOffsetX')
   sensorOffsetY = LaunchConfiguration('sensorOffsetY')
   sensorOffsetZ = LaunchConfiguration('sensorOffsetZ')
+  rawSensorOffsetX = LaunchConfiguration('rawSensorOffsetX')
+  rawSensorOffsetY = LaunchConfiguration('rawSensorOffsetY')
+  rawSensorOffsetZ = LaunchConfiguration('rawSensorOffsetZ')
   sensorMountPitch = LaunchConfiguration('sensorMountPitch')
   cameraOffsetZ = LaunchConfiguration('cameraOffsetZ')
   vehicleX = LaunchConfiguration('vehicleX')
@@ -22,6 +25,15 @@ def generate_launch_description():
   declare_sensorOffsetX = DeclareLaunchArgument('sensorOffsetX', default_value='0.27', description='')
   declare_sensorOffsetY = DeclareLaunchArgument('sensorOffsetY', default_value='0.0', description='')
   declare_sensorOffsetZ = DeclareLaunchArgument('sensorOffsetZ', default_value='0.10', description='')
+  # The legacy XML include rebinds sensorOffset* to its inverse TF arguments.
+  # Snapshot the public offsets under distinct names before executing it so the
+  # physical base_link -> mid360_raw transform cannot inherit those negatives.
+  declare_rawSensorOffsetX = DeclareLaunchArgument(
+    'rawSensorOffsetX', default_value=sensorOffsetX, description='')
+  declare_rawSensorOffsetY = DeclareLaunchArgument(
+    'rawSensorOffsetY', default_value=sensorOffsetY, description='')
+  declare_rawSensorOffsetZ = DeclareLaunchArgument(
+    'rawSensorOffsetZ', default_value=sensorOffsetZ, description='')
   declare_sensorMountPitch = DeclareLaunchArgument(
     'sensorMountPitch', default_value='0.3490658503988659',
     description='Physical Mid-360 pitch in radians')
@@ -78,9 +90,9 @@ def generate_launch_description():
     name='mid360_raw_tf',
     output='screen',
     arguments=[
-      '--x', sensorOffsetX,
-      '--y', sensorOffsetY,
-      '--z', sensorOffsetZ,
+      '--x', rawSensorOffsetX,
+      '--y', rawSensorOffsetY,
+      '--z', rawSensorOffsetZ,
       '--roll', '0.0',
       '--pitch', sensorMountPitch,
       '--yaw', '0.0',
@@ -155,6 +167,9 @@ def generate_launch_description():
   ld.add_action(declare_sensorOffsetX)
   ld.add_action(declare_sensorOffsetY)
   ld.add_action(declare_sensorOffsetZ)
+  ld.add_action(declare_rawSensorOffsetX)
+  ld.add_action(declare_rawSensorOffsetY)
+  ld.add_action(declare_rawSensorOffsetZ)
   ld.add_action(declare_sensorMountPitch)
   ld.add_action(declare_cameraOffsetZ)
   ld.add_action(declare_vehicleX)
