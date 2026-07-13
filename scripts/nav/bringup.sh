@@ -30,9 +30,9 @@ ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 # 回滚锚(载荷轮前默认;6.46kg 新体重锚 ①0.0049/④0.0337+0.0063 验过): /workspace/go2w/assets/policies/go2w_flat_payload_3497/model_3497.pt
 # 出厂锚(robot_lab v2.3.2 原始 2000 iters,6.92kg 裸躯干): /workspace/go2w/assets/policies/go2w_flat_factory_1999/model_1999.pt
 # 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
-# 切换记录: 2026-07-13 yaw 轮变体A model_7494 落地(track_ang_vel_z_exp.weight=1.75;G1 达 0.9857rad/s
+# 切换记录: 2026-07-13 yaw 轮变体A model_7494 曾短暂落地(G2 部署面 FAIL 回滚,见 retrain-yaw.md)(track_ang_vel_z_exp.weight=1.75;G1 达 0.9857rad/s
 #   rel_err0.2959,G3① 零指令漂移 0.0010m/s,G3②③全过;E-T battery 对跑证重训之功),见 docs/retrain-yaw.md
-POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_yaw/model_7494.pt}"
+POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt}"
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
