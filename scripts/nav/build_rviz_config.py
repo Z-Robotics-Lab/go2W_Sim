@@ -362,10 +362,12 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         views["Saved"] = [navigation, manipulation_view, wrist_view]
 
     geometry = result.setdefault("Window Geometry", {})
-    geometry["Perception | Wrist RGB [LIVE]"] = {"collapsed": True}
-    geometry["Perception | Aligned Depth [LIVE]"] = {"collapsed": True}
-    geometry["Perception | Detections + Mask [upstream required]"] = {"collapsed": True}
-    geometry["Perception | Target Mask [upstream required]"] = {"collapsed": True}
+    geometry["Perception | Wrist RGB [LIVE]"] = {"collapsed": False}
+    geometry["Perception | Aligned Depth [LIVE]"] = {"collapsed": False}
+    # Optional mask docks are intentionally absent until their publishers are
+    # live; RViz otherwise opens blank panels even when the displays are disabled.
+    geometry.pop("Perception | Detections + Mask [upstream required]", None)
+    geometry.pop("Perception | Target Mask [upstream required]", None)
     geometry["Displays"] = {"collapsed": False}
     geometry["Hide Left Dock"] = False
     # The upstream opaque Qt state hides the Displays tree.  Dropping it lets

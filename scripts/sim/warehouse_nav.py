@@ -158,7 +158,9 @@ SCENES = {
         "box": (2.0, -1.0, 0.031),   # 方形回归验证过的空旷走廊 (2,0)-(2,-2)
         # 历史静态视角（eye=(4,4,3) target=(0,0,0.5)）逐字节保留：出生在原点，旧值即对准狗。
         # follow_dz=3.6 保历史跟随高度（warehouse 无低天花板，高俯视不挡镜头）。
-        "cam": {"eye": (4.0, 4.0, 3.0), "target": (0.0, 0.0, 0.5), "follow_dz": 3.6},
+        "cam": {"eye": (4.0, 4.0, 3.0), "target": (0.0, 0.0, 0.5),
+                "follow_eye": (1.6, -1.2), "follow_target": (0.0, 0.0),
+                "follow_dz": 3.6},
     },
     "office": {
         "usd": OFFICE_USD,
@@ -175,7 +177,9 @@ SCENES = {
         # View from the robot side of the shelf so the front opening and objects
         # are visible; the previous +X view looked through the opaque back panel.
         "cam": {"eye": (-4.4, -7.0, 1.85),
-                "target": (-0.95, -5.0, 0.48), "follow_dz": 1.55},
+                "target": (-0.95, -5.0, 0.48),
+                "follow_eye": (-2.8, -2.5), "follow_target": (1.45, 0.0),
+                "follow_dz": 1.55},
     },
 }
 SCENE_NAME = _os.environ.get("GO2W_SCENE", "office")
@@ -1231,8 +1235,12 @@ def main():
             # 跟随机器人视角（斜后上方俯视）。高度偏移=场景专属 follow_dz：
             # warehouse 3.6（无低顶）、office 2.0（压在天花板下，历史 3.6 会穿顶棚）。
             p = robot.data.root_pos_w[0].tolist()
-            sim.set_camera_view(eye=(p[0] + 1.6, p[1] - 1.2, p[2] + SCENE_CAM["follow_dz"]),
-                                target=(p[0], p[1], p[2] + 0.2))
+            eye_dx, eye_dy = SCENE_CAM.get("follow_eye", (1.6, -1.2))
+            target_dx, target_dy = SCENE_CAM.get("follow_target", (0.0, 0.0))
+            sim.set_camera_view(
+                eye=(p[0] + eye_dx, p[1] + eye_dy, p[2] + SCENE_CAM["follow_dz"]),
+                target=(p[0] + target_dx, p[1] + target_dy, p[2] + 0.2),
+            )
             print(f"[POSE] step={step} root=({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})")
 
     # 收尾照旧；stopped=True 时响亮死给 status.sh/监管看，绝不再留 527% CPU 焊死僵尸。
