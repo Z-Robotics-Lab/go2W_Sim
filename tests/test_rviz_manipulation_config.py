@@ -77,7 +77,10 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["RegScan"]["Enabled"] is True
     assert by_name["RegScan"]["Value"] is True
     assert "legacy image" not in by_name
-    assert by_name["Local LiDAR [LIVE, accumulated]"]["Enabled"] is True
+    # Raw LiDAR uses the pitched physical frame and is an opt-in diagnostic;
+    # level /registered_scan remains the default navigation visualization.
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Enabled"] is False
+    assert by_name["Local LiDAR [LIVE, accumulated]"]["Value"] is False
     assert by_name["Local LiDAR [LIVE, accumulated]"]["Decay Time"] == 0.2
     assert by_name["Local LiDAR [LIVE, accumulated]"]["Style"] == "Points"
     assert by_name["Local LiDAR [LIVE, accumulated]"]["Topic"]["Value"] == "/lidar/points"
@@ -128,6 +131,25 @@ def test_topic_contract_is_absolute_parameterized_and_contains_no_gt():
         "GO2W_RVIZ_PLANNED_TCP_PATH_TOPIC",
     ):
         assert environment_name in builder_text
+
+
+def test_perception_image_topics_match_runtime_publishers():
+    builder = _load_builder()
+    contract = builder.load_contract(CONTRACT_PATH)
+    assert contract["topics"]["detection_mask_overlay"] == "/z_manip/perception/overlay"
+    assert contract["topics"]["target_mask"] == "/z_manip/perception/target_mask"
+
+    result = builder.augment_config(_minimal_stock(), contract)
+    displays = {
+        display["Name"]: display
+        for display in _flatten(result["Visualization Manager"]["Displays"])
+    }
+    overlay = displays["Perception | Detections + Mask [upstream required]"]
+    mask = displays["Perception | Target Mask [upstream required]"]
+    assert overlay["Topic"]["Value"] == "/z_manip/perception/overlay"
+    assert mask["Topic"]["Value"] == "/z_manip/perception/target_mask"
+    assert overlay["Topic"]["Reliability Policy"] == "Best Effort"
+    assert mask["Topic"]["Reliability Policy"] == "Best Effort"
 
 
 def test_only_standard_jazzy_display_plugins_are_required():

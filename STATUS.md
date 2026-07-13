@@ -9,8 +9,10 @@
 
 ## 2026-07-10 Mid-360 倾斜根因与修复
 - 在线基线：原始 `/lidar/points` 地面倾角 2.11°，旧 `/registered_scan` 20.54°，旧 IMU重力 17.94°。
-- 根因：Isaac当前发布已是导航/articulation对齐值；桥手工 Ry(+20°) + SLAM offset(+20°)重复补偿。
-- 修复：URDF/USD 物理安装 20°保留；IMU桥改恒等传递；仿真 `imu_laser_rotation_offset` 强制归零。
+- 根因（2026-07-13 frame 语义复核）：原始 LiDAR/IMU 共享物理 +20° 测量系，ARISE 已用
+  同一重力旋转水平化二者；桥手工 Ry(+20°) + SLAM offset(+20°)属于重复补偿。
+- 修复：原始点云显式标为 `mid360_raw`；ARISE 虚拟 `sensor` 保持水平；IMU桥恒等传递，
+  仿真 `imu_laser_rotation_offset` 强制归零。
 - 二次根因：ARISE install 中残留旧 +20° 普通文件，且 navstack 先于机器人站稳启动，固化落地瞬态。
 - 启动现校验 source→install 配置一致，并等 Isaac step=800 后再起 navstack/RViz；green 门控有界等60s。
 - `patch_navstack.sh` 同时修复当前 GitHub 已改名为 `system_real_robot.launch.py` 的兼容问题。

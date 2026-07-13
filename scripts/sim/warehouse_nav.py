@@ -16,6 +16,11 @@ import math
 from pathlib import Path
 
 from sensor_frame_contract import to_navigation_imu
+from standstill_control import (
+    ParkingBrakeConfig,
+    WheelParkingBrake,
+    select_joint_complement,
+)
 
 from isaaclab.app import AppLauncher
 
@@ -287,7 +292,7 @@ GO2W_NAV_CFG = ArticulationCfg(
 
 
 def setup_lidar_ros2():
-    """OmniLidar prim 挂到 mid360_link，经 ROS2 helper 发布 PointCloud2 全帧。"""
+    """Publish RTX points in the physical, pitched Mid-360 measurement frame."""
     stage = get_current_stage()
     lidar_prim = stage.DefinePrim("/World/Robot/mid360_link/lidar", "OmniLidar")
     lidar_prim.GetReferences().AddReference(LIDAR_USD)
@@ -304,7 +309,7 @@ def setup_lidar_ros2():
             og.Controller.Keys.SET_VALUES: [
                 ("lidar_pub.inputs:renderProductPath", rp.path),
                 ("lidar_pub.inputs:topicName", "/lidar/points"),
-                ("lidar_pub.inputs:frameId", "sensor"),
+                ("lidar_pub.inputs:frameId", "mid360_raw"),
                 ("lidar_pub.inputs:type", "point_cloud"),
                 ("lidar_pub.inputs:fullScan", False),  # 增量模式：每拍点云=该拍扫过的方位片，
                 # 到达即时序（坑34：fullScan 整帧的点序非时序，索引铺 offset_time
@@ -315,7 +320,7 @@ def setup_lidar_ros2():
             ],
         },
     )
-    print("[NAV] RTX lidar attached ->", "/lidar/points")
+    print("[NAV] RTX lidar attached -> /lidar/points [mid360_raw]")
 
 
 def main():
@@ -344,12 +349,14 @@ def main():
         GO2W_NAV_CFG.actuators["legs"].stiffness = _leg_k
         GO2W_NAV_CFG.actuators["legs"].damping = _leg_d
         GO2W_NAV_CFG.actuators["legs"].effort_limit_sim = 23.5
-        GO2W_NAV_CFG.actuators["wheels"].stiffness = 0.0
-        GO2W_NAV_CFG.actuators["wheels"].damping = float(
+        _wheel_drive_stiffness = 0.0
+        _wheel_drive_damping = float(
             _os.environ.get("GO2W_POLICY_WHEEL_DAMPING", "5.0"))
+        GO2W_NAV_CFG.actuators["wheels"].stiffness = _wheel_drive_stiffness
+        GO2W_NAV_CFG.actuators["wheels"].damping = _wheel_drive_damping
         GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
         print(f"[NAV] policy gains legs=({_leg_k:.1f},{_leg_d:.1f}) "
-              f"wheels damping={GO2W_NAV_CFG.actuators['wheels'].damping:.1f}", flush=True)
+              f"wheels damping={_wheel_drive_damping:.1f}", flush=True)
     if not WITH_ARM:
         # 裸机 A/B 对照：bare URDF 无 piper 关节，去掉臂/夹爪执行器与臂 init_state
         # （IsaacLab 对零匹配的 actuator 正则会报 ValueError；对不存在关节的 init_state 同理）。
@@ -443,9 +450,9 @@ def main():
               f"source={MANIP_SCENE['source']}", flush=True)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
-        # Keep the physical IMU location. In this Isaac Lab integration the
-        # measured vectors are already articulation/navigation-frame values;
-        # the fixed-joint visual pitch must not be applied to them again.
+        # Keep the physical IMU location and publish its raw vectors unchanged.
+        # ARISE gravity-levels them together with the pitched Mid-360 cloud;
+        # applying the mount rotation here would double-compensate both streams.
         offset=ImuCfg.OffsetCfg(pos=IMU_OFFSET_IN_LIDAR),
         update_period=1 / 100,
         gravity_bias=(0.0, 0.0, 0.0),  # 纯运动学加速度；重力在发布时按姿态正确投影
@@ -560,6 +567,15 @@ def main():
         ee_body_idx = None
         print("[NAV] GO2W_WITH_ARM=0: bare trunk, PiPER executor SKIPPED (A/B control)", flush=True)
 
+    # robot.joint_names contains movable articulation DOFs.  Excluding the
+    # dynamically discovered PiPER IDs gives the complete platform state
+    # without maintaining another model-specific list of leg and wheel names.
+    _platform_ids, platform_joint_names = select_joint_complement(
+        robot.joint_names, piper_joint_ids or ())
+    platform_joint_ids = list(_platform_ids)
+    print(f"[NAV] platform joint state ready ({len(platform_joint_ids)} joints): "
+          f"{list(platform_joint_names)}", flush=True)
+
     # rclpy: IMU 发布 + cmd_vel 订阅（桥扩展已带 jazzy 内部库）
     rclpy.init()
     node = rclpy.create_node("go2w_isaac_bridge")
@@ -630,6 +646,8 @@ def main():
     ee_pub = node.create_publisher(PoseStamped, "/piper/ee_pose", 10)
     js_pub = node.create_publisher(JointState, "/piper/state", 10)
     jc_pub = node.create_publisher(JointState, "/piper/cmd", 10)
+    platform_js_pub = node.create_publisher(
+        JointState, "/go2w/joint_states", qos_profile_sensor_data)
     exec_status_pub = node.create_publisher(String, "/piper/execution_status", 5)
     trajectory_req = {"message": None, "cancel": False, "aperture": None}
 
@@ -795,11 +813,38 @@ def main():
     standstill_ramp = 0             # 退出斜坡剩余拍（RAMP..0 递减；0=已喂满幅）
     _blend_from = None              # 进入拍锁存的当前腿位（混合起点）
     # 站姿目标：腿=default（前 12 关节），轮速=0（后 4 关节）。用 policy 的 id/序对齐。
+    parking_brake = None
+    _parking_gains = None
     if policy is not None:
         _stand_leg_ids = policy.leg_ids
         _stand_leg_tgt = policy.default_pos[:1, :12].clone()
         _stand_wheel_ids = policy.wheel_ids
         _stand_wheel_vel = torch.zeros(1, len(policy.wheel_ids), device=policy.device)
+        _parking_config = ParkingBrakeConfig.from_environ(
+            _os.environ,
+            drive_stiffness=_wheel_drive_stiffness,
+            drive_damping=_wheel_drive_damping,
+        )
+        parking_brake = WheelParkingBrake(_parking_config)
+        _parking_gains = (
+            _parking_config.drive_stiffness,
+            _parking_config.drive_damping,
+        )
+
+        def _apply_wheel_gains(stiffness, damping):
+            """Keep PhysX control and IsaacLab's torque diagnostics consistent."""
+            robot.write_joint_stiffness_to_sim(
+                stiffness, joint_ids=_stand_wheel_ids)
+            robot.write_joint_damping_to_sim(
+                damping, joint_ids=_stand_wheel_ids)
+            wheel_actuator = robot.actuators["wheels"]
+            wheel_actuator.stiffness.fill_(float(stiffness))
+            wheel_actuator.damping.fill_(float(damping))
+
+        print("[NAV][STANDSTILL] encoder parking brake "
+              f"Kp={_parking_config.park_stiffness:.1f} "
+              f"D={_parking_config.park_damping:.1f} "
+              f"transition={_parking_config.transition_ticks} policy ticks", flush=True)
 
     step = 0
     # Effective targets are also published on /piper/cmd.  A completed trajectory
@@ -835,6 +880,23 @@ def main():
             robot.reset()
             if policy is not None:
                 policy.last_action = torch.zeros_like(policy.last_action)
+                # A reset is a stop boundary. Do not replay a cached gait target
+                # or a pre-reset command on the next odd physics step.
+                policy_cache.clear()
+                policy_cache["legs"] = (_stand_leg_ids, _stand_leg_tgt.clone())
+                policy_cache["wheels"] = (_stand_wheel_ids, _stand_wheel_vel.clone())
+                cmd.update(vx=0.0, wz=0.0, t=float("-inf"))
+                vy_cmd["v"] = 0.0
+            if parking_brake is not None:
+                parking_brake.reset()
+                _apply_wheel_gains(
+                    parking_brake.config.drive_stiffness,
+                    parking_brake.config.drive_damping,
+                )
+                _parking_gains = (
+                    parking_brake.config.drive_stiffness,
+                    parking_brake.config.drive_damping,
+                )
             # 清死区态：复位后从"刚落地站姿"重新起算迟滞，避免带入摔倒前的计数/斜坡。
             standstill_low_count = standstill_high_count = 0
             standstill_active = False
@@ -939,6 +1001,8 @@ def main():
                         if standstill_low_count >= STANDSTILL_ENTER_DEBOUNCE \
                                 and not standstill_active:
                             standstill_active = True
+                            parking_brake.engage(
+                                robot.data.joint_pos[0, _stand_wheel_ids].tolist())
                             # 柔性进入：锁存当前腿位为混合起点，BLEND 拍内 →default。
                             _blend_from = robot.data.joint_pos[:1, _stand_leg_ids].clone()
                             standstill_blend = STANDSTILL_BLEND_TICKS
@@ -953,6 +1017,7 @@ def main():
                         if standstill_high_count >= STANDSTILL_EXIT_DEBOUNCE \
                                 and standstill_active:
                             standstill_active = False
+                            parking_brake.release()
                             # 柔性退出：last_action 复位（站姿⟺a=0，物理诚实）+ 起 cmd 斜坡。
                             policy.last_action = torch.zeros_like(policy.last_action)
                             standstill_ramp = STANDSTILL_RAMP_TICKS
@@ -968,9 +1033,34 @@ def main():
                     # 死区关闭：确保退出并清态。
                     if standstill_active:
                         standstill_active = False
+                        parking_brake.release()
                         policy.last_action = torch.zeros_like(policy.last_action)
                     standstill_low_count = standstill_high_count = 0
                     standstill_blend = standstill_ramp = 0
+
+                # Parking uses only wheel encoders.  Blend gains on transitions;
+                # while releasing, the pure controller recenters the position
+                # target so residual Kp cannot oppose the velocity command ramp.
+                parking_command = parking_brake.step(
+                    robot.data.joint_pos[0, _stand_wheel_ids].tolist())
+                next_parking_gains = (
+                    parking_command.stiffness,
+                    parking_command.damping,
+                )
+                if next_parking_gains != _parking_gains:
+                    _apply_wheel_gains(
+                        parking_command.stiffness, parking_command.damping)
+                    _parking_gains = next_parking_gains
+                if parking_command.position_target is None:
+                    policy_cache.pop("wheel_position", None)
+                else:
+                    parking_target = torch.tensor(
+                        [parking_command.position_target],
+                        dtype=robot.data.joint_pos.dtype,
+                        device=robot.data.joint_pos.device,
+                    )
+                    policy_cache["wheel_position"] = (
+                        _stand_wheel_ids, parking_target)
 
                 if standstill_active:
                     # 站姿保持：腿目标（柔性进入混合）、轮速目标恒 0（不推进策略）。
@@ -991,6 +1081,8 @@ def main():
                         standstill_ramp -= 1
                     else:
                         scale = 1.0
+                    # Never ramp velocity faster than the parking gain releases.
+                    scale = min(scale, 1.0 - parking_command.blend)
                     leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(
                         vx * scale, vy * scale, wz * scale)
                     policy_cache["legs"] = (leg_ids, leg_tgt)
@@ -1001,6 +1093,10 @@ def main():
                                                 joint_ids=policy_cache["legs"][0])
                 robot.set_joint_velocity_target(policy_cache["wheels"][1],
                                                 joint_ids=policy_cache["wheels"][0])
+            if "wheel_position" in policy_cache:
+                robot.set_joint_position_target(
+                    policy_cache["wheel_position"][1],
+                    joint_ids=policy_cache["wheel_position"][0])
         else:
             robot.set_joint_position_target(default_pos)
             vel_t = robot.data.default_joint_vel.clone()
@@ -1091,6 +1187,20 @@ def main():
                 )
                 exec_status_pub.publish(_status)
 
+        if step % 5 == 0:
+            # Complete platform proprioception for state assembly and MoveIt.
+            # Names and indices come from the live articulation DOFs, not a
+            # duplicated 16-joint model list.
+            platform_js = JointState()
+            platform_js.header.stamp.sec = sec
+            platform_js.header.stamp.nanosec = nsec
+            platform_js.name = list(platform_joint_names)
+            platform_js.position = robot.data.joint_pos[
+                0, platform_joint_ids].tolist()
+            platform_js.velocity = robot.data.joint_vel[
+                0, platform_joint_ids].tolist()
+            platform_js_pub.publish(platform_js)
+
         if trajectory_executor is not None and step % 5 == 0:
             # Robot proprioception/command state.  /piper/ee_pose is a sim scoring
             # convenience; task-object truth never flows back into this executor.
@@ -1123,9 +1233,10 @@ def main():
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec
         clock_pub.publish(clock_msg)
 
-        # Isaac 输出已经在导航对齐系。2026-07-10 在线拟合：固定 +20° 前，
-        # /lidar/points 地面倾角 2.11°；旧手工旋转后 IMU 重力倾角 17.94°，
-        # registered_scan 倾角 20.54°。因此这里只做契约封装，不再叠加安装角。
+        # Raw LiDAR and IMU samples share the physical +20 degree Mid-360
+        # measurement frame.  ARISE estimates one gravity alignment for both
+        # streams; rotating either stream again here would double-compensate
+        # the mount and tilt registered_scan.
         g_b = math_utils.quat_apply_inverse(
             imu.data.quat_w, torch.tensor([[0.0, 0.0, 9.81]], device=imu.data.quat_w.device))
         ax, ay, az = (imu.data.lin_acc_b + g_b)[0].tolist()

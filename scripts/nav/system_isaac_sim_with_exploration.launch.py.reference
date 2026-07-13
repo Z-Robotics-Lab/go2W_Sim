@@ -5,13 +5,15 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource, FrontendLaunchDescriptionSource
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration 
+from launch.substitutions import LaunchConfiguration, PythonExpression
 
 def generate_launch_description():
   world_name = LaunchConfiguration('world_name')
   exploration_planner_config = LaunchConfiguration('exploration_planner_config')
   sensorOffsetX = LaunchConfiguration('sensorOffsetX')
   sensorOffsetY = LaunchConfiguration('sensorOffsetY')
+  sensorOffsetZ = LaunchConfiguration('sensorOffsetZ')
+  sensorMountPitch = LaunchConfiguration('sensorMountPitch')
   cameraOffsetZ = LaunchConfiguration('cameraOffsetZ')
   vehicleX = LaunchConfiguration('vehicleX')
   vehicleY = LaunchConfiguration('vehicleY')
@@ -19,8 +21,12 @@ def generate_launch_description():
 
   declare_world_name = DeclareLaunchArgument('world_name', default_value='real_world', description='')
   declare_exploration_planner_config = DeclareLaunchArgument('exploration_planner_config', default_value='indoor_small', description='')
-  declare_sensorOffsetX = DeclareLaunchArgument('sensorOffsetX', default_value='0.05', description='')
+  declare_sensorOffsetX = DeclareLaunchArgument('sensorOffsetX', default_value='0.27', description='')
   declare_sensorOffsetY = DeclareLaunchArgument('sensorOffsetY', default_value='0.0', description='')
+  declare_sensorOffsetZ = DeclareLaunchArgument('sensorOffsetZ', default_value='0.10', description='')
+  declare_sensorMountPitch = DeclareLaunchArgument(
+    'sensorMountPitch', default_value='0.3490658503988659',
+    description='Physical Mid-360 pitch in radians')
   declare_cameraOffsetZ = DeclareLaunchArgument('cameraOffsetZ', default_value='0.25', description='')
   declare_vehicleX = DeclareLaunchArgument('vehicleX', default_value='0.0', description='')
   declare_vehicleY = DeclareLaunchArgument('vehicleY', default_value='0.0', description='')
@@ -35,12 +41,54 @@ def generate_launch_description():
       'autonomyMode': 'true',
       'maxSpeed': '0.6',
       'autonomySpeed': '0.6',
-      'sensorOffsetX': sensorOffsetX,
-      'sensorOffsetY': sensorOffsetY,
+      # Public offsets describe base_link -> the ARISE navigation-frame origin.
+      # The legacy XML publishes the inverse sensor -> base_link TF. Its
+      # rotation stays identity because ARISE gravity-levels the raw LiDAR and
+      # IMU together; this virtual sensor frame is not the pitched raw frame.
+      'sensorOffsetX': PythonExpression(['str(-float(', sensorOffsetX, '))']),
+      'sensorOffsetY': PythonExpression(['str(-float(', sensorOffsetY, '))']),
+      'sensorOffsetZ': PythonExpression(['str(-float(', sensorOffsetZ, '))']),
       'cameraOffsetZ': cameraOffsetZ,
       'goalX': vehicleX,
       'goalY': vehicleY,
     }.items()
+  )
+
+  # Current localPlanner/pathFollower binaries consume /odom_base_link, while
+  # ARISE publishes the sensor-origin pose on /state_estimation.
+  start_odom_transformer = Node(
+    package='odom_transformer',
+    executable='odom_transformer_node',
+    name='odom_transformer',
+    output='screen',
+    parameters=[{
+      'use_sim_time': True,
+      'source_frame': 'sensor',
+      'target_frame': 'base_link',
+      'odom_topic_in': '/state_estimation',
+      'odom_topic_out': '/odom_base_link',
+    }]
+  )
+
+  # Physical measurement frame for direct /lidar/points inspection. Named
+  # arguments make the tf2 contract explicit: base_link is the parent and the
+  # child origin/orientation is xyz=(0.27, 0, 0.10), pitch=+20 degrees by
+  # default. This TF is intentionally separate from ARISE's level sensor frame.
+  start_mid360_raw_tf = Node(
+    package='tf2_ros',
+    executable='static_transform_publisher',
+    name='mid360_raw_tf',
+    output='screen',
+    arguments=[
+      '--x', sensorOffsetX,
+      '--y', sensorOffsetY,
+      '--z', sensorOffsetZ,
+      '--roll', '0.0',
+      '--pitch', sensorMountPitch,
+      '--yaw', '0.0',
+      '--frame-id', 'base_link',
+      '--child-frame-id', 'mid360_raw',
+    ]
   )
 
   start_terrain_analysis = IncludeLaunchDescription(
@@ -119,6 +167,8 @@ def generate_launch_description():
   ld.add_action(declare_world_name)
   ld.add_action(declare_sensorOffsetX)
   ld.add_action(declare_sensorOffsetY)
+  ld.add_action(declare_sensorOffsetZ)
+  ld.add_action(declare_sensorMountPitch)
   ld.add_action(declare_cameraOffsetZ)
   ld.add_action(declare_vehicleX)
   ld.add_action(declare_vehicleY)
@@ -126,6 +176,8 @@ def generate_launch_description():
   ld.add_action(declare_exploration_planner_config)
 
   ld.add_action(start_local_planner)
+  ld.add_action(start_mid360_raw_tf)
+  ld.add_action(start_odom_transformer)
   ld.add_action(start_terrain_analysis)
   ld.add_action(start_terrain_analysis_ext)
   ld.add_action(start_sensor_scan_generation)

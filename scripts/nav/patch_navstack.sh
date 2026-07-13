@@ -15,8 +15,9 @@ sed -i 's/use_sim_time: false/use_sim_time: true/g' "$NAV"/src/slam/arise_slam_m
 sed -i "s/SetParameter(name='use_sim_time', value='false')/SetParameter(name='use_sim_time', value='true')/" \
   "$NAV"/src/slam/arise_slam_mid360/launch/arize_slam.launch.py
 
-# 1b. 这里只允许雷达与 IMU 的相对外参。Isaac 发布的两路数据已经在同一导航系，
-# 物理模型里的 20 度安装角不能再写入这里，否则 registered_scan 会重复旋转 20 度。
+# 1b. 这里只允许雷达与 IMU 的相对外参。Isaac 发布的两路原始数据共享同一个
+# 物理斜装测量系；ARISE 再用重力将二者一起水平化。物理 20 度安装角不能写入
+# 相对外参，否则 registered_scan 会重复旋转 20 度。
 python3 - "$NAV" <<'PYEOF'
 import re
 import sys

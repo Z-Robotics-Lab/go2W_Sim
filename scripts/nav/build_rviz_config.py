@@ -226,7 +226,9 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         "Local LiDAR [LIVE, accumulated]",
         topics["raw_lidar"],
         color="255; 215; 0",
-        enabled=True,
+        # Raw measurements live in the physical mid360_raw frame. Keep this
+        # diagnostic opt-in so it cannot visually contaminate level RegScan.
+        enabled=False,
         size_m=0.012,
         # Mid-360 completes multiple sweeps in this window. Keeping one full
         # simulated second retained roughly 100 incremental clouds in RViz.

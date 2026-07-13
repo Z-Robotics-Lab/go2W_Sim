@@ -47,7 +47,7 @@ _ros_graph_unique() {
   docker exec navstack bash -c '
     source /opt/ros/jazzy/setup.bash
     source /ws/install/setup.bash
-    for topic in /clock /imu/data /lidar/points /lidar/scan /registered_scan /state_estimation; do
+    for topic in /clock /imu/data /lidar/points /lidar/scan /registered_scan /state_estimation /odom_base_link; do
       count="$(ros2 topic info "$topic" 2>/dev/null | sed -n "s/^Publisher count: //p")"
       if [ "$count" != "1" ]; then
         echo "$topic publisher_count=${count:-missing}" >&2
@@ -61,7 +61,9 @@ _ros_stream_healthy() {
   docker exec navstack bash -c '
     source /opt/ros/jazzy/setup.bash
     source /ws/install/setup.bash
-    python3 /ws/ros_stream_gate.py --duration 30 --min-clock 10 --min-regscan 1
+    python3 /ws/ros_stream_gate.py --duration 30 \
+      --min-clock 10 --min-imu 2 --min-raw 2 --min-custom 2 \
+      --min-regscan 2 --min-state 2 --min-odom 2
   ' > "$REPO/logs/ros_stream_gate.log" 2>&1
 }
 
@@ -252,6 +254,10 @@ up() {
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
     -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
+    -e GO2W_POLICY_WHEEL_DAMPING="${GO2W_POLICY_WHEEL_DAMPING:-5.0}" \
+    -e GO2W_STANDSTILL_WHEEL_KP="${GO2W_STANDSTILL_WHEEL_KP:-20.0}" \
+    -e GO2W_STANDSTILL_WHEEL_DAMPING="${GO2W_STANDSTILL_WHEEL_DAMPING:-8.0}" \
+    -e GO2W_STANDSTILL_GAIN_TICKS="${GO2W_STANDSTILL_GAIN_TICKS:-10}" \
     -e GO2W_VIEWPORT_SLIM="${GO2W_VIEWPORT_SLIM:-0}" -e GO2W_CAM_SLOW="${GO2W_CAM_SLOW:-0}" \
     -e GO2W_DLSS_PERF="${GO2W_DLSS_PERF:-0}" -e GO2W_SCENE="${GO2W_SCENE:-office}" \
     -e GO2W_MANIP_SCENE_CONFIG="${GO2W_MANIP_SCENE_CONFIG:-/workspace/go2w/configs/manip_office_scene.json}" \

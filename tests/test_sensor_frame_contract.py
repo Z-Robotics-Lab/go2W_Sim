@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SensorFrameContractTest(unittest.TestCase):
-    def test_isaac_imu_bridge_does_not_add_mount_pitch(self):
+    def test_raw_imu_bridge_does_not_duplicate_mount_pitch(self):
         module_path = ROOT / "scripts/sim/sensor_frame_contract.py"
         spec = importlib.util.spec_from_file_location("sensor_frame_contract", module_path)
         module = importlib.util.module_from_spec(spec)
@@ -25,6 +25,11 @@ class SensorFrameContractTest(unittest.TestCase):
 
         self.assertEqual(accel, (-0.35, 0.08, 9.80))
         self.assertEqual(gyro, (0.01, -0.02, 0.03))
+
+    def test_raw_lidar_uses_distinct_physical_frame(self):
+        bridge = (ROOT / "scripts/sim/warehouse_nav.py").read_text()
+        self.assertIn('(\"lidar_pub.inputs:frameId\", \"mid360_raw\")', bridge)
+        self.assertNotIn('(\"lidar_pub.inputs:frameId\", \"sensor\")', bridge)
 
     def test_measured_raw_cloud_and_imu_agree_after_duplicate_rotation_is_removed(self):
         module_path = ROOT / "scripts/sim/sensor_frame_contract.py"
