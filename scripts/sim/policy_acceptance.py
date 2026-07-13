@@ -85,9 +85,9 @@ DEVICE = args_cli.device or "cuda:0"
 #   GO2W_EVAL_WHEEL_EFFORT 23.5                     60.0
 #   GO2W_EVAL_LEG_KP     25.0                       100.0
 #   GO2W_EVAL_LEG_KD     0.5                        5.0
-#   GO2W_EVAL_GROUND_MU_S  (unset -> 默认地面)       1.8   (轮 collider 绑材质)
+#   GO2W_EVAL_GROUND_MU_S  (unset -> 默认地面)       1.8   (地面 Plane collider 绑材质,combine=max)
 #   GO2W_EVAL_GROUND_MU_D  (unset -> 默认地面)       1.6
-#   GO2W_EVAL_GROUND_COMBINE (unset -> "average")    "max"
+#   GO2W_EVAL_GROUND_COMBINE (unset -> "average")    "max"  (max=有效轮-地摩擦取地面高值)
 #   GO2W_EVAL_PHYS_HZ    100                        100
 # ---------------------------------------------------------------------------
 EVAL_WHEEL_KP = float(os.environ.get("GO2W_EVAL_WHEEL_KP", "0.0"))
@@ -274,29 +274,66 @@ def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duratio
 def main():
     sim = SimulationContext(SimulationCfg(dt=PHYS_DT, render_interval=1, device=DEVICE))
     sim.set_camera_view(eye=(4.0, 4.0, 3.0), target=(0.0, 0.0, 0.5))
-    ground = sim_utils.GroundPlaneCfg(); ground.func("/World/Ground", ground)
+    # OFAT ground-friction knob (2026-07-13 FIX). The previous mechanism bound a
+    # RigidBodyMaterial to /World/Robot/{foot}_foot — but those are INSTANCED USD
+    # prims, so bind_physics_material silently failed for all 4 wheels (WARNING
+    # only, no raise); mu_s/mu_d were logged in meta.ofat but NEVER hit physics
+    # (R3 == R1 byte-for-byte). The SAME bug exists in warehouse_nav.py:449-455
+    # (nav_bridge.log:881-896: identical instanced-prim failure) — deployment
+    # friction never actually applied either. FIX: apply friction via the ground
+    # PLANE's physics_material, which IsaacLab's spawn_ground_plane binds to the
+    # ground collision prim (TypeName=="Plane", NOT instanced) — guaranteed to
+    # take. combine_mode=max makes effective wheel-ground friction = max(wheel
+    # default, ground mu) = the deploy mu regardless of the wheel's URDF material,
+    # physically equivalent to a high wheel-ground friction. UNSET => plain
+    # GroundPlaneCfg, exact pre-existing behaviour (zero regression).
+    ground = sim_utils.GroundPlaneCfg()
+    if EVAL_GROUND_MU_S is not None:
+        _mu_s = float(EVAL_GROUND_MU_S)
+        _mu_d = float(EVAL_GROUND_MU_D) if EVAL_GROUND_MU_D is not None else _mu_s
+        ground.physics_material = sim_utils.RigidBodyMaterialCfg(
+            static_friction=_mu_s, dynamic_friction=_mu_d, restitution=0.0,
+            friction_combine_mode=EVAL_GROUND_COMBINE,
+            restitution_combine_mode=EVAL_GROUND_COMBINE)
+    ground.func("/World/Ground", ground)
     light = sim_utils.DomeLightCfg(intensity=2000.0); light.func("/World/Light", light)
 
     robot = Articulation(build_robot_cfg())
     sim.reset()
 
-    # OFAT friction knob: if GO2W_EVAL_GROUND_MU_S is set, replicate the
-    # deployment wheel-material bind (warehouse_nav.py:449-455) — a per-wheel
-    # RigidBodyMaterial with the given mu_s/mu_d and friction_combine_mode.
-    # UNSET => skip entirely => default GroundPlaneCfg only (pre-existing).
+    # OFAT friction knob VERIFICATION (2026-07-13). Read back the ACTUAL physics
+    # material now bound to the ground collision plane and echo mu_s/mu_d/combine
+    # from the live USD stage — NOT the env var. If the ground carries no bound
+    # material (bind failed), print BOUND=NONE loudly. NEVER silent (coding-style:
+    # no swallowed control-path failures). This line is the "施加成功" evidence
+    # that every friction-ON ledger row must cite.
     if EVAL_GROUND_MU_S is not None:
-        mu_s = float(EVAL_GROUND_MU_S)
-        mu_d = float(EVAL_GROUND_MU_D) if EVAL_GROUND_MU_D is not None else mu_s
-        wheel_mat = sim_utils.RigidBodyMaterialCfg(
-            static_friction=mu_s, dynamic_friction=mu_d, restitution=0.0,
-            friction_combine_mode=EVAL_GROUND_COMBINE,
-            restitution_combine_mode=EVAL_GROUND_COMBINE)
-        wheel_mat.func("/World/Materials/wheel_rubber", wheel_mat)
-        for foot in ("FL", "FR", "RL", "RR"):
-            sim_utils.bind_physics_material(f"/World/Robot/{foot}_foot",
-                                            "/World/Materials/wheel_rubber")
-        print(f"[OFAT] wheel material bound mu_s={mu_s} mu_d={mu_d} "
-              f"combine={EVAL_GROUND_COMBINE}", flush=True)
+        try:
+            from isaacsim.core.utils.stage import get_current_stage  # noqa: E402
+            from pxr import PhysxSchema, Usd, UsdPhysics, UsdShade  # noqa: E402
+            _stage = get_current_stage()
+            _bound_any = False
+            for _p in Usd.PrimRange(_stage.GetPrimAtPath("/World/Ground")):
+                if _p.GetTypeName() != "Plane":
+                    continue
+                _mat = UsdShade.MaterialBindingAPI(_p).ComputeBoundMaterial("physics")[0]
+                if not _mat:
+                    print(f"[OFAT] BOUND=NONE ground collider={_p.GetPath()} "
+                          f"— FRICTION NOT APPLIED (bind failed)", flush=True)
+                    continue
+                _mp = _mat.GetPrim()
+                _pa = UsdPhysics.MaterialAPI(_mp)
+                _px = PhysxSchema.PhysxMaterialAPI(_mp)
+                print(f"[OFAT] ground collider={_p.GetPath()} "
+                      f"BOUND={_mat.GetPath()} staticF={_pa.GetStaticFrictionAttr().Get()} "
+                      f"dynamicF={_pa.GetDynamicFrictionAttr().Get()} "
+                      f"combine={_px.GetFrictionCombineModeAttr().Get()}", flush=True)
+                _bound_any = True
+            if not _bound_any:
+                print("[OFAT] BOUND=NONE — no ground Plane collider carried a physics "
+                      "material; FRICTION NOT APPLIED", flush=True)
+        except Exception as _e:  # 取证失败不阻断，但绝不静默 (coding-style)
+            print(f"[OFAT] friction readback FAILED (verification only): {_e}", flush=True)
 
     import sys  # noqa: E402
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
