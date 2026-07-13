@@ -167,8 +167,8 @@ SCENES = {
         # office 出生点：校准到开阔厅（2026-07-07 校准轮实证）。office 脚印
         # X[-4.3,5.3] Y[-9.3,0.1]；原点 (0,0) 在 reception 顶墙=拥挤角落（净空~1.5m），
         # 开阔厅在 -Y。选 (-2.5,-5.0)=/terrain_map 证实开阔（障碍净空 3m+）、手动驱动
-        # origin→此点全程直立可达。z=0.42 同 warehouse 贴地策略。回滚原点见 git 历史。
-        "spawn": (-2.5, -5.0, 0.52),
+        # origin→此点全程直立可达。z=0.42 与训练/warehouse 基线一致，避免带载荷落地冲击。
+        "spawn": (-2.5, -5.0, 0.42),
         # 箱子放出生点 +X 前方 1m 开阔地（6cm 低于障碍阈值不被绕开）。
         "box": (-1.5, -5.0, 0.031),
         # 启动视角：出生点斜后上方 3-4m、eye 高度 2.4m（office 天花板下——高了被顶棚挡、
@@ -336,13 +336,19 @@ def main():
         light = sim_utils.DomeLightCfg(intensity=2000.0); light.func("/World/Light", light)
 
     if args_cli.policy:
-        # 训练态增益（必须与 robot_lab UNITREE_GO2W_CFG 一致，策略才有效）
-        GO2W_NAV_CFG.actuators["legs"].stiffness = 25.0
-        GO2W_NAV_CFG.actuators["legs"].damping = 0.5
+        # 带 PiPER/NUC 的部署形态质量与训练本体不同。默认使用经过静止载荷
+        # 稳定性校准的刚度/阻尼；保留环境覆盖，便于在无载荷或新策略上复现训练态。
+        _leg_k = float(_os.environ.get("GO2W_POLICY_LEG_STIFFNESS", "100.0"))
+        _leg_d = float(_os.environ.get("GO2W_POLICY_LEG_DAMPING", "5.0"))
+        GO2W_NAV_CFG.actuators["legs"].stiffness = _leg_k
+        GO2W_NAV_CFG.actuators["legs"].damping = _leg_d
         GO2W_NAV_CFG.actuators["legs"].effort_limit_sim = 23.5
         GO2W_NAV_CFG.actuators["wheels"].stiffness = 0.0
-        GO2W_NAV_CFG.actuators["wheels"].damping = 0.5
+        GO2W_NAV_CFG.actuators["wheels"].damping = float(
+            _os.environ.get("GO2W_POLICY_WHEEL_DAMPING", "5.0"))
         GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
+        print(f"[NAV] policy gains legs=({_leg_k:.1f},{_leg_d:.1f}) "
+              f"wheels damping={GO2W_NAV_CFG.actuators['wheels'].damping:.1f}", flush=True)
     if not WITH_ARM:
         # 裸机 A/B 对照：bare URDF 无 piper 关节，去掉臂/夹爪执行器与臂 init_state
         # （IsaacLab 对零匹配的 actuator 正则会报 ValueError；对不存在关节的 init_state 同理）。
