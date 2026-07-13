@@ -31,9 +31,9 @@
 18. isaaclab 的 `Imu.gravity_bias` 是本体系加常量，只对水平安装正确——斜装传感器必须
     自己按姿态投影重力（quat_apply_inverse），否则 SLAM 拿到错误重力方向。
 19. 物理 100Hz 时腿部 PD 60/2 站不稳会摔（截图实锤）；100/5 稳。
-20. DDS 必须隔离（仿真默认 `ROS_DOMAIN_ID=184`、`ROS_LOCALHOST_ONLY=1`）：只改域 0
-    会和主机或局域网其他 ROS 项目串台。真机跨主机时两端保持同域并显式设
-    `ROS_LOCALHOST_ONLY=0`。
+20. DDS 必须使用干净的隔离域（本栈默认 `ROS_DOMAIN_ID=184`）：域 0 或复用其他
+    机器人正在使用的 domain 会让 `/clock`、LiDAR、IMU 和 SLAM 串流。仿真与真机
+    都在各自全链统一 domain，不额外限制 DDS 网络发现范围。
 21. 手动 cmake install 到 /usr/local 后要 `ldconfig`，否则节点起不来（libgtsam 找不到）。
 22. 编排脚本别用 `set -u`（ROS setup.bash 有 unbound 变量，直接静默死）。
 23. **宿主机上其他项目的定时清理会跨命名空间杀容器内同 uid 进程**（本机实证：

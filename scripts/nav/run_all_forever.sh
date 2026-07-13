@@ -3,7 +3,6 @@
 # 作为 docker run 的 CMD 运行（不走 docker exec —— exec 会话树会被神秘连坐 SIGKILL，
 # 多轮取证：只有 exec 树下的进程死，PID-1 树下的从不死）。
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-184}"
-export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export FASTDDS_BUILTIN_TRANSPORTS=UDPv4  # 禁 SHM：击杀留下的僵尸段会让 SHM 传输静默瘫痪
 source /opt/ros/jazzy/setup.bash

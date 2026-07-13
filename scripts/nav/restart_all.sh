@@ -14,14 +14,14 @@ NAV="$GO2W/refs/Navigation-Physical-Experiment"
 # 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
 POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt}"
 ROS_DOMAIN_ID="${GO2W_ROS_DOMAIN_ID:-184}"
-ROS_LOCALHOST_ONLY="${GO2W_ROS_LOCALHOST_ONLY:-1}"
-export ROS_DOMAIN_ID ROS_LOCALHOST_ONLY
+export ROS_DOMAIN_ID
 
 bash "$GO2W/scripts/nav/sync_navstack_files.sh" "$NAV"  # 真相源同步（防旧拷贝）
 echo "[1/4] navstack supervisor 重启"
 docker rm -f navstack >/dev/null 2>&1 || true
 docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
-  -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY" \
+  -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+  -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
   -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
   -e NAV_MODE="${NAV_MODE:-waypoint}" \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
@@ -31,7 +31,7 @@ docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0
 echo "[2/4] Isaac 桥重启"
 docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
 docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy \
-  -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e ROS_LOCALHOST_ONLY="$ROS_LOCALHOST_ONLY" \
+  -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
   -e GO2W_SCENE="${GO2W_SCENE:-office}" \
   -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
@@ -43,7 +43,7 @@ echo "[3/4] 等 Isaac 就绪（IMU 样本出现）"
 until grep -qa "imu sample" "$GO2W/logs/nav_bridge.log" 2>/dev/null; do sleep 15; done
 
 echo "[4/4] 门控验证（传感器到达 + SLAM 输出）"
-docker exec navstack bash -c "export ROS_DOMAIN_ID=$ROS_DOMAIN_ID ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTDDS_BUILTIN_TRANSPORTS=UDPv4 && \
+docker exec navstack bash -c "export ROS_DOMAIN_ID=$ROS_DOMAIN_ID RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTDDS_BUILTIN_TRANSPORTS=UDPv4 && \
   source /opt/ros/jazzy/setup.bash && source /ws/install/setup.bash && \
   timeout 15 ros2 topic hz /imu/data 2>&1 | grep average && \
   timeout 25 ros2 topic hz /state_estimation 2>&1 | grep average" \

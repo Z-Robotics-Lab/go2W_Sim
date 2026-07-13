@@ -25,7 +25,7 @@ echo "[fork] POST /waypoint -> $POST"
 # ab_cmdgt_sampler.py 在 scripts/nav(=host);容器里路径经 -v 挂载不同,故拷进容器 /tmp 跑。
 docker cp "$HERE/ab_cmdgt_sampler.py" navstack:/tmp/ab_cmdgt_sampler.py
 docker exec navstack bash -lc "source /ws/install/setup.bash 2>/dev/null; \
-  export ROS_DOMAIN_ID=${GO2W_ROS_DOMAIN_ID:-184}; export ROS_LOCALHOST_ONLY=${GO2W_ROS_LOCALHOST_ONLY:-1}; export RMW_IMPLEMENTATION=rmw_fastrtps_cpp; \
+  export ROS_DOMAIN_ID=${GO2W_ROS_DOMAIN_ID:-184}; export RMW_IMPLEMENTATION=rmw_fastrtps_cpp; \
   export FASTDDS_BUILTIN_TRANSPORTS=UDPv4; \
   timeout $((DUR+20)) python3 /tmp/ab_cmdgt_sampler.py /tmp/fork_${LABEL}.csv $DUR" 2>&1 | tail -3
 docker cp "navstack:/tmp/fork_${LABEL}.csv" "$CSV"
