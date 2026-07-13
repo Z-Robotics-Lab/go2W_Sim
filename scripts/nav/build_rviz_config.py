@@ -185,9 +185,12 @@ def _group(name: str, displays: list[dict[str, Any]], *, enabled: bool = True) -
 def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(config)
     panels = result.setdefault("Panels", [])
+    # Keep the operator surface dense: the stock Selection/Tool Properties/
+    # Views/Time docks are empty in this observer-only workflow and otherwise
+    # squeeze the RGB-D perception docks into unreadable strips.
     panels[:] = [
         panel for panel in panels
-        if not str(panel.get("Class", "")).startswith("teleop_rviz_plugin/")
+        if panel.get("Class") == "rviz_common/Displays"
     ]
 
     manager = result.setdefault("Visualization Manager", {})
