@@ -206,12 +206,6 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         if display.get("Class") != "rviz_default_plugins/Image"
         and not str(display.get("Name", "")).startswith(("Perception |", "Manipulation |"))
     ]
-    # /registered_scan is in map and cannot render until SLAM publishes map TF.
-    # Keep it available but disabled in the base_link-first operator surface.
-    for display in displays:
-        if display.get("Name") == "RegScan":
-            display["Enabled"] = False
-            display["Value"] = False
     topics = contract["topics"]
 
     image_displays = [

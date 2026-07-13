@@ -33,6 +33,13 @@ def _minimal_stock():
                     "Topic": {"Value": "/overall_map"},
                 },
                 {
+                    "Class": "rviz_default_plugins/PointCloud2",
+                    "Name": "RegScan",
+                    "Enabled": True,
+                    "Value": True,
+                    "Topic": {"Value": "/registered_scan"},
+                },
+                {
                     "Class": "rviz_default_plugins/Image",
                     "Name": "legacy image",
                     "Enabled": True,
@@ -67,6 +74,8 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     displays = list(_flatten(result["Visualization Manager"]["Displays"]))
     by_name = {display["Name"]: display for display in displays}
     assert by_name["Navigation map"]["Enabled"] is True
+    assert by_name["RegScan"]["Enabled"] is True
+    assert by_name["RegScan"]["Value"] is True
     assert "legacy image" not in by_name
     assert by_name["Local LiDAR [LIVE, accumulated]"]["Enabled"] is True
     assert by_name["Local LiDAR [LIVE, accumulated]"]["Decay Time"] == 0.2
