@@ -26,10 +26,13 @@ ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 # 默认指向 git 追踪的 assets/policies/（新机 clone 即用；容器 bind-mount 仓库到 /workspace/go2w，
 # 故此路径在容器内直接可见——见 assets/policies/README.md）。旧默认曾指 robot_lab/logs/rsl_rl
 # （gitignored 的 vendored 检出，clone 后不存在——新机拉起失败根因，已修）。
+# 回滚锚(yaw 轮前默认;6.5kg 载荷,⑤门形修正后全门过): /workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt
 # 回滚锚(载荷轮前默认;6.46kg 新体重锚 ①0.0049/④0.0337+0.0063 验过): /workspace/go2w/assets/policies/go2w_flat_payload_3497/model_3497.pt
 # 出厂锚(robot_lab v2.3.2 原始 2000 iters,6.92kg 裸躯干): /workspace/go2w/assets/policies/go2w_flat_factory_1999/model_1999.pt
 # 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
-POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt}"
+# 切换记录: 2026-07-13 yaw 轮变体A model_7494 落地(track_ang_vel_z_exp.weight=1.75;G1 达 0.9857rad/s
+#   rel_err0.2959,G3① 零指令漂移 0.0010m/s,G3②③全过;E-T battery 对跑证重训之功),见 docs/retrain-yaw.md
+POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_yaw/model_7494.pt}"
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
