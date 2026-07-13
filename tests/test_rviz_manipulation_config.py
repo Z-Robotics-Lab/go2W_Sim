@@ -91,6 +91,8 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Validated Target Cloud [upstream required]"]["Enabled"] is False
     assert by_name["Scene Collision Cloud [upstream required]"]["Enabled"] is False
     assert by_name["6DoF Grasp Candidates [upstream required]"]["Enabled"] is False
+    assert by_name["Selected Pregrasp + Grasp [LIVE when planned]"]["Enabled"] is True
+    assert by_name["Planned TCP Trajectory [LIVE when planned]"]["Enabled"] is True
     assert by_name["Octomap Occupied Cells [octomap_server required]"]["Enabled"] is False
     assert by_name["Perception Contract Status"]["Enabled"] is False
     assert by_name["PiPER Execution Status"]["Enabled"] is False
@@ -152,6 +154,25 @@ def test_perception_image_topics_match_runtime_publishers():
     assert mask["Topic"]["Reliability Policy"] == "Best Effort"
 
 
+def test_planning_displays_match_live_z_manip_debug_contract():
+    builder = _load_builder()
+    contract = builder.load_contract(CONTRACT_PATH)
+    assert contract["topics"]["selected_grasp"] == "/z_manip/debug/markers"
+    assert contract["topics"]["planned_tcp_path"] == "/z_manip/debug/arm_path"
+
+    result = builder.augment_config(_minimal_stock(), contract)
+    displays = {
+        display["Name"]: display
+        for display in _flatten(result["Visualization Manager"]["Displays"])
+    }
+    selected = displays["Selected Pregrasp + Grasp [LIVE when planned]"]
+    path = displays["Planned TCP Trajectory [LIVE when planned]"]
+    assert selected["Class"] == "rviz_default_plugins/MarkerArray"
+    assert selected["Topic"]["Value"] == "/z_manip/debug/markers"
+    assert path["Class"] == "rviz_default_plugins/Path"
+    assert path["Topic"]["Value"] == "/z_manip/debug/arm_path"
+
+
 def test_only_standard_jazzy_display_plugins_are_required():
     builder = _load_builder()
     result = builder.augment_config(_minimal_stock(), builder.load_contract(CONTRACT_PATH))
@@ -184,6 +205,7 @@ def test_runtime_bridge_is_visualization_only_and_supervised():
     assert "Twist" not in bridge
     assert "manip_rviz_bridge.py" in supervisor
     assert "manip_rviz_bridge.py" in sync
+    assert "diagnostic_level.py" in sync
 
 
 def test_builder_writes_loadable_yaml(tmp_path):

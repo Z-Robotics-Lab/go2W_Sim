@@ -297,14 +297,16 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
                 "6DoF Grasp Candidates [upstream required]",
                 topics["candidate_grasps"],
             ),
-            _marker(
-                "Selected Grasp + Pregrasp [upstream required]",
+            _marker_array(
+                "Selected Pregrasp + Grasp [LIVE when planned]",
                 topics["selected_grasp"],
+                enabled=True,
             ),
             _path(
-                "Planned TCP Trajectory [upstream required]",
+                "Planned TCP Trajectory [LIVE when planned]",
                 topics["planned_tcp_path"],
                 color="255; 210; 0",
+                enabled=True,
             ),
             _path(
                 "Executed TCP Trace [upstream required]",

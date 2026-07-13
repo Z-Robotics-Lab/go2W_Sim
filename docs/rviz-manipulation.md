@@ -14,10 +14,12 @@ subscribe to `/ground_truth/*` or `/objects/*`.
 - `Perception 3D (measured RGB-D only)`: validated target cloud, scene collision
   cloud, and target pose.  These stay disabled until their upstream publisher
   starts.
-- `Manipulation Planning (no task ground truth)`: robot model, 6-DoF grasp
-  candidates, selected grasp/pregrasp, planned/executed TCP paths, perceived
-  collision markers, and Octomap occupied cells.  Missing-upstream items are
-  explicitly named and disabled so a minimal navigation deployment stays clean.
+- `Manipulation Planning (no task ground truth)`: robot model, optional 6-DoF
+  grasp candidates, the live selected pregrasp/grasp markers from
+  `/z_manip/debug/markers`, the live planned TCP path from
+  `/z_manip/debug/arm_path`, executed TCP paths, perceived collision markers,
+  and Octomap occupied cells. Missing-upstream items are explicitly named and
+  disabled so a minimal navigation deployment stays clean.
 - `Manipulation Diagnostics`: live standard `visualization_msgs/Marker` text for
   `/piper/execution_status` and `/z_manip/perception/status` plus
   `/z_manip/perception/valid`.  Gray means unavailable/stale, amber means active

@@ -7,7 +7,8 @@ set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 NAV="${1:-$HERE/../../refs/Navigation-Physical-Experiment}"
 NAV="$(cd "$NAV" && pwd)"
-for f in pc2_to_livox.py run_navstack.sh agent_bridge.py manip_rviz_bridge.py \
+for f in pc2_to_livox.py run_navstack.sh agent_bridge.py diagnostic_level.py \
+         manip_rviz_bridge.py \
          ros_stream_gate.py run_all_forever.sh; do
   cp "$HERE/$f" "$NAV/$f"
 done

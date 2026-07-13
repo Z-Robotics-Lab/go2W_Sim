@@ -21,8 +21,15 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, String
 from visualization_msgs.msg import Marker
 
+from diagnostic_level import diagnostic_level_to_int
+
 
 DEFAULT_CONTRACT = "/ws/manipulation_rviz_topics.json"
+
+DIAGNOSTIC_OK = diagnostic_level_to_int(DiagnosticStatus.OK)
+DIAGNOSTIC_WARN = diagnostic_level_to_int(DiagnosticStatus.WARN)
+DIAGNOSTIC_ERROR = diagnostic_level_to_int(DiagnosticStatus.ERROR)
+DIAGNOSTIC_STALE = diagnostic_level_to_int(DiagnosticStatus.STALE)
 
 
 class ManipRvizBridge(Node):
@@ -88,7 +95,7 @@ class ManipRvizBridge(Node):
         self._piper_text = "waiting for /piper/execution_status"
         self._piper_at: float | None = None
         self._perception_text = "waiting for Z-Manip perception diagnostics"
-        self._perception_level = DiagnosticStatus.STALE
+        self._perception_level = DIAGNOSTIC_STALE
         self._perception_valid: bool | None = None
         self._perception_at: float | None = None
         self.create_timer(
@@ -108,10 +115,13 @@ class ManipRvizBridge(Node):
     def _on_perception_status(self, message: DiagnosticArray) -> None:
         if not message.status:
             self._perception_text = "empty perception DiagnosticArray"
-            self._perception_level = DiagnosticStatus.ERROR
+            self._perception_level = DIAGNOSTIC_ERROR
             self._perception_at = time.monotonic()
             return
-        status = max(message.status, key=lambda item: int(item.level))
+        status = max(
+            message.status,
+            key=lambda item: diagnostic_level_to_int(item.level),
+        )
         details = {
             item.key: item.value
             for item in status.values
@@ -119,7 +129,7 @@ class ManipRvizBridge(Node):
         }
         suffix = " ".join(f"{key}={value}" for key, value in details.items())
         self._perception_text = f"{status.message} {suffix}".strip()[:240]
-        self._perception_level = int(status.level)
+        self._perception_level = diagnostic_level_to_int(status.level)
         self._perception_at = time.monotonic()
 
     def _on_perception_valid(self, message: Bool) -> None:
@@ -144,7 +154,7 @@ class ManipRvizBridge(Node):
             else ("true" if self._perception_valid else "false")
         )
         perception_text = f"Perception valid={validity}: {self._perception_text}"
-        level = DiagnosticStatus.STALE if perception_stale else self._perception_level
+        level = DIAGNOSTIC_STALE if perception_stale else self._perception_level
         self._perception_pub.publish(
             self._text_marker(1, perception_text, 1.18, self._diagnostic_color(level)),
         )
@@ -186,11 +196,12 @@ class ManipRvizBridge(Node):
 
     @staticmethod
     def _diagnostic_color(level: int) -> tuple[float, float, float]:
-        if level == DiagnosticStatus.OK:
+        level = diagnostic_level_to_int(level)
+        if level == DIAGNOSTIC_OK:
             return 0.18, 1.0, 0.35
-        if level == DiagnosticStatus.WARN:
+        if level == DIAGNOSTIC_WARN:
             return 1.0, 0.72, 0.08
-        if level == DiagnosticStatus.ERROR:
+        if level == DIAGNOSTIC_ERROR:
             return 1.0, 0.18, 0.12
         return 0.65, 0.65, 0.65
 
