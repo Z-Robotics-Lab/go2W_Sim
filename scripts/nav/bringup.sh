@@ -22,7 +22,7 @@ LOG="$REPO/logs/nav_bridge.log"
 PHASE_FILE="$REPO/logs/.bringup.phase"
 MEM_MIN_GB="${GO2W_MEM_MIN_GB:-20}"     # 可用内存低于此值拒绝启动（防双开 OOM 共享 64G 宿主）
 ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
-NAV_TIMEOUT_S="${GO2W_NAV_TIMEOUT_S:-60}"        # navstack/RViz 启动及 SLAM 收敛上限
+NAV_TIMEOUT_S="${GO2W_NAV_TIMEOUT_S:-180}"       # 低 RTF Office 下 SLAM 首次收敛墙钟上限
 # RL locomotion 策略（容器内路径；README 坑 26：差速在 Go2W 物理不可行，必须 RL 策略）。
 # 默认指向 git 追踪的 assets/policies/；容器 bind-mount 仓库到 /workspace/go2w，
 # 故此路径在容器内直接可见。
