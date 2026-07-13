@@ -37,6 +37,18 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
   done
 ) &
 
+# Standard-message visualization adapter.  It consumes only the Z-Manip
+# DiagnosticArray contract and PiPER execution status, never task-object GT.
+(
+  while true; do
+    GO2W_RVIZ_TOPICS_CONFIG=/ws/manipulation_rviz_topics.json \
+      python3 -u /ws/manip_rviz_bridge.py --ros-args -p use_sim_time:=true \
+      >> /ws/manip_rviz_bridge.log 2>&1
+    echo "MANIP-RVIZ-BRIDGE-DIED exit=$? $(date)" >> /ws/manip_rviz_bridge.log
+    sleep 2
+  done
+) &
+
 echo "[SUPERVISOR] NAV_MODE=$NAV_MODE -> $SYSTEM_LAUNCH" >> /ws/supervisor.log
 (
   THRE="${LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE:-0.2}"

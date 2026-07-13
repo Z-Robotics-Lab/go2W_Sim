@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "fixed_frame": "map",
+  "status_frame": "base_link",
+  "topics": {
+    "wrist_rgb": "/camera/color/image_raw",
+    "aligned_depth": "/camera/aligned_depth_to_color/image_raw",
+    "camera_info": "/camera/color/camera_info",
+    "detection_mask_overlay": "/z_manip/perception/overlay_image",
+    "target_mask": "/z_manip/perception/mask_image",
+    "validated_target_cloud": "/z_manip/perception/target_pointcloud",
+    "scene_cloud": "/z_manip/perception/scene_pointcloud",
+    "target_pose": "/z_manip/visualization/target_pose",
+    "candidate_grasps": "/z_manip/visualization/grasp_candidates",
+    "selected_grasp": "/z_manip/visualization/selected_grasp",
+    "planned_tcp_path": "/z_manip/visualization/planned_tcp_path",
+    "executed_tcp_path": "/z_manip/visualization/executed_tcp_path",
+    "collision_environment": "/z_manip/visualization/collision_environment",
+    "octomap_markers": "/occupied_cells_vis_array",
+    "perception_diagnostics": "/z_manip/perception/status",
+    "perception_valid": "/z_manip/perception/valid",
+    "perception_status_marker": "/z_manip/visualization/perception_status",
+    "piper_execution_status": "/piper/execution_status",
+    "piper_execution_status_marker": "/z_manip/visualization/piper_execution_status",
+    "robot_description": "/robot_description"
+  }
+}
