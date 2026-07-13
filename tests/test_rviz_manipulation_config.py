@@ -75,8 +75,8 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Scene Collision Cloud [upstream required]"]["Enabled"] is False
     assert by_name["6DoF Grasp Candidates [upstream required]"]["Enabled"] is False
     assert by_name["Octomap Occupied Cells [octomap_server required]"]["Enabled"] is False
-    assert by_name["Perception Contract Status"]["Enabled"] is True
-    assert by_name["PiPER Execution Status"]["Enabled"] is True
+    assert by_name["Perception Contract Status"]["Enabled"] is False
+    assert by_name["PiPER Execution Status"]["Enabled"] is False
     assert "QMainWindow State" not in result["Window Geometry"]
 
     saved = result["Visualization Manager"]["Views"]["Saved"]

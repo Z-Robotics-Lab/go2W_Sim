@@ -28,7 +28,7 @@ echo "[2/4] Isaac 桥重启"
 docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
 docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
-  -e GO2W_SCENE="${GO2W_SCENE:-warehouse}" \
+  -e GO2W_SCENE="${GO2W_SCENE:-office}" \
   -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
   go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
   /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
