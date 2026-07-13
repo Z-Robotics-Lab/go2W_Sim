@@ -166,17 +166,19 @@ SCENES = {
         # X[-4.3,5.3] Y[-9.3,0.1]；原点 (0,0) 在 reception 顶墙=拥挤角落（净空~1.5m），
         # 开阔厅在 -Y。选 (-2.5,-5.0)=/terrain_map 证实开阔（障碍净空 3m+）、手动驱动
         # origin→此点全程直立可达。z=0.42 同 warehouse 贴地策略。回滚原点见 git 历史。
-        "spawn": (-2.5, -5.0, 0.42),
+        "spawn": (-2.5, -5.0, 0.52),
         # 箱子放出生点 +X 前方 1m 开阔地（6cm 低于障碍阈值不被绕开）。
         "box": (-1.5, -5.0, 0.031),
         # 启动视角：出生点斜后上方 3-4m、eye 高度 2.4m（office 天花板下——高了被顶棚挡、
         # 看到屋顶/自带城市外景，CEO 实测坑）。target=出生位姿，拉起即见站立的狗。
         # follow_dz=2.0：跟随镜头也压在天花板下（历史 3.6 会穿顶棚）。
-        "cam": {"eye": (-2.5 + 3.2, -5.0 - 2.4, 0.42 + 2.0),
-                "target": (-2.5, -5.0, 0.42), "follow_dz": 2.0},
+        # View from the robot side of the shelf so the front opening and objects
+        # are visible; the previous +X view looked through the opaque back panel.
+        "cam": {"eye": (-4.4, -7.0, 1.85),
+                "target": (-0.95, -5.0, 0.48), "follow_dz": 1.55},
     },
 }
-SCENE_NAME = _os.environ.get("GO2W_SCENE", "warehouse")
+SCENE_NAME = _os.environ.get("GO2W_SCENE", "office")
 if SCENE_NAME not in SCENES:
     raise SystemExit(
         f"[NAV] 未知 GO2W_SCENE={SCENE_NAME!r}；可选：{sorted(SCENES)}")
