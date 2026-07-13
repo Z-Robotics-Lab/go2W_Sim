@@ -53,6 +53,9 @@ parser.add_argument("--urdf", type=str, default=None,
 parser.add_argument("--drift-thresh", type=float, default=0.02, help="seg1 PASS drift m/s")
 parser.add_argument("--track-tol", type=float, default=0.35, help="seg2/4 PASS rel speed error")
 parser.add_argument("--fall-deg", type=float, default=60.0, help="fall if |roll|or|pitch|>this")
+parser.add_argument("--only-3b", action="store_true",
+                    help="run ONLY segment 3b (pure-wz yaw tracking) — for the OFAT yaw matrix, "
+                         "skips segments 1/2/3/4 to keep each cell fast. No effect on 3b behaviour.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 app_launcher = AppLauncher(args_cli)
@@ -317,53 +320,54 @@ def main():
                      "combine": (EVAL_GROUND_COMBINE
                                  if EVAL_GROUND_MU_S is not None else None)}}
 
-    # -------- Segment 1: zero-cmd 30 s (creep test) --------
-    reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
-    settle(sim, robot, policy, default_pos, steps=100)
-    r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, 0.0, 30.0, args_cli.fall_deg)
-    r_speed = r["displacement_speed_mps"]
-    write_row(args_cli.out, {**meta, "segment": "1_zero_cmd_30s",
-                             "cmd": [0.0, 0.0, 0.0], **r,
-                             "criterion": f"displacement_speed < {args_cli.drift_thresh} m/s",
-                             "pass": (r_speed < args_cli.drift_thresh) and not r["fell"]})
-
-    # -------- Segment 2: low-cmd ladder 0.15 / 0.30 / 0.60, 10 s each --------
-    baseline = {0.15: 0.257, 0.30: 0.383, 0.60: 0.644}  # old-policy forward-bias spectrum
-    for cmd in (0.15, 0.30, 0.60):
+    if not args_cli.only_3b:
+        # -------- Segment 1: zero-cmd 30 s (creep test) --------
         reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
         settle(sim, robot, policy, default_pos, steps=100)
-        r = run_segment(sim, robot, policy, default_pos, cmd, 0.0, 0.0, 10.0, args_cli.fall_deg)
-        achieved = r["mean_speed_mps"]
-        rel_err = abs(achieved - cmd) / cmd if cmd > 0 else 0.0
-        write_row(args_cli.out, {**meta, "segment": f"2_ladder_vx_{cmd}",
-                                 "cmd": [cmd, 0.0, 0.0], **r,
-                                 "cmd_vx": cmd, "achieved_speed_mps": achieved,
-                                 "rel_err": round(rel_err, 4),
-                                 "old_policy_speed_mps": baseline[cmd],
-                                 "criterion": f"|achieved-cmd|/cmd <= {args_cli.track_tol}",
-                                 "pass": (rel_err <= args_cli.track_tol) and not r["fell"]})
+        r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, 0.0, 30.0, args_cli.fall_deg)
+        r_speed = r["displacement_speed_mps"]
+        write_row(args_cli.out, {**meta, "segment": "1_zero_cmd_30s",
+                                 "cmd": [0.0, 0.0, 0.0], **r,
+                                 "criterion": f"displacement_speed < {args_cli.drift_thresh} m/s",
+                                 "pass": (r_speed < args_cli.drift_thresh) and not r["fell"]})
 
-    # -------- Segment 3: wz = +/-1.4 step x5 (fall test) --------
-    falls = 0
-    max_tilt_overall = 0.0
-    for k in range(5):
-        reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
-        settle(sim, robot, policy, default_pos, steps=100)
-        wz = 1.4 if k % 2 == 0 else -1.4
-        r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, wz, 3.0, args_cli.fall_deg)
-        max_tilt_overall = max(max_tilt_overall, r["max_tilt_deg"])
-        if r["fell"]:
-            falls += 1
-        write_row(args_cli.out, {**meta, "segment": f"3_wz_step_{k}",
-                                 "cmd": [0.0, 0.0, wz], **r,
-                                 "criterion": "no fall (|roll|or|pitch| <= fall_deg)",
-                                 "pass": not r["fell"]})
-    write_row(args_cli.out, {**meta, "segment": "3_wz_step_summary",
-                             "n_steps": 5, "falls": falls,
-                             "fall_rate": round(falls / 5.0, 3),
-                             "max_tilt_deg": max_tilt_overall,
-                             "criterion": "fall_rate == 0",
-                             "pass": falls == 0})
+        # -------- Segment 2: low-cmd ladder 0.15 / 0.30 / 0.60, 10 s each --------
+        baseline = {0.15: 0.257, 0.30: 0.383, 0.60: 0.644}  # old-policy forward-bias spectrum
+        for cmd in (0.15, 0.30, 0.60):
+            reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
+            settle(sim, robot, policy, default_pos, steps=100)
+            r = run_segment(sim, robot, policy, default_pos, cmd, 0.0, 0.0, 10.0, args_cli.fall_deg)
+            achieved = r["mean_speed_mps"]
+            rel_err = abs(achieved - cmd) / cmd if cmd > 0 else 0.0
+            write_row(args_cli.out, {**meta, "segment": f"2_ladder_vx_{cmd}",
+                                     "cmd": [cmd, 0.0, 0.0], **r,
+                                     "cmd_vx": cmd, "achieved_speed_mps": achieved,
+                                     "rel_err": round(rel_err, 4),
+                                     "old_policy_speed_mps": baseline[cmd],
+                                     "criterion": f"|achieved-cmd|/cmd <= {args_cli.track_tol}",
+                                     "pass": (rel_err <= args_cli.track_tol) and not r["fell"]})
+
+        # -------- Segment 3: wz = +/-1.4 step x5 (fall test) --------
+        falls = 0
+        max_tilt_overall = 0.0
+        for k in range(5):
+            reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
+            settle(sim, robot, policy, default_pos, steps=100)
+            wz = 1.4 if k % 2 == 0 else -1.4
+            r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, wz, 3.0, args_cli.fall_deg)
+            max_tilt_overall = max(max_tilt_overall, r["max_tilt_deg"])
+            if r["fell"]:
+                falls += 1
+            write_row(args_cli.out, {**meta, "segment": f"3_wz_step_{k}",
+                                     "cmd": [0.0, 0.0, wz], **r,
+                                     "criterion": "no fall (|roll|or|pitch| <= fall_deg)",
+                                     "pass": not r["fell"]})
+        write_row(args_cli.out, {**meta, "segment": "3_wz_step_summary",
+                                 "n_steps": 5, "falls": falls,
+                                 "fall_rate": round(falls / 5.0, 3),
+                                 "max_tilt_deg": max_tilt_overall,
+                                 "criterion": "fall_rate == 0",
+                                 "pass": falls == 0})
 
     # -------- Segment 3b: pure-wz yaw TRACKING (wz=1.0/1.4, vx=0), loaded body --------
     # This is the G1 face: steady-state achieved yaw rate under a sustained pure-yaw command,
@@ -384,16 +388,17 @@ def main():
                                  "pass": (achieved >= 0.98) and (rel_err <= 0.30)
                                          and not r["fell"]})
 
-    # -------- Segment 4: arc (vx=0.3, wz=0.5), 10 s --------
-    reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
-    settle(sim, robot, policy, default_pos, steps=100)
-    r = run_segment(sim, robot, policy, default_pos, 0.3, 0.0, 0.5, 10.0, args_cli.fall_deg)
-    rel_err = abs(r["mean_speed_mps"] - 0.3) / 0.3
-    write_row(args_cli.out, {**meta, "segment": "4_arc_0.3_0.5",
-                             "cmd": [0.3, 0.0, 0.5], **r,
-                             "rel_err_vs_vx": round(rel_err, 4),
-                             "criterion": f"no fall AND |speed-0.3|/0.3 <= {args_cli.track_tol}",
-                             "pass": (not r["fell"]) and (rel_err <= args_cli.track_tol)})
+    if not args_cli.only_3b:
+        # -------- Segment 4: arc (vx=0.3, wz=0.5), 10 s --------
+        reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
+        settle(sim, robot, policy, default_pos, steps=100)
+        r = run_segment(sim, robot, policy, default_pos, 0.3, 0.0, 0.5, 10.0, args_cli.fall_deg)
+        rel_err = abs(r["mean_speed_mps"] - 0.3) / 0.3
+        write_row(args_cli.out, {**meta, "segment": "4_arc_0.3_0.5",
+                                 "cmd": [0.3, 0.0, 0.5], **r,
+                                 "rel_err_vs_vx": round(rel_err, 4),
+                                 "criterion": f"no fall AND |speed-0.3|/0.3 <= {args_cli.track_tol}",
+                                 "pass": (not r["fell"]) and (rel_err <= args_cli.track_tol)})
 
     print("[ACCEPT] suite complete.", flush=True)
     simulation_app.close()
