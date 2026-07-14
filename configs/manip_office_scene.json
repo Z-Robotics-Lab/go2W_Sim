@@ -1,6 +1,11 @@
 {
   "version": 1,
   "name": "office_shelf_v1",
+  "fixtures": {
+    "legacy_grasp_box": {
+      "enabled": false
+    }
+  },
   "shelf": {
     "parts": [
       {

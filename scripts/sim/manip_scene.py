@@ -91,6 +91,21 @@ def _validate_proxy(raw: Any, prefix: str) -> dict[str, Any]:
     return proxy
 
 
+def legacy_grasp_box_enabled(scene: dict[str, Any] | None) -> bool:
+    """Keep the historical box unless a manipulation fixture disables it."""
+    if scene is None:
+        return True
+    try:
+        enabled = scene["fixtures"]["legacy_grasp_box"]["enabled"]
+    except (KeyError, TypeError) as exc:
+        raise SceneConfigError(
+            "normalized scene is missing fixtures.legacy_grasp_box.enabled"
+        ) from exc
+    if not isinstance(enabled, bool):
+        raise SceneConfigError("fixtures.legacy_grasp_box.enabled must be boolean")
+    return enabled
+
+
 def load_manip_scene(path: str | Path, asset_roots: dict[str, str]) -> dict[str, Any]:
     """Load and normalize a manipulation scene JSON document.
 
@@ -105,6 +120,16 @@ def load_manip_scene(path: str | Path, asset_roots: dict[str, str]) -> dict[str,
         raise SceneConfigError(f"cannot load {config_path}: {exc}") from exc
     if not isinstance(raw, dict) or raw.get("version") != 1:
         raise SceneConfigError("scene config version must be 1")
+
+    fixtures_raw = raw.get("fixtures", {})
+    if not isinstance(fixtures_raw, dict):
+        raise SceneConfigError("fixtures must be an object")
+    legacy_box_raw = fixtures_raw.get("legacy_grasp_box", {"enabled": True})
+    if not isinstance(legacy_box_raw, dict):
+        raise SceneConfigError("fixtures.legacy_grasp_box must be an object")
+    legacy_box_enabled = legacy_box_raw.get("enabled")
+    if not isinstance(legacy_box_enabled, bool):
+        raise SceneConfigError("fixtures.legacy_grasp_box.enabled must be boolean")
 
     shelf_raw = raw.get("shelf")
     if not isinstance(shelf_raw, dict) or not isinstance(shelf_raw.get("parts"), list):
@@ -180,6 +205,9 @@ def load_manip_scene(path: str | Path, asset_roots: dict[str, str]) -> dict[str,
         "version": 1,
         "name": _safe_name(raw.get("name"), "name"),
         "source": str(config_path),
+        "fixtures": {
+            "legacy_grasp_box": {"enabled": legacy_box_enabled},
+        },
         "shelf": {"parts": shelf_parts},
         "objects": objects,
     }

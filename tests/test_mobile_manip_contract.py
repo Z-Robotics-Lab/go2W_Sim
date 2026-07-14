@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SIM_SCRIPTS = ROOT / "scripts/sim"
 sys.path.insert(0, str(SIM_SCRIPTS))
 
-from manip_scene import SceneConfigError, load_manip_scene  # noqa: E402
+from manip_scene import (  # noqa: E402
+    legacy_grasp_box_enabled,
+    SceneConfigError,
+    load_manip_scene,
+)
 from piper_trajectory import (  # noqa: E402
     ARM_JOINT_NAMES,
     format_execution_status,
@@ -69,6 +73,38 @@ class MobileManipSceneContractTest(unittest.TestCase):
             obj["physics_mode"] == "asset" or obj["collision_proxies"]
             for obj in objects
         ))
+
+    def test_office_fixture_disables_legacy_box_in_the_approach_corridor(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertFalse(legacy_grasp_box_enabled(self.scene))
+        self.assertIn(
+            "box = RigidObject(BOX_CFG) if SPAWN_LEGACY_GRASP_BOX else None",
+            source,
+        )
+        self.assertIn("SPAWN_LEGACY_GRASP_BOX = legacy_grasp_box_enabled(MANIP_SCENE)", source)
+
+    def test_warehouse_default_and_explicit_fixture_enable_keep_legacy_box(self):
+        self.assertTrue(legacy_grasp_box_enabled(None))
+        raw = json.loads(SCENE_CONFIG.read_text(encoding="utf-8"))
+        raw["fixtures"]["legacy_grasp_box"]["enabled"] = True
+        temp = ROOT / "tests/.enabled_legacy_box_scene.json"
+        try:
+            temp.write_text(json.dumps(raw), encoding="utf-8")
+            scene = load_manip_scene(temp, {"ISAAC_NUCLEUS_DIR": "x"})
+            self.assertTrue(legacy_grasp_box_enabled(scene))
+        finally:
+            temp.unlink(missing_ok=True)
+
+    def test_scene_loader_rejects_non_boolean_legacy_box_toggle(self):
+        raw = json.loads(SCENE_CONFIG.read_text(encoding="utf-8"))
+        raw["fixtures"]["legacy_grasp_box"]["enabled"] = "false"
+        temp = ROOT / "tests/.invalid_fixture_toggle_scene.json"
+        try:
+            temp.write_text(json.dumps(raw), encoding="utf-8")
+            with self.assertRaises(SceneConfigError):
+                load_manip_scene(temp, {"ISAAC_NUCLEUS_DIR": "x"})
+        finally:
+            temp.unlink(missing_ok=True)
 
     def test_scene_loader_rejects_noncolliding_shelf(self):
         raw = json.loads(SCENE_CONFIG.read_text(encoding="utf-8"))

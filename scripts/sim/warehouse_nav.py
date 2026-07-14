@@ -114,7 +114,7 @@ from trajectory_msgs.msg import JointTrajectory  # noqa: E402
 
 # Z-Manip M0：腕相机口径 + 三姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
 import wrist_camera as wc  # noqa: E402
-from manip_scene import load_manip_scene  # noqa: E402
+from manip_scene import legacy_grasp_box_enabled, load_manip_scene  # noqa: E402
 from piper_trajectory import (  # noqa: E402
     format_execution_status,
     GripperCommandBuffer,
@@ -239,6 +239,7 @@ else:
     MANIP_SCENE = None
     SCENE_SHELF_PARTS = []
     SCENE_OBJECTS = []
+SPAWN_LEGACY_GRASP_BOX = legacy_grasp_box_enabled(MANIP_SCENE)
 
 GO2W_NAV_CFG = ArticulationCfg(
     prim_path="/World/Robot",
@@ -369,7 +370,10 @@ def main():
             if not k.startswith("piper_joint")
         }
     robot = Articulation(GO2W_NAV_CFG)
-    box = RigidObject(BOX_CFG)
+    box = RigidObject(BOX_CFG) if SPAWN_LEGACY_GRASP_BOX else None
+    if box is None:
+        print("[MANIP_SCENE] legacy /World/GraspBox disabled by fixture config",
+              flush=True)
     # Configured Office fixture: every shelf part is a static collider.  Object
     # positions and assets are read only from JSON; none are an execution input.
     for _part in SCENE_SHELF_PARTS:
@@ -617,7 +621,10 @@ def main():
     _depth_rng = np.random.default_rng(0)  # 深度噪声固定种子（可复现；GO2W_DEPTH_NOISE=0 关噪）
     clock_pub = node.create_publisher(Clock, "/clock", 10)
     # Simulation-only truth outputs are scoring oracles, never command inputs.
-    box_pub = node.create_publisher(Odometry, "/objects/box/odom", 5)
+    box_pub = (
+        node.create_publisher(Odometry, "/objects/box/odom", 5)
+        if box is not None else None
+    )
     # Z-Manip M0.5 GT 多路：每个物理 prop 一路 /objects/<name>/odom（沿用 box 5Hz 与组装
     # 逻辑，抽 _publish_odom 一处；/objects/box/odom 保持原样不动=既有 M0 测试依赖）。
     prop_pubs = {
@@ -1179,8 +1186,9 @@ def main():
             up_z_pub.publish(up_z_msg)
             # 箱子 GT（pose+twist，verify oracle 的 get_object_positions/velocities 源）。
             # 与 M0.5 物理 prop 共用 _publish_odom；/objects/box/odom 语义/字段一字不变。
-            box.update(physics_dt)
-            _publish_odom(box_pub, box, "box", sec, nsec)
+            if box is not None:
+                box.update(physics_dt)
+                _publish_odom(box_pub, box, "box", sec, nsec)
             # Z-Manip M0.5 GT 多路：每个物理 prop 同拍刷新后发 /objects/<name>/odom。
             for _pname, _pobj in phys_props.items():
                 _pobj.update(physics_dt)
