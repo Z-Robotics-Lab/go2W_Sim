@@ -166,8 +166,14 @@ SCENES = {
                 "target": (-2.5, -5.0, 0.42), "follow_dz": 2.0},
         # Z-Manip M0.5 抓取测试角（CEO 已批 2026-07-10）：托盘垫台 + 3 个物理 YCB 罐/瓶，
         # 为 M1 find(X)/M2 抓取供靶。摆位纪律（AGENTS §sim-safety + M0.5 铁律）：
-        # 锚 (-1.5,-6.5)=spawn(-2.5,-5.0) 往厅深处 -Y 1.5m 的空角；托盘顶>0.20m 进代价图
-        # 导航正常绕，罐高<0.20m 对导航失明（设计意图）故只放停车点侧向、绝不放行进直线上。
+        # 布景简化（2026-07-13，全管线直测）：锚从厅深处空角 (-1.5,-6.5) 挪到出生点
+        # (-2.5,-5.0) 正前方（+X，机体系朝向；identity quat 出生朝向=世界 +X）1.4m 处
+        # (-1.1,-5.0)——托盘近缘（朝向机器人的 -X 缘）距出生基座 ≈1.10m，开机即见目标、
+        # 留出 <TABLE_VIEW_DIST_M(0.9m) 切换段仍被走到。前方走廊已由既有证据两次实证清空：
+        # (a) BOX_POS 同方向 +X 1m 已跑通(M0 回归)；(b) probe_terrain_map.py FRONT sector
+        # (veh +x 0.2-2m,|y|<1m) 实测 cost>0.20 恒 0（var/evidence/terrain_fix/
+        # baseline_terrainmap.txt）——1.4m 落在该实证窗内。托盘顶>0.20m 进代价图导航正常
+        # 绕，罐高<0.20m 对导航失明（设计意图）故只放停车点侧向、绝不放行进直线上。
         # 每条：name(短语义)/usd/pos(xyz)/physics。physics=True 走 RigidObjectCfg（可抓、
         # 出 GT odom）；physics=False 走静态 UsdFileCfg（垫台，不进 GT）。z 由核验 bbox 算
         # （见 PROPS_OFFICE 上方几何注释）。additive：其它场景无 props 键=[] 向后兼容。
@@ -225,14 +231,21 @@ BOX_CFG = RigidObjectCfg(
 # meters_per_unit=1.0）。010_potted_meat_can 不存在 → 按预案换 004_sugar_box。
 _ITEM_DIR = f"{ISAAC_NUCLEUS_DIR}/Props/YCB/Axis_Aligned_Physics"
 _PALLET_DIR = f"{ISAAC_NUCLEUS_DIR}/Environments/Simple_Warehouse/Props"
-# 摆位锚（厅深处空角，见 SCENES["office"]["props"] 注释）。
-_ANCHOR_X, _ANCHOR_Y = -1.5, -6.5
+# 摆位锚（2026-07-13 布景简化：出生点 (-2.5,-5.0) 正前方 +X 1.4m，见上 SCENES["office"]["props"]
+# 注释；托盘近缘距出生基座 ≈1.10m）。
+_ANCHOR_X, _ANCHOR_Y = -1.1, -5.0
 # 托盘 SM_PaletteA_01：核验 bbox=[1.213,1.003,0.211]，原点 XY 居中 / Z 基座对齐。
 # CEO 2026-07-10 reach 裁定：整托盘当"桌"太大（PiPER 626mm，臂基距鼻端~0.3m ⇒ 只有
 # 台缘 ~0.15-0.2m 窄带可达；中线物品离任何边 0.5m+ = 物理不可达）。修法：只缩 XY 不缩 Z
-# ——scale(0.5,0.4,1) ⇒ 台面 0.607×0.401m，顶面 0.21112 不变（可抓带一毫米不动）。
+# ——scale(0.5,0.4,1) ⇒ 台面 0.607×0.401m（局部系 X 长/Y 短），顶面 0.21112 不变
+# （可抓带一毫米不动）。
 _PALLET_SCALE = (0.5, 0.4, 1.0)
-_PALLET_TOP_Z = 0.21112  # 托盘顶面（核验 bbox z；Z 不缩故不变）
+# 2026-07-13 布景简化：机器人现从 -X 方向直进近（出生朝向=世界 +X，锚在正前方）。
+# 原布局近边=托盘局部 -Y 缘（半宽 0.20057，因彼时机器人从 -Y 方向靠近）。为保持
+# "窄带 0.15m reach gate"几何不变，托盘整体绕世界 Z 转 +90°，把局部短轴（Y，半宽
+# 0.20057）转到世界 X 上——近缘仍是短轴，只是现在面向 -X（机器人来向）。
+_PALLET_YAW90 = (0.70711, 0.0, 0.0, 0.70711)  # quat(w,x,y,z) = Rz(+90°)
+_PALLET_TOP_Z = 0.21112  # 托盘顶面（核验 bbox z；Z 不缩故不变，不受 yaw 影响）
 # YCB Axis_Aligned_Physics 规范系是 Y 轴朝上——三件的"高度"全在 bbox Y 分量
 # （soup [.068,.102,.068] / sugar [.093,.176,.045] / mustard [.096,.191,.058]），
 # 默认姿态=躺（CEO 眼见实锤；躺姿圆罐还会滚位）。立正 = 绕 X 转 +90°（体 Y→世界 Z）。
@@ -245,23 +258,26 @@ def _rest_z(bbox_z: float) -> float:
 # 入选 3 件的立高 = 核验 bbox Y 分量（立正后即竖直尺寸）：soup 首抓 Ø66×H102 /
 # sugar 薄盒立起 176 高、38mm 薄边呈爪 / mustard 瓶 191 高、瓶身 58mm 呈爪。
 _H_SOUP, _H_SUGAR, _H_MUSTARD = 0.10185, 0.17625, 0.1913
-# 一列贴 -Y 近边：行 Y = 锚-0.08（距缩放后 -Y 台缘 0.2006-0.08=0.12m ≤ reach gate
-# 0.15m）；X = 锚±0.18 间距（爪进入余量 + 单目标隔离；端件距 X 台缘 0.303-0.18=0.12m）。
-_ROW_Y = _ANCHOR_Y - 0.08
+# 一列贴 -X 近边（托盘转向后短轴面向机器人来向）：列 X = 锚-0.08（距转向后 -X 台缘
+# 0.20057-0.08=0.12057m ≤ reach gate 0.15m，与旧布局 0.12m margin 同量级）；
+# Y = 锚±0.18 间距（爪进入余量 + 单目标隔离；端件距 Y 台缘 0.30331-0.18=0.12331m）。
+_ROW_X = _ANCHOR_X - 0.08
 # props 单一同源（z-manip tests/contract.py PROPS 引此为准；改摆位要同步测试常量）。
-# 间距沿 X 展开 0.35m（≥0.15m 门）、均落托盘 X 跨 [-2.11,-0.89] 内留边；Y 居锚线 -6.5。
+# 间距沿 Y 展开 0.35m（≥0.15m 门）、均落托盘 Y 跨内留边；X 居锚线 -1.1 前 0.08m。
 PROPS_OFFICE = [
-    # 垫台：静态托盘（physics=False，不进 GT）。落地 z=0，顶面 _PALLET_TOP_Z；XY 缩放见上。
+    # 垫台：静态托盘（physics=False，不进 GT）。落地 z=0，顶面 _PALLET_TOP_Z；XY 缩放见上，
+    # 绕世界 Z 转 +90°（_PALLET_YAW90，短轴面向机器人来向 -X）。
     {"name": "pallet", "usd": f"{_PALLET_DIR}/SM_PaletteA_01.usd",
-     "pos": (_ANCHOR_X, _ANCHOR_Y, 0.0), "physics": False, "scale": _PALLET_SCALE},
+     "pos": (_ANCHOR_X, _ANCHOR_Y, 0.0), "rot": _PALLET_YAW90,
+     "physics": False, "scale": _PALLET_SCALE},
     # 物理物体（physics=True，出 /objects/<name>/odom GT）：全部立正（_UPRIGHT），
-    # 一列贴 -Y 近边（reach 窄带内），z 按立高算。
+    # 一列贴 -X 近边（reach 窄带内，机器人来向），z 按立高算。
     {"name": "soup_can", "usd": f"{_ITEM_DIR}/005_tomato_soup_can.usd",
-     "pos": (_ANCHOR_X - 0.18, _ROW_Y, _rest_z(_H_SOUP)), "rot": _UPRIGHT, "physics": True},
+     "pos": (_ROW_X, _ANCHOR_Y - 0.18, _rest_z(_H_SOUP)), "rot": _UPRIGHT, "physics": True},
     {"name": "sugar_box", "usd": f"{_ITEM_DIR}/004_sugar_box.usd",
-     "pos": (_ANCHOR_X, _ROW_Y, _rest_z(_H_SUGAR)), "rot": _UPRIGHT, "physics": True},
+     "pos": (_ROW_X, _ANCHOR_Y, _rest_z(_H_SUGAR)), "rot": _UPRIGHT, "physics": True},
     {"name": "mustard", "usd": f"{_ITEM_DIR}/006_mustard_bottle.usd",
-     "pos": (_ANCHOR_X + 0.18, _ROW_Y, _rest_z(_H_MUSTARD)), "rot": _UPRIGHT, "physics": True},
+     "pos": (_ROW_X, _ANCHOR_Y + 0.18, _rest_z(_H_MUSTARD)), "rot": _UPRIGHT, "physics": True},
 ]
 SCENES["office"]["props"] = PROPS_OFFICE  # 回填占位（前向引用规避）
 # 其它场景无 props ⇒ 取 [] 向后兼容（main 用 SCENE.get("props") or []）。
