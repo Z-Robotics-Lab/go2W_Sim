@@ -104,6 +104,9 @@ from std_msgs.msg import String  # noqa: E402
 import wrist_camera as wc  # noqa: E402
 # P2.1 IMU raw 路线帧契约（纯助手，无 isaac 依赖；rotate 路线不调用，零开销）。
 import sensor_frame_contract  # noqa: E402
+# Z-Manip M3 路线B：外部关节命令面的校验/属主/限速纯核（驻车刹车先例——纯逻辑可
+# 单测，主循环只留薄接线；无 isaac/torch 依赖）。
+import arm_command_gate as acg  # noqa: E402
 
 # tf2_ros 可选（Jazzy 标配；缺失不应拖垮整条导航拉起——软降级 + 响亮告警，不静默吞）。
 try:
@@ -712,6 +715,35 @@ def main():
 
     node.create_subscription(Twist, "/manip/cmd_vel", on_manip_cmd, 10)
 
+    # Z-Manip M3 路线B（[RULING] CEO 2026-07-14）：外部关节命令面 /piper/joint_cmd
+    # (sensor_msgs/JointState，8 关节：j1..j6 rad + j7/j8 m)。校验/属主/限速纯逻辑在
+    # arm_command_gate.py；回调只做 校验+缓存（名按 _pose_joint_names 重排、限位/NaN
+    # 拒绝、拒绝必打日志——响亮失败绝不半应用），真正写入在主循环单一属主排他块
+    # （优先级：内置 grasp running > external 新鲜(<GO2W_ARM_EXT_FRESH_S=0.5 sim-s) >
+    # named_pose——与 /manip/cmd_vel 仲裁同构，发布方须 >2Hz 续持，静默即回落）。
+    # 裸机 A/B（grasp None，无臂关节）整面跳过。
+    ext_arm = {"q": None, "t": -1.0}
+    if grasp is not None:
+        _gate_params = acg.gate_params_from_environ(_os.environ)
+        _ext_lim = robot.data.joint_pos_limits[0]
+        _ext_lims_lo = _ext_lim[arm_ids_t, 0].tolist()
+        _ext_lims_hi = _ext_lim[arm_ids_t, 1].tolist()
+
+        def on_joint_cmd(msg: JointState):
+            q, why = acg.validate_joint_command(
+                list(msg.name), list(msg.position), _pose_joint_names,
+                _ext_lims_lo, _ext_lims_hi)
+            if q is None:
+                print(f"[ARM][WARN] joint_cmd rejected: {why}", flush=True)
+                return
+            ext_arm["q"] = q
+            ext_arm["t"] = sim_t["now"]
+
+        node.create_subscription(JointState, "/piper/joint_cmd", on_joint_cmd, 10)
+        print(f"[ARM] /piper/joint_cmd face up: fresh={_gate_params.fresh_sim_s}s "
+              f"arm_vel={_gate_params.arm_vel_rad_s}rad/s "
+              f"grip_vel={_gate_params.grip_vel_m_s}m/s", flush=True)
+
     # 运维复位通道（仿真专属，真机无此语义——真机没有"传送回出生点"）：桥 POST /reset
     # → /sim/reset(Bool true) → 主循环把 root 状态写回出生位姿 + 清零所有速度。用于摔倒/
     # 失稳后无需成对重启即可复位机器人再验证。回调只置 flag，真正写状态在主循环做
@@ -838,11 +870,19 @@ def main():
 
     step = 0
     # 臂有效目标（属主协调后实际写入的 8 关节目标）——/piper/cmd 报此，杜绝与写入漂移。
-    # 缺省 = grasp 初始 q_tgt（idle 收臂态）；每拍在臂写入块按属主更新（named_pose 或 grasp）。
+    # 缺省 = grasp 初始 q_tgt（idle 收臂态）；每拍在臂写入块按属主更新
+    # （named_pose / 内置 grasp / external 三选一，单一属主排他）。
     eff_arm_tgt = grasp.q_tgt if grasp is not None else None
     imu_msg = Imu()
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
+    # 外部臂命令每拍步长上限（j1..j6 rad/tick + j7/j8 m/tick）——纯核由速率上限×
+    # physics_dt 换算；跳变命令只产生有界运动（与内置 DQ_MAX≈1 rad/s 同族）。
+    _ext_dq_max = (acg.per_tick_dq_limits(
+        physics_dt, len(grasp.arm_ids), len(grasp.grip_ids),
+        arm_vel_rad_s=_gate_params.arm_vel_rad_s,
+        grip_vel_m_s=_gate_params.grip_vel_m_s)
+        if grasp is not None else None)
     # 【3】主循环自愈守卫状态（坑40）：PAUSE→自动 play；STOP→响亮退出；限速防与人工暂停拉锯。
     _resume_ts = []          # 最近一分钟的 auto-resume wall 时间戳
     _RESUME_MAX_PER_MIN = 5  # >5 次/分钟 → 升级 FATAL 退出
@@ -1052,10 +1092,14 @@ def main():
             for i in right:
                 vel_t[:, i] = wr
             robot.set_joint_velocity_target(vel_t)
-        # 抓取 + 三姿态：臂 8 关节目标的**单一属主排他**（Z-Manip M0）。
-        # 规则：抓取激活(status 以 "running:" 开头) → 属主=PiperGraspController，写 grasp.q_tgt
-        #       （现有语义一字不动）；否则(idle/done/failed) → 属主=named_pose，写当前姿态表。
-        # 任一拍臂目标只有一个逻辑写者，杜绝姿态与抓取每拍互相覆盖抖动。
+        # 抓取 + 三姿态 + 外部命令：臂 8 关节目标的**单一属主排他**（Z-Manip M0/M3）。
+        # 规则（arm_command_gate.resolve_owner，优先级 CEO 2026-07-14 定案）：
+        #   内置抓取激活(status 以 "running:" 开头，遗留调试面，显式触发才活) → 属主=
+        #   PiperGraspController，写 grasp.q_tgt（现有语义一字不动）；
+        #   否则 external 新鲜(已校验 /piper/joint_cmd，<fresh_sim_s) → 属主=external，
+        #   由上一拍有效目标向命令目标限速逼近（每拍 dq 上限）；
+        #   否则 → 属主=named_pose，写当前姿态表。
+        # 任一拍臂目标只有一个逻辑写者，杜绝多写者互相覆盖抖动。
         # 裸机 A/B 对照（grasp is None）跳过全部臂/抓取写入（无臂关节）。
         if grasp is not None:
             if grasp_req["pending"]:
@@ -1065,9 +1109,21 @@ def main():
             if step % 2 == 0:
                 grasp.step(2 * physics_dt)
             grasp_active = grasp.status.startswith("running:")
-            if grasp_active:
+            _owner = acg.resolve_owner(
+                grasp_active,
+                ext_arm["t"] if ext_arm["q"] is not None else None,
+                sim_t["now"], _gate_params.fresh_sim_s)
+            if _owner == acg.OWNER_GRASP:
                 # 属主=抓取：臂目标由伺服 q_tgt 提供（姿态让位）。
                 eff_arm_tgt = grasp.q_tgt
+            elif _owner == acg.OWNER_EXTERNAL:
+                # 属主=external（z_manip 抓取执行器）：从上一拍有效目标向已校验命令
+                # 限速逼近——跳变只产生有界运动；断供 >fresh_sim_s 由 resolve_owner
+                # 自动回落 named_pose（发布方需 >2Hz 续持所有权）。
+                eff_arm_tgt = torch.tensor(
+                    acg.rate_limit_step(eff_arm_tgt.tolist(), ext_arm["q"],
+                                        _ext_dq_max),
+                    dtype=torch.float32, device=eff_arm_tgt.device)
             else:
                 # 属主=named_pose：写当前姿态 8 关节目标（arm_ids_t 名序=arm_names+grip_names）。
                 _ptgt = _pose_tensor(named_pose_req["name"])

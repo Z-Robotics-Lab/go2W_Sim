@@ -95,6 +95,9 @@ _launch_isaac_bridge() {
     -e GO2W_STANDSTILL_WHEEL_DAMPING="${GO2W_STANDSTILL_WHEEL_DAMPING:-8.0}" \
     -e GO2W_STANDSTILL_GAIN_TICKS="${GO2W_STANDSTILL_GAIN_TICKS:-10}" \
     -e GO2W_IMU_ROUTE="${GO2W_IMU_ROUTE:-rotate}" \
+    -e GO2W_ARM_EXT_FRESH_S="${GO2W_ARM_EXT_FRESH_S:-0.5}" \
+    -e GO2W_ARM_EXT_VEL_MAX="${GO2W_ARM_EXT_VEL_MAX:-1.0}" \
+    -e GO2W_ARM_EXT_GRIP_VEL_MAX="${GO2W_ARM_EXT_GRIP_VEL_MAX:-0.1}" \
     go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
     /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
     --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
