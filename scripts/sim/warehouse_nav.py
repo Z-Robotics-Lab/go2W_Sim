@@ -120,6 +120,7 @@ from trajectory_msgs.msg import JointTrajectory  # noqa: E402
 import wrist_camera as wc  # noqa: E402
 from manip_scene import legacy_grasp_box_enabled, load_manip_scene  # noqa: E402
 from piper_trajectory import (  # noqa: E402
+    EndpointConvergenceConfig,
     format_execution_status,
     GripperCommandBuffer,
     GripperValidationError,
@@ -560,15 +561,25 @@ def main():
             name: float(robot.data.joint_vel_limits[0, joint_id].item())
             for joint_id, name in zip(arm_joint_ids, arm_joint_names)
         }
+        _endpoint_convergence = EndpointConvergenceConfig.from_environ(_os.environ)
         trajectory_executor = JointTrajectoryBuffer(
-            arm_joint_names, _position_limits, _velocity_limits)
+            arm_joint_names,
+            _position_limits,
+            _velocity_limits,
+            endpoint_convergence=_endpoint_convergence,
+        )
         _max_aperture = (
             float(robot.data.joint_pos_limits[0, grip_joint_ids[0], 1])
             - float(robot.data.joint_pos_limits[0, grip_joint_ids[1], 0]))
         gripper_executor = GripperCommandBuffer(0.0, _max_aperture)
         ee_body_idx = ee_body_ids[0]
         print(f"[PIPER_EXEC] ready arm={arm_joint_names} grip={grip_joint_names} "
-              f"limits={_position_limits}", flush=True)
+              f"limits={_position_limits} "
+              f"endpoint_pos={_endpoint_convergence.position_tolerance_rad:.4f}rad "
+              f"endpoint_vel={_endpoint_convergence.velocity_tolerance_rad_s:.4f}rad/s "
+              f"dwell={_endpoint_convergence.dwell_s:.3f}s "
+              f"timeout={_endpoint_convergence.timeout_s:.3f}s "
+              f"feedback_age={_endpoint_convergence.feedback_max_age_s:.3f}s", flush=True)
     else:
         arm_joint_ids = arm_joint_names = None
         grip_joint_ids = grip_joint_names = None
@@ -954,6 +965,7 @@ def main():
         # state comes from measured joints, never an object truth topic.
         if trajectory_executor is not None:
             measured_arm = robot.data.joint_pos[0, arm_joint_ids].tolist()
+            measured_arm_velocity = robot.data.joint_vel[0, arm_joint_ids].tolist()
             if trajectory_req["cancel"]:
                 trajectory_req["cancel"] = False
                 trajectory_req["message"] = None
@@ -1147,13 +1159,24 @@ def main():
         # and on hardware.
         if trajectory_executor is not None:
             if arm_owner["mode"] == "trajectory":
-                _sample = trajectory_executor.sample(sim_t["now"])
+                # IsaacLab's articulation state was refreshed immediately after
+                # the previous physical step.  Pass that encoder observation and
+                # its actual timestamp; completion must never be inferred from
+                # command duration alone.
+                _sample = trajectory_executor.sample(
+                    sim_t["now"],
+                    measured_arm,
+                    measured_arm_velocity,
+                    feedback_at=max(0.0, sim_t["now"] - physics_dt),
+                )
                 eff_arm_tgt = torch.tensor(
                     _sample.positions, dtype=torch.float32,
                     device=robot.data.joint_pos.device)
                 if _sample.done:
                     arm_owner["mode"] = "trajectory_hold"
-                    print("[PIPER_EXEC] trajectory succeeded -> final hold", flush=True)
+                    print(f"[PIPER_EXEC] trajectory terminal "
+                          f"status={trajectory_executor.status} "
+                          f"phase={trajectory_executor.phase} -> hold", flush=True)
             _piper_target = torch.cat([eff_arm_tgt, gripper_tgt])
             robot.set_joint_position_target(
                 _piper_target.unsqueeze(0), joint_ids=piper_joint_ids)

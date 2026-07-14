@@ -19,6 +19,7 @@ from manip_scene import (  # noqa: E402
 )
 from piper_trajectory import (  # noqa: E402
     ARM_JOINT_NAMES,
+    EndpointConvergenceConfig,
     format_execution_status,
     GripperCommandBuffer,
     GripperValidationError,
@@ -37,11 +38,14 @@ BRINGUP = ROOT / "scripts/nav/bringup.sh"
 SCENE_CONFIG = ROOT / "configs/manip_office_scene.json"
 
 
-def make_buffer() -> JointTrajectoryBuffer:
+def make_buffer(
+    endpoint_convergence: EndpointConvergenceConfig | None = None,
+) -> JointTrajectoryBuffer:
     return JointTrajectoryBuffer(
         ARM_JOINT_NAMES,
         {name: (-3.0, 3.0) for name in ARM_JOINT_NAMES},
         {name: 2.0 for name in ARM_JOINT_NAMES},
+        endpoint_convergence=endpoint_convergence,
     )
 
 
@@ -256,13 +260,171 @@ class PiperExecutionContractTest(unittest.TestCase):
             sim_time=12.0,
             segment="transit",
         )
-        halfway = buffer.sample(12.5)
+        halfway = buffer.sample(
+            12.5, [0.0] * 6, [0.0] * 6, feedback_at=12.49)
         for actual, expected in zip(halfway.positions, final):
             self.assertAlmostEqual(actual, expected * 0.5)
         self.assertFalse(halfway.done)
-        done = buffer.sample(13.0)
+        settling = buffer.sample(
+            13.0, final, [0.0] * 6, feedback_at=13.0)
+        self.assertFalse(settling.done)
+        self.assertEqual(buffer.status, "active")
+        self.assertEqual(buffer.phase, "settling")
+        done = buffer.sample(
+            13.2, final, [0.0] * 6, feedback_at=13.2)
         self.assertTrue(done.done)
         self.assertEqual(buffer.status, "succeeded")
+
+    def test_elapsed_duration_cannot_succeed_without_measured_endpoint_convergence(self):
+        buffer = make_buffer(EndpointConvergenceConfig(
+            position_tolerance_rad=0.03,
+            velocity_tolerance_rad_s=0.08,
+            dwell_s=0.10,
+            timeout_s=0.50,
+            feedback_max_age_s=0.10,
+        ))
+        endpoint = [0.2] * 6
+        buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, endpoint],
+            [0.0, 1.0],
+            [0.0] * 6,
+            4.0,
+            segment="approach",
+        )
+
+        at_duration = buffer.sample(
+            5.0, [0.0] * 6, [0.0] * 6, feedback_at=5.0)
+        self.assertFalse(at_duration.done)
+        self.assertEqual(buffer.status, "active")
+        self.assertAlmostEqual(buffer.endpoint_position_error_rad, 0.2)
+
+        timed_out = buffer.sample(
+            5.5, [0.1] * 6, [0.0] * 6, feedback_at=5.5)
+        self.assertTrue(timed_out.done)
+        self.assertEqual(buffer.status, "rejected:endpoint_not_converged")
+        self.assertEqual(timed_out.positions, (0.1,) * 6)
+
+    def test_endpoint_gate_requires_velocity_and_continuous_feedback_dwell(self):
+        buffer = make_buffer(EndpointConvergenceConfig(
+            position_tolerance_rad=0.03,
+            velocity_tolerance_rad_s=0.08,
+            dwell_s=0.20,
+            timeout_s=1.0,
+            feedback_max_age_s=0.15,
+        ))
+        endpoint = [0.1] * 6
+        buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, endpoint],
+            [0.0, 1.0],
+            [0.0] * 6,
+            0.0,
+            segment="lift",
+        )
+
+        moving = buffer.sample(
+            1.0, endpoint, [0.2] * 6, feedback_at=1.0)
+        self.assertFalse(moving.done)
+        first_quiet = buffer.sample(
+            1.05, endpoint, [0.0] * 6, feedback_at=1.05)
+        self.assertFalse(first_quiet.done)
+        self.assertAlmostEqual(buffer.settle_dwell_s, 0.0)
+        buffer.sample(1.14, endpoint, [0.0] * 6, feedback_at=1.14)
+        almost = buffer.sample(
+            1.24, endpoint, [0.0] * 6, feedback_at=1.24)
+        self.assertFalse(almost.done)
+        self.assertAlmostEqual(buffer.settle_dwell_s, 0.19)
+
+        # One excursion resets the continuous interval; prior quiet samples
+        # cannot be accumulated across it.
+        excursion = buffer.sample(
+            1.25, [0.14] * 6, [0.0] * 6, feedback_at=1.25)
+        self.assertFalse(excursion.done)
+        self.assertAlmostEqual(buffer.settle_dwell_s, 0.0)
+        buffer.sample(1.30, endpoint, [0.0] * 6, feedback_at=1.30)
+        buffer.sample(1.40, endpoint, [0.0] * 6, feedback_at=1.40)
+        done = buffer.sample(1.50, endpoint, [0.0] * 6, feedback_at=1.50)
+        self.assertTrue(done.done)
+        self.assertEqual(buffer.status, "succeeded")
+
+    def test_reused_or_stale_feedback_cannot_satisfy_dwell(self):
+        buffer = make_buffer(EndpointConvergenceConfig(
+            position_tolerance_rad=0.03,
+            velocity_tolerance_rad_s=0.08,
+            dwell_s=0.10,
+            timeout_s=1.0,
+            feedback_max_age_s=0.20,
+        ))
+        endpoint = [0.1] * 6
+        buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, endpoint],
+            [0.0, 1.0],
+            [0.0] * 6,
+            0.0,
+            segment="transit",
+        )
+        buffer.sample(1.0, endpoint, [0.0] * 6, feedback_at=1.0)
+        reused = buffer.sample(1.19, endpoint, [0.0] * 6, feedback_at=1.0)
+        self.assertFalse(reused.done)
+        self.assertAlmostEqual(buffer.settle_dwell_s, 0.0)
+
+        stale = buffer.sample(1.21, endpoint, [0.0] * 6, feedback_at=1.0)
+        self.assertTrue(stale.done)
+        self.assertEqual(buffer.status, "rejected:feedback_stale")
+
+    def test_feedback_time_regression_fails_closed_at_measured_hold(self):
+        buffer = make_buffer()
+        buffer.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            2.0,
+            segment="carry",
+        )
+        buffer.sample(2.2, [0.02] * 6, [0.0] * 6, feedback_at=2.19)
+        failed = buffer.sample(
+            2.3, [0.03] * 6, [0.0] * 6, feedback_at=2.18)
+        self.assertTrue(failed.done)
+        self.assertEqual(buffer.status, "rejected:feedback_time_regressed")
+        self.assertEqual(failed.positions, (0.02,) * 6)
+
+    def test_endpoint_convergence_config_has_validated_environment_overrides(self):
+        config = EndpointConvergenceConfig.from_environ({
+            "GO2W_PIPER_ENDPOINT_POSITION_TOLERANCE_RAD": "0.025",
+            "GO2W_PIPER_ENDPOINT_VELOCITY_TOLERANCE_RAD_S": "0.07",
+            "GO2W_PIPER_ENDPOINT_DWELL_S": "0.3",
+            "GO2W_PIPER_ENDPOINT_TIMEOUT_S": "1.5",
+            "GO2W_PIPER_FEEDBACK_MAX_AGE_S": "0.12",
+        })
+        self.assertEqual(config.position_tolerance_rad, 0.025)
+        self.assertEqual(config.velocity_tolerance_rad_s, 0.07)
+        self.assertEqual(config.dwell_s, 0.3)
+        self.assertEqual(config.timeout_s, 1.5)
+        self.assertEqual(config.feedback_max_age_s, 0.12)
+        with self.assertRaisesRegex(ValueError, "dwell_s must not exceed"):
+            EndpointConvergenceConfig(dwell_s=2.0, timeout_s=1.0)
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            EndpointConvergenceConfig(feedback_max_age_s=float("nan"))
+
+        bringup = BRINGUP.read_text(encoding="utf-8")
+        for name in (
+            "GO2W_PIPER_ENDPOINT_POSITION_TOLERANCE_RAD",
+            "GO2W_PIPER_ENDPOINT_VELOCITY_TOLERANCE_RAD_S",
+            "GO2W_PIPER_ENDPOINT_DWELL_S",
+            "GO2W_PIPER_ENDPOINT_TIMEOUT_S",
+            "GO2W_PIPER_FEEDBACK_MAX_AGE_S",
+        ):
+            self.assertIn(f'-e {name}="${{{name}:-', bringup)
+
+    def test_bridge_proves_completion_from_timestamped_joint_feedback(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn("measured_arm_velocity = robot.data.joint_vel", source)
+        self.assertIn("feedback_at=max(0.0, sim_t[\"now\"] - physics_dt)", source)
+        self.assertNotIn(
+            'print("[PIPER_EXEC] trajectory succeeded -> final hold"', source)
 
     def test_trajectory_rejects_bad_names_limits_timing_and_velocity(self):
         cases = [

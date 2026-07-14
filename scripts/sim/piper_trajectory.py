@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import bisect
 import math
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 
 ARM_JOINT_NAMES = tuple(f"piper_joint{i}" for i in range(1, 7))
@@ -31,6 +31,61 @@ class GripperValidationError(ValueError):
 class TrajectorySample:
     positions: tuple[float, ...]
     done: bool
+
+
+@dataclass(frozen=True)
+class EndpointConvergenceConfig:
+    """Measured joint-state gate used before reporting trajectory success.
+
+    The executor adapter supplies encoder positions, velocities and their
+    observation time.  These bounds therefore apply unchanged to simulation
+    and hardware and do not depend on task or object ground truth.
+    """
+
+    position_tolerance_rad: float = 0.04
+    velocity_tolerance_rad_s: float = 0.10
+    dwell_s: float = 0.20
+    timeout_s: float = 2.0
+    feedback_max_age_s: float = 0.20
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("position_tolerance_rad", self.position_tolerance_rad),
+            ("velocity_tolerance_rad_s", self.velocity_tolerance_rad_s),
+            ("dwell_s", self.dwell_s),
+            ("timeout_s", self.timeout_s),
+            ("feedback_max_age_s", self.feedback_max_age_s),
+        ):
+            if isinstance(value, bool):
+                raise ValueError(f"{name} must be a real-valued SI quantity")
+            parsed = float(value)
+            if not math.isfinite(parsed) or parsed <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+            object.__setattr__(self, name, parsed)
+        if self.dwell_s > self.timeout_s:
+            raise ValueError("dwell_s must not exceed timeout_s")
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str]) -> "EndpointConvergenceConfig":
+        """Load optional SI-unit overrides without selecting a sim-only policy."""
+
+        defaults = cls()
+        return cls(
+            position_tolerance_rad=float(environ.get(
+                "GO2W_PIPER_ENDPOINT_POSITION_TOLERANCE_RAD",
+                defaults.position_tolerance_rad,
+            )),
+            velocity_tolerance_rad_s=float(environ.get(
+                "GO2W_PIPER_ENDPOINT_VELOCITY_TOLERANCE_RAD_S",
+                defaults.velocity_tolerance_rad_s,
+            )),
+            dwell_s=float(environ.get(
+                "GO2W_PIPER_ENDPOINT_DWELL_S", defaults.dwell_s)),
+            timeout_s=float(environ.get(
+                "GO2W_PIPER_ENDPOINT_TIMEOUT_S", defaults.timeout_s)),
+            feedback_max_age_s=float(environ.get(
+                "GO2W_PIPER_FEEDBACK_MAX_AGE_S", defaults.feedback_max_age_s)),
+        )
 
 
 @dataclass(frozen=True)
@@ -70,6 +125,7 @@ class JointTrajectoryBuffer:
         start_tolerance: float = 0.12,
         velocity_margin: float = 1.05,
         max_duration: float = 120.0,
+        endpoint_convergence: EndpointConvergenceConfig | None = None,
     ) -> None:
         self.joint_names = tuple(joint_names)
         if len(set(self.joint_names)) != len(self.joint_names):
@@ -83,8 +139,10 @@ class JointTrajectoryBuffer:
         self.start_tolerance = float(start_tolerance)
         self.velocity_margin = float(velocity_margin)
         self.max_duration = float(max_duration)
+        self.endpoint_convergence = endpoint_convergence or EndpointConvergenceConfig()
         self.status = "idle"
         self.owner = "none"
+        self.phase = "idle"
         self.command_id = 0
         self.segment = "none"
         self.received_at: float | None = None
@@ -92,6 +150,14 @@ class JointTrajectoryBuffer:
         self._positions: tuple[tuple[float, ...], ...] = ()
         self._started_at = 0.0
         self._hold: tuple[float, ...] | None = None
+        self._last_sample_at: float | None = None
+        self._last_feedback_at: float | None = None
+        self._last_feedback_positions: tuple[float, ...] | None = None
+        self._within_tolerance_since: float | None = None
+        self.endpoint_position_error_rad: float | None = None
+        self.endpoint_velocity_rad_s: float | None = None
+        self.feedback_age_s: float | None = None
+        self.settle_dwell_s = 0.0
 
     @property
     def active(self) -> bool:
@@ -187,25 +253,138 @@ class JointTrajectoryBuffer:
         self._positions = tuple(check_positions)
         self._started_at = received_at
         self._hold = current
+        self._last_sample_at = received_at
+        self._last_feedback_at = None
+        self._last_feedback_positions = current
+        self._within_tolerance_since = None
+        self.endpoint_position_error_rad = None
+        self.endpoint_velocity_rad_s = None
+        self.feedback_age_s = None
+        self.settle_dwell_s = 0.0
         self.command_id += 1
         self.segment = segment_name
         self.received_at = received_at
         self.owner = "trajectory"
+        self.phase = "tracking"
         self.status = "active"
         return self.command_id
 
-    def sample(self, sim_time: float) -> TrajectorySample:
+    def _fail_closed(self, reason: str) -> TrajectorySample:
+        """Reject completion and stop at the last trustworthy measured state."""
+
+        if self._last_feedback_positions is not None:
+            self._hold = self._last_feedback_positions
+        self.status = f"rejected:{_clean_status_token(reason)}"
+        self.phase = "failed"
+        return TrajectorySample(self._hold or self._positions[-1], True)
+
+    def _measured_feedback(
+        self,
+        sim_time: float,
+        measured_positions: Sequence[float] | None,
+        measured_velocities: Sequence[float] | None,
+        feedback_at: float | None,
+    ) -> tuple[tuple[float, ...], tuple[float, ...], float] | TrajectorySample:
+        """Validate one encoder sample and retain only monotonic fresh feedback."""
+
+        if measured_positions is None or measured_velocities is None or feedback_at is None:
+            return self._fail_closed("feedback_missing")
+        try:
+            positions = self._validate_finite(measured_positions, "measured_positions")
+            velocities = self._validate_finite(measured_velocities, "measured_velocities")
+            observed_at = float(feedback_at)
+        except (TypeError, ValueError, TrajectoryValidationError):
+            return self._fail_closed("feedback_invalid")
+        if len(positions) != len(self.joint_names) or len(velocities) != len(self.joint_names):
+            return self._fail_closed("feedback_length_mismatch")
+        if not math.isfinite(observed_at) or observed_at < 0.0:
+            return self._fail_closed("feedback_time_invalid")
+        if observed_at > sim_time + 1.0e-9:
+            return self._fail_closed("feedback_from_future")
+        age = sim_time - observed_at
+        self.feedback_age_s = age
+        if age > self.endpoint_convergence.feedback_max_age_s:
+            return self._fail_closed("feedback_stale")
+        if (
+            self._last_feedback_at is not None
+            and observed_at < self._last_feedback_at - 1.0e-9
+        ):
+            return self._fail_closed("feedback_time_regressed")
+        if (
+            self._last_feedback_at is not None
+            and observed_at > self._last_feedback_at
+            and observed_at - self._last_feedback_at
+            > self.endpoint_convergence.feedback_max_age_s
+        ):
+            self._within_tolerance_since = None
+            self.settle_dwell_s = 0.0
+        if self._last_feedback_at is None or observed_at > self._last_feedback_at:
+            self._last_feedback_at = observed_at
+            self._last_feedback_positions = positions
+        return positions, velocities, observed_at
+
+    def sample(
+        self,
+        sim_time: float,
+        measured_positions: Sequence[float] | None = None,
+        measured_velocities: Sequence[float] | None = None,
+        *,
+        feedback_at: float | None = None,
+    ) -> TrajectorySample:
         if not self._positions:
             if self._hold is None:
                 raise RuntimeError("no trajectory or hold position is available")
             return TrajectorySample(self._hold, True)
         if not self.active:
             return TrajectorySample(self._hold or self._positions[-1], True)
-        elapsed = max(0.0, float(sim_time) - self._started_at)
+        try:
+            now = float(sim_time)
+        except (TypeError, ValueError):
+            return self._fail_closed("execution_time_invalid")
+        if not math.isfinite(now) or now < 0.0:
+            return self._fail_closed("execution_time_invalid")
+        if self._last_sample_at is not None and now < self._last_sample_at - 1.0e-9:
+            return self._fail_closed("execution_time_regressed")
+        self._last_sample_at = now
+        feedback = self._measured_feedback(
+            now, measured_positions, measured_velocities, feedback_at)
+        if isinstance(feedback, TrajectorySample):
+            return feedback
+        positions, velocities, observed_at = feedback
+
+        elapsed = max(0.0, now - self._started_at)
         if elapsed >= self._times[-1]:
             self._hold = self._positions[-1]
-            self.status = "succeeded"
-            return TrajectorySample(self._hold, True)
+            self.phase = "settling"
+            endpoint_at = self._started_at + self._times[-1]
+            self.endpoint_position_error_rad = max(
+                abs(measured - target)
+                for measured, target in zip(positions, self._positions[-1])
+            )
+            self.endpoint_velocity_rad_s = max(abs(value) for value in velocities)
+            converged = (
+                self.endpoint_position_error_rad
+                <= self.endpoint_convergence.position_tolerance_rad
+                and self.endpoint_velocity_rad_s
+                <= self.endpoint_convergence.velocity_tolerance_rad_s
+            )
+            # Dwell advances on encoder observation time, not executor polling
+            # time. Reusing one stamped sample can therefore never prove settle.
+            if converged and observed_at + 1.0e-9 >= endpoint_at:
+                if self._within_tolerance_since is None:
+                    self._within_tolerance_since = observed_at
+                self.settle_dwell_s = max(
+                    0.0, observed_at - self._within_tolerance_since)
+                if self.settle_dwell_s + 1.0e-9 >= self.endpoint_convergence.dwell_s:
+                    self.status = "succeeded"
+                    self.phase = "converged"
+                    return TrajectorySample(self._hold, True)
+            else:
+                self._within_tolerance_since = None
+                self.settle_dwell_s = 0.0
+            if now - endpoint_at + 1.0e-9 >= self.endpoint_convergence.timeout_s:
+                return self._fail_closed("endpoint_not_converged")
+            return TrajectorySample(self._hold, False)
         right = bisect.bisect_right(self._times, elapsed)
         left = max(0, right - 1)
         if right >= len(self._times):
@@ -231,6 +410,9 @@ class JointTrajectoryBuffer:
         self._positions = ()
         self._hold = current
         self.status = _clean_status_token(reason)
+        self.phase = "terminal"
+        self._within_tolerance_since = None
+        self.settle_dwell_s = 0.0
 
     def status_fields(self, physical_owner: str) -> tuple[str, ...]:
         """Return the compatible status prefix plus strict command identity."""
@@ -246,6 +428,11 @@ class JointTrajectoryBuffer:
             f"command_id={self.command_id}",
             f"segment={self.segment}",
             f"trajectory_received_at={_format_optional(self.received_at)}",
+            f"trajectory_phase={self.phase}",
+            f"endpoint_position_error={_format_optional(self.endpoint_position_error_rad)}",
+            f"endpoint_velocity={_format_optional(self.endpoint_velocity_rad_s)}",
+            f"feedback_age={_format_optional(self.feedback_age_s)}",
+            f"settle_dwell={self.settle_dwell_s:.6f}",
         )
 
 
