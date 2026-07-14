@@ -96,6 +96,14 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Octomap Occupied Cells [octomap_server required]"]["Enabled"] is False
     assert by_name["Perception Contract Status"]["Enabled"] is False
     assert by_name["PiPER Execution Status"]["Enabled"] is False
+    assert by_name["TF Tree [diagnostic opt-in]"]["Enabled"] is False
+    assert by_name["TF Tree [diagnostic opt-in]"]["Show Axes"] is False
+    assert by_name["Platform | base_link"]["Reference Frame"] == "base_link"
+    assert by_name["Tool | piper_link8"]["Reference Frame"] == "piper_link8"
+    assert (
+        by_name["Sensor | camera_color_optical_frame"]["Reference Frame"]
+        == "camera_color_optical_frame"
+    )
     assert "QMainWindow State" not in result["Window Geometry"]
 
     saved = result["Visualization Manager"]["Views"]["Saved"]
@@ -183,6 +191,7 @@ def test_only_standard_jazzy_display_plugins_are_required():
     }
     assert classes <= {
         "rviz_common/Group",
+        "rviz_default_plugins/Axes",
         "rviz_default_plugins/CameraInfo",
         "rviz_default_plugins/Image",
         "rviz_default_plugins/Marker",

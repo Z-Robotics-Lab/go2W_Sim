@@ -174,6 +174,25 @@ def _path(name: str, topic: str, *, color: str, enabled: bool = False) -> dict[s
     }
 
 
+def _axes(
+    name: str,
+    frame: str,
+    *,
+    length: float,
+    radius: float,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    return {
+        "Class": "rviz_default_plugins/Axes",
+        "Enabled": enabled,
+        "Length": length,
+        "Name": name,
+        "Radius": radius,
+        "Reference Frame": frame,
+        "Value": enabled,
+    }
+
+
 def _group(name: str, displays: list[dict[str, Any]], *, enabled: bool = True) -> dict[str, Any]:
     return {
         "Class": "rviz_common/Group",
@@ -278,6 +297,19 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
     manipulation = _group(
         "Manipulation Planning (no task ground truth)",
         [
+            _group(
+                "Key Frames",
+                [
+                    _axes("Platform | base_link", "base_link", length=0.24, radius=0.010),
+                    _axes("Tool | piper_link8", "piper_link8", length=0.16, radius=0.007),
+                    _axes(
+                        "Sensor | camera_color_optical_frame",
+                        "camera_color_optical_frame",
+                        length=0.12,
+                        radius=0.005,
+                    ),
+                ],
+            ),
             {
                 "Alpha": 0.75,
                 "Class": "rviz_default_plugins/RobotModel",
@@ -340,17 +372,17 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
     )
     tf_display = {
         "Class": "rviz_default_plugins/TF",
-        "Enabled": True,
+        "Enabled": False,
         "Frame Timeout": 15,
-        "Frames": {"All Enabled": True},
-        "Marker Scale": 0.35,
-        "Name": "TF (navigation + wrist camera)",
-        "Show Arrows": True,
-        "Show Axes": True,
+        "Frames": {"All Enabled": False},
+        "Marker Scale": 0.2,
+        "Name": "TF Tree [diagnostic opt-in]",
+        "Show Arrows": False,
+        "Show Axes": False,
         "Show Names": False,
         "Tree": {},
         "Update Interval": 0,
-        "Value": True,
+        "Value": False,
     }
     displays[:0] = image_displays + [local_lidar]
     displays.extend([tf_display, perception, manipulation, diagnostics])
