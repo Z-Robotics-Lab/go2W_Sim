@@ -217,6 +217,31 @@ class RuntimeWiringContractTest(unittest.TestCase):
             "GO2W_POLICY_LEG_DAMPING",
         ):
             self.assertIn(f'-e {env_name}=', entrypoint)
+        # GO2W_OBS_DUMP is opt-in (no default) — passed through by name only.
+        self.assertIn("-e GO2W_OBS_DUMP", entrypoint)
+
+    def test_bringup_order_switch_defaults_nav_first(self):
+        entrypoint = BRINGUP.read_text(encoding="utf-8")
+        self.assertIn('BRINGUP_ORDER="${GO2W_BRINGUP_ORDER:-nav_first}"', entrypoint)
+        self.assertIn('if [ "$BRINGUP_ORDER" = "isaac_first" ]; then', entrypoint)
+        # isaac_first waits for the 8s settle marker before launching navstack.
+        self.assertIn('_wait_isaac_marker "imu settled"', entrypoint)
+        # nav_first (default) waits for the plain sensor marker.
+        self.assertIn('_wait_isaac_marker "imu sample"', entrypoint)
+        # both orders reuse the same frozen launch helpers.
+        self.assertIn("_launch_navstack", entrypoint)
+        self.assertIn("_launch_isaac_bridge", entrypoint)
+
+    def test_bringup_domain_is_parameterized(self):
+        entrypoint = BRINGUP.read_text(encoding="utf-8")
+        self.assertIn('ROS_DOMAIN_ID="${GO2W_ROS_DOMAIN_ID:-42}"', entrypoint)
+        # No lingering hardcoded domain in the docker launches.
+        self.assertNotIn("-e ROS_DOMAIN_ID=42", entrypoint)
+
+    def test_warehouse_emits_settle_marker_for_isaac_first(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn("imu settled: step=", source)
+        self.assertIn("if step == 800:", source)
 
 
 class ManipOverrideRuleTest(unittest.TestCase):

@@ -42,11 +42,79 @@ POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_yaw/mod
 # 改此 env，不改文件；但注意 zmanip-perception 写死 42 会脱网（P2 量测不需要 manip，可
 # 接受，见 docs/stability-gates.md A/B 操作说明）。
 ROS_DOMAIN_ID="${GO2W_ROS_DOMAIN_ID:-42}"
+# 启动顺序开关（P2.2，部署 A/B 基建，CEO 已批 2026-07-13）。默认 nav_first=main 现状。
+#   nav_first（默认）：navstack(PID-1 supervisor) 先起 -> Isaac 桥 -> 等 imu sample -> 门控。
+#   isaac_first：Isaac 桥先起 -> 等 nav_bridge.log 'imu settled'(step>=800=8 sim-s IMU 沉降)
+#     -> 再起 navstack/RViz -> 门控。机制:ARISE 只在启动时估一次重力,navstack 先起会把落地
+#     瞬态固化进地图倾角;先让机体站稳 8s 再起 SLAM,首帧重力估计看到已站定机体。
+BRINGUP_ORDER="${GO2W_BRINGUP_ORDER:-nav_first}"
+if [ "$BRINGUP_ORDER" != "nav_first" ] && [ "$BRINGUP_ORDER" != "isaac_first" ]; then
+  echo "[bringup] 未知 GO2W_BRINGUP_ORDER='$BRINGUP_ORDER'；可选 nav_first|isaac_first" >&2
+  exit 2
+fi
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
   echo "$1  $(date -Is)" > "$PHASE_FILE"
   echo "[bringup] $1"
+}
+
+# --- 配对重启的两半（P2.2：供 nav_first / isaac_first 两种顺序复用同一发射逻辑）---
+# navstack supervisor 起容器（PID-1 run_all_forever.sh；RViz 挂其下）。发射面冻结：内容
+# 与顺序无关，只是被调用的时机随 GO2W_BRINGUP_ORDER 变。
+_launch_navstack() {
+  _phase "navstack supervisor (paired restart)"
+  docker rm -f navstack >/dev/null 2>&1 || true
+  docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
+    -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
+    -e NAV_MODE="${NAV_MODE:-waypoint}" \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v "$NAV":/ws -w /ws \
+    navstack:ready bash /ws/run_all_forever.sh >/dev/null
+}
+
+# Isaac 桥起 sim（清旧 sim + xhost 放行 + docker exec -d warehouse_nav.py）。
+_launch_isaac_bridge() {
+  _phase "isaac bridge (paired restart)"
+  # 眼见默认（CEO 2026-07-10）：Isaac 以 root 连宿主 X 开视口，授权必须在它启动之前。
+  # 新开机首跑时 Isaac 连不上 X 会静默退化 headless（M0"找不到 IsaacSim 窗口"根因嫌疑）。
+  # 此处提前放行；失败只 warn 不阻塞。
+  xhost +local: >/dev/null 2>&1 || echo "[bringup] warn: xhost 放行失败（无 X？Isaac 将 headless，不阻塞）"
+  # 先清 Isaac 里的旧 sim（字符类防自杀），再起新实例
+  docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
+  docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
+    -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
+    -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
+    -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
+    -e GO2W_VIEWPORT_SLIM="${GO2W_VIEWPORT_SLIM:-0}" -e GO2W_CAM_SLOW="${GO2W_CAM_SLOW:-0}" \
+    -e GO2W_DLSS_PERF="${GO2W_DLSS_PERF:-0}" -e GO2W_SCENE="${GO2W_SCENE:-office}" \
+    -e GO2W_OBS_DUMP \
+    -e GO2W_POLICY_LEG_STIFFNESS="${GO2W_POLICY_LEG_STIFFNESS:-25.0}" \
+    -e GO2W_POLICY_LEG_DAMPING="${GO2W_POLICY_LEG_DAMPING:-0.5}" \
+    -e GO2W_STANDSTILL_WHEEL_KP="${GO2W_STANDSTILL_WHEEL_KP:-20.0}" \
+    -e GO2W_STANDSTILL_WHEEL_DAMPING="${GO2W_STANDSTILL_WHEEL_DAMPING:-8.0}" \
+    -e GO2W_STANDSTILL_GAIN_TICKS="${GO2W_STANDSTILL_GAIN_TICKS:-10}" \
+    -e GO2W_IMU_ROUTE="${GO2W_IMU_ROUTE:-rotate}" \
+    go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
+    /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
+    --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
+}
+
+# 有界等待 Isaac 桥某标记出现（$1=标记文本，$2=阶段名，$3=sleep 间隔秒）。超时打日志尾退 1。
+_wait_isaac_marker() {
+  local marker="$1" phase="$2" interval="${3:-15}"
+  _phase "$phase"
+  local deadline=$(( $(date +%s) + ISAAC_TIMEOUT_S ))
+  until grep -qa "$marker" "$LOG" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "[bringup] 超时：${ISAAC_TIMEOUT_S}s 内 Isaac 未就绪（nav_bridge.log 无 '$marker'）。" >&2
+      echo "[bringup] ===== nav_bridge.log 尾 20 行诊断 =====" >&2
+      tail -20 "$LOG" 2>/dev/null >&2 || echo "[bringup] （日志文件不存在: $LOG）" >&2
+      _phase "FAILED: isaac ready timeout ($marker)"
+      exit 1
+    fi
+    sleep "$interval"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -199,7 +267,8 @@ up() {
   fi
 
   # 3) 配对重启（内联 restart_all.sh 主体；铁律：navstack 与 Isaac 桥一起重启）------
-  #    顺序: navstack(PID-1 supervisor) -> Isaac 桥 -> 门控。
+  #    顺序由 GO2W_BRINGUP_ORDER 选（P2.2）：nav_first(默认)=navstack->Isaac->等imu sample；
+  #    isaac_first=Isaac->等imu settled(8s沉降)->navstack。两者发射面文件/内容一字不变。
   bash "$HERE/sync_navstack_files.sh" "$NAV"   # 真相源 scripts/nav -> refs（防旧拷贝）
   if [ "${NAV_MODE:-waypoint}" = "explore" ] && \
      [ ! -x "$NAV/install/tare_planner/lib/tare_planner/tare_planner_node" ]; then
@@ -209,53 +278,20 @@ up() {
     echo "    'source /opt/ros/jazzy/setup.bash && colcon build --packages-select tare_planner'"
     exit 1
   fi
-  _phase "navstack supervisor (paired restart)"
-  docker rm -f navstack >/dev/null 2>&1 || true
-  docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
-    -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
-    -e NAV_MODE="${NAV_MODE:-waypoint}" \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
-    -v "$NAV":/ws -w /ws \
-    navstack:ready bash /ws/run_all_forever.sh >/dev/null
-
-  _phase "isaac bridge (paired restart)"
-  # 眼见默认（CEO 2026-07-10）：Isaac 以 root 连宿主 X 开视口，授权必须在它启动之前。
-  # 原先只在第 5 步（RViz 前）放行——新开机首跑时 Isaac 连不上 X 会静默退化 headless
-  #（M0 验证"找不到 IsaacSim 窗口"的根因嫌疑）。此处提前放行；失败只 warn 不阻塞。
-  xhost +local: >/dev/null 2>&1 || echo "[bringup] warn: xhost 放行失败（无 X？Isaac 将 headless，不阻塞）"
-  # 先清 Isaac 里的旧 sim（字符类防自杀），再起新实例
-  docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
-  docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
-    -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
-    -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
-    -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
-    -e GO2W_VIEWPORT_SLIM="${GO2W_VIEWPORT_SLIM:-0}" -e GO2W_CAM_SLOW="${GO2W_CAM_SLOW:-0}" \
-    -e GO2W_DLSS_PERF="${GO2W_DLSS_PERF:-0}" -e GO2W_SCENE="${GO2W_SCENE:-office}" \
-    -e GO2W_OBS_DUMP \
-    -e GO2W_POLICY_LEG_STIFFNESS="${GO2W_POLICY_LEG_STIFFNESS:-25.0}" \
-    -e GO2W_POLICY_LEG_DAMPING="${GO2W_POLICY_LEG_DAMPING:-0.5}" \
-    -e GO2W_STANDSTILL_WHEEL_KP="${GO2W_STANDSTILL_WHEEL_KP:-20.0}" \
-    -e GO2W_STANDSTILL_WHEEL_DAMPING="${GO2W_STANDSTILL_WHEEL_DAMPING:-8.0}" \
-    -e GO2W_STANDSTILL_GAIN_TICKS="${GO2W_STANDSTILL_GAIN_TICKS:-10}" \
-    -e GO2W_IMU_ROUTE="${GO2W_IMU_ROUTE:-rotate}" \
-    go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
-    /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
-    --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
-
-  # 4) 等 Isaac 就绪——有界等待（替换 restart_all 的无限 until）------------------
-  _phase "wait isaac ready (<=${ISAAC_TIMEOUT_S}s)"
-  local deadline=$(( $(date +%s) + ISAAC_TIMEOUT_S ))
-  # 就绪判据同 status.sh L2：出现 imu sample（sim 在真发传感器数据）
-  until grep -qa "imu sample" "$LOG" 2>/dev/null; do
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo "[bringup] 超时：${ISAAC_TIMEOUT_S}s 内 Isaac 未就绪（nav_bridge.log 无 imu sample）。" >&2
-      echo "[bringup] ===== nav_bridge.log 尾 20 行诊断 =====" >&2
-      tail -20 "$LOG" 2>/dev/null >&2 || echo "[bringup] （日志文件不存在: $LOG）" >&2
-      _phase "FAILED: isaac ready timeout"
-      exit 1
-    fi
-    sleep 15
-  done
+  echo "[bringup] bringup order = $BRINGUP_ORDER"
+  if [ "$BRINGUP_ORDER" = "isaac_first" ]; then
+    # Isaac 桥先起 -> 等 8s IMU 沉降标记('imu settled', step>=800) -> 再起 navstack/RViz。
+    # 清旧日志防匹配上一轮的 stale 'imu settled'（isaac_first 就绪判据必须是本轮的）。
+    : > "$LOG" 2>/dev/null || true
+    _launch_isaac_bridge
+    _wait_isaac_marker "imu settled" "wait isaac sensor settle (<=${ISAAC_TIMEOUT_S}s)" 2
+    _launch_navstack
+  else
+    # nav_first（默认=main 现状）：navstack -> Isaac 桥 -> 等 imu sample（sim 在发传感器）。
+    _launch_navstack
+    _launch_isaac_bridge
+    _wait_isaac_marker "imu sample" "wait isaac ready (<=${ISAAC_TIMEOUT_S}s)" 15
+  fi
 
   # 5) xhost 放行（起 RViz 前；失败只 warn，headless 无 X 时不阻塞）
   _phase "xhost +local:"

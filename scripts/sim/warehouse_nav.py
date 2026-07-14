@@ -1336,6 +1336,11 @@ def main():
                 break
         if step == 200:
             print(f"[NAV] imu sample: acc={[round(a,2) for a in acc]} (水平化后期望 ~[0,0,9.8])")
+        if step == 800:
+            # P2.2 isaac_first 就绪标记：step=800=8 sim-s IMU 沉降。ARISE 只在启动时估一次
+            # 重力——绝不让它从落地/出生瞬态 init（会把倾态固化进地图）。isaac_first 顺序下
+            # bringup.sh 等此标记后才起 navstack，令 SLAM 首帧重力估计看到已站定的机体。
+            print(f"[NAV] imu settled: step={step} acc={[round(a,2) for a in acc]}", flush=True)
         if args_cli.shot_dir and step % 3000 == 0:  # 30s @100Hz
             import os
             from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
