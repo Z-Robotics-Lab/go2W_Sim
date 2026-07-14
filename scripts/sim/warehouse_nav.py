@@ -886,6 +886,13 @@ def main():
     imu_msg = Imu()
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
+    camera_update_dt = wc.camera_update_elapsed_dt(physics_dt, CAM_STRIDE)
+    if not math.isclose(camera_update_dt, CAM_UPDATE_PERIOD,
+                        rel_tol=0.0, abs_tol=1.0e-9):
+        raise RuntimeError(
+            "camera timing contract mismatch: "
+            f"physics_dt={physics_dt} stride={CAM_STRIDE} "
+            f"elapsed={camera_update_dt} update_period={CAM_UPDATE_PERIOD}")
     # 【3】主循环自愈守卫状态（坑40）：PAUSE→自动 play；STOP→响亮退出；限速防与人工暂停拉锯。
     _resume_ts = []          # 最近一分钟的 auto-resume wall 时间戳
     _RESUME_MAX_PER_MIN = 5  # >5 次/分钟 → 升级 FATAL 退出
@@ -1244,9 +1251,10 @@ def main():
             jc_pub.publish(jc)
 
         # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线
-        # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）。CAM_STRIDE：10Hz or 2Hz(CAM_SLOW)。
+        # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）。必须传入 stride
+        # 覆盖的完整仿真时间；否则 ROS 头为 10Hz、实际渲染仅 1Hz，会重复发布旧帧。
         if step % CAM_STRIDE == 0:
-            d435.update(physics_dt)
+            d435.update(camera_update_dt)
 
         # /clock：仿真时钟广播（导航栈开 use_sim_time 对齐）
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec

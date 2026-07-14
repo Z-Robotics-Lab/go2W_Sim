@@ -101,6 +101,20 @@ TOPIC_COLOR_INFO = "/camera/color/camera_info"
 TOPIC_DEPTH_ALIGNED = "/camera/aligned_depth_to_color/image_raw"
 
 
+def camera_update_elapsed_dt(physics_dt: float, stride: int) -> float:
+    """Return the simulation time covered by one strided camera update.
+
+    IsaacLab sensors advance their internal clock only by the ``dt`` passed to
+    ``SensorBase.update``.  Callers that update a camera every ``stride``
+    physics ticks must therefore pass the full elapsed interval, not one tick.
+    """
+    if not math.isfinite(physics_dt) or physics_dt <= 0.0:
+        raise ValueError("physics_dt must be finite and positive")
+    if isinstance(stride, bool) or not isinstance(stride, int) or stride <= 0:
+        raise ValueError("stride must be a positive integer")
+    return float(physics_dt) * stride
+
+
 def camera_hfov_deg() -> float:
     """水平视场角（度）——供日志/自检核对（应≈69）。"""
     return 2.0 * math.degrees(

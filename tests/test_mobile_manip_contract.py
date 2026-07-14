@@ -23,6 +23,7 @@ from piper_trajectory import (  # noqa: E402
     JointTrajectoryBuffer,
     TrajectoryValidationError,
 )
+from wrist_camera import camera_update_elapsed_dt  # noqa: E402
 
 
 WAREHOUSE = SIM_SCRIPTS / "warehouse_nav.py"
@@ -159,6 +160,29 @@ class PiperExecutionContractTest(unittest.TestCase):
         match = re.search(r'GO2W_CAM_TF_PARENT",\s*"([^"]+)"', text)
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), "base_link")
+
+    def test_camera_update_advances_the_full_ros_publish_period(self):
+        for stride, publish_period in ((10, 0.1), (50, 0.5)):
+            with self.subTest(stride=stride):
+                self.assertAlmostEqual(
+                    camera_update_elapsed_dt(0.01, stride), publish_period)
+
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn(
+            "camera_update_dt = wc.camera_update_elapsed_dt(physics_dt, CAM_STRIDE)",
+            source,
+        )
+        self.assertIn(
+            "math.isclose(camera_update_dt, CAM_UPDATE_PERIOD,", source)
+        self.assertIn("d435.update(camera_update_dt)", source)
+        self.assertNotIn("d435.update(physics_dt)", source)
+
+    def test_camera_update_elapsed_dt_rejects_invalid_clock_inputs(self):
+        for physics_dt, stride in ((0.0, 10), (float("nan"), 10), (0.01, 0),
+                                   (0.01, True)):
+            with self.subTest(physics_dt=physics_dt, stride=stride):
+                with self.assertRaises(ValueError):
+                    camera_update_elapsed_dt(physics_dt, stride)
 
     def test_carry_pose_keeps_gripper_closed(self):
         text = CAMERA.read_text(encoding="utf-8")
