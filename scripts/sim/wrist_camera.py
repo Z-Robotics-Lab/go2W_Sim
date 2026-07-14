@@ -115,6 +115,26 @@ def camera_update_elapsed_dt(physics_dt: float, stride: int) -> float:
     return float(physics_dt) * stride
 
 
+def require_new_camera_frame(
+    previous_frame: int | None,
+    current_frame: int,
+) -> int:
+    """Reject a ROS image cycle that did not render a new Isaac frame."""
+    if isinstance(current_frame, bool) or not isinstance(current_frame, int):
+        raise ValueError("current camera frame must be an integer")
+    if current_frame <= 0:
+        raise ValueError("current camera frame must be positive")
+    if previous_frame is not None:
+        if isinstance(previous_frame, bool) or not isinstance(previous_frame, int):
+            raise ValueError("previous camera frame must be an integer")
+        if current_frame <= previous_frame:
+            raise RuntimeError(
+                "camera frame did not advance before ROS image publication: "
+                f"previous={previous_frame} current={current_frame}"
+            )
+    return current_frame
+
+
 def camera_hfov_deg() -> float:
     """水平视场角（度）——供日志/自检核对（应≈69）。"""
     return 2.0 * math.degrees(

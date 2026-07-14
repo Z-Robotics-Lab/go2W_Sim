@@ -23,7 +23,10 @@ from piper_trajectory import (  # noqa: E402
     JointTrajectoryBuffer,
     TrajectoryValidationError,
 )
-from wrist_camera import camera_update_elapsed_dt  # noqa: E402
+from wrist_camera import (  # noqa: E402
+    camera_update_elapsed_dt,
+    require_new_camera_frame,
+)
 
 
 WAREHOUSE = SIM_SCRIPTS / "warehouse_nav.py"
@@ -183,6 +186,24 @@ class PiperExecutionContractTest(unittest.TestCase):
             with self.subTest(physics_dt=physics_dt, stride=stride):
                 with self.assertRaises(ValueError):
                     camera_update_elapsed_dt(physics_dt, stride)
+
+    def test_camera_publication_requires_a_strictly_new_render_frame(self):
+        self.assertEqual(require_new_camera_frame(None, 1), 1)
+        self.assertEqual(require_new_camera_frame(1, 2), 2)
+        for previous, current, error in (
+            (2, 2, RuntimeError),
+            (2, 1, RuntimeError),
+            (None, 0, ValueError),
+            (None, True, ValueError),
+        ):
+            with self.subTest(previous=previous, current=current):
+                with self.assertRaises(error):
+                    require_new_camera_frame(previous, current)
+
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn("camera_data = d435.data", source)
+        self.assertIn("wc.require_new_camera_frame(", source)
+        self.assertNotIn('"rgb" in d435.data.output', source)
 
     def test_carry_pose_keeps_gripper_closed(self):
         text = CAMERA.read_text(encoding="utf-8")

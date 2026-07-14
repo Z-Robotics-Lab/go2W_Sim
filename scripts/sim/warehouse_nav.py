@@ -893,6 +893,7 @@ def main():
             "camera timing contract mismatch: "
             f"physics_dt={physics_dt} stride={CAM_STRIDE} "
             f"elapsed={camera_update_dt} update_period={CAM_UPDATE_PERIOD}")
+    last_published_camera_frame = None
     # 【3】主循环自愈守卫状态（坑40）：PAUSE→自动 play；STOP→响亮退出；限速防与人工暂停拉锯。
     _resume_ts = []          # 最近一分钟的 auto-resume wall 时间戳
     _RESUME_MAX_PER_MIN = 5  # >5 次/分钟 → 升级 FATAL 退出
@@ -1284,9 +1285,15 @@ def main():
         #     /camera/color/camera_info、/camera/aligned_depth_to_color/image_raw(16UC1 mm)、
         #     base→camera_color_optical_frame 动态 TF。
         # 尺寸/step 全用 wrist_camera 常量，杜绝与实际张量口径漂移（旧块曾写死 640，现 848）。
-        if step % CAM_STRIDE == 0 and "rgb" in d435.data.output:
+        if step % CAM_STRIDE == 0:
+            camera_data = d435.data
+            last_published_camera_frame = wc.require_new_camera_frame(
+                last_published_camera_frame,
+                int(d435.frame[0].item()),
+            )
+        if step % CAM_STRIDE == 0 and "rgb" in camera_data.output:
             W, H = wc.CAM_WIDTH, wc.CAM_HEIGHT
-            rgb = d435.data.output["rgb"][0]
+            rgb = camera_data.output["rgb"][0]
             if rgb.shape[-1] == 4:
                 rgb = rgb[..., :3]
             rgb_np = rgb.to("cpu", non_blocking=False).numpy().tobytes() if hasattr(rgb, "to") else rgb.tobytes()
@@ -1311,7 +1318,7 @@ def main():
             wc.fill_camera_info(ci, sec, nsec)
             cam_info_pub.publish(ci)
             # 深度：一次取张量转 numpy(米)
-            dep_t = d435.data.output["distance_to_image_plane"][0]
+            dep_t = camera_data.output["distance_to_image_plane"][0]
             dep_m = dep_t.to("cpu").numpy() if hasattr(dep_t, "to") else np.asarray(dep_t)
             # 旧口径 depth（32FC1 米，frame_id=d435 不变；尺寸随 848×480）
             dm = Image()
