@@ -127,6 +127,22 @@ imu_laser_rotation_offset: !!opencv-matrix
         self.assertIn('GO2W_REQUIRE_GUI', bringup)
         self.assertIn('&& _gui_healthy', bringup)
 
+    def test_local_planner_stops_inside_manipulation_work_pose_tolerance(self):
+        bringup = (ROOT / "scripts/nav/bringup.sh").read_text()
+        supervisor = (ROOT / "scripts/nav/run_all_forever.sh").read_text()
+        self.assertIn(
+            'LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15',
+            bringup,
+        )
+        self.assertIn(
+            'ros2 param set /localPlanner goalReachedThreshold "$GOAL_THRE"',
+            supervisor,
+        )
+        self.assertIn(
+            'LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15',
+            supervisor,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

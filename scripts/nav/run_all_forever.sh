@@ -51,14 +51,23 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
 
 echo "[SUPERVISOR] NAV_MODE=$NAV_MODE -> $SYSTEM_LAUNCH" >> /ws/supervisor.log
 (
-  THRE="${LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE:-0.2}"
+  OBSTACLE_THRE="${LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE:-0.2}"
+  # Keep the upstream stopping radius strictly inside Z-Manip's measured
+  # work-pose acceptance radius (0.20 m). The final gap is closed by visual
+  # servo after coarse navigation reports a truthful READY.
+  GOAL_THRE="${LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15}"
   APPLIED=""
   while true; do
     if ros2 node list 2>/dev/null | grep -qx "/localPlanner"; then
-      if ros2 param set /localPlanner obstacleHeightThre "$THRE" >/dev/null 2>&1; then
-        if [ "$APPLIED" != "$THRE" ]; then
-          echo "[SUPERVISOR] localPlanner obstacleHeightThre=$THRE" >> /ws/supervisor.log
-          APPLIED="$THRE"
+      if ros2 param set /localPlanner obstacleHeightThre "$OBSTACLE_THRE" \
+          >/dev/null 2>&1 \
+          && ros2 param set /localPlanner goalReachedThreshold "$GOAL_THRE" \
+          >/dev/null 2>&1; then
+        CONTRACT="$OBSTACLE_THRE/$GOAL_THRE"
+        if [ "$APPLIED" != "$CONTRACT" ]; then
+          echo "[SUPERVISOR] localPlanner obstacleHeightThre=$OBSTACLE_THRE goalReachedThreshold=$GOAL_THRE" \
+            >> /ws/supervisor.log
+          APPLIED="$CONTRACT"
         fi
         sleep 30
       else

@@ -310,6 +310,7 @@ up() {
     -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
     -e NAV_MODE="${NAV_MODE:-waypoint}" \
+    -e LOCAL_PLANNER_GOAL_REACHED_THRESHOLD="${LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15}" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "$NAV":/ws -w /ws \
     navstack:ready bash /ws/run_all_forever.sh >/dev/null
