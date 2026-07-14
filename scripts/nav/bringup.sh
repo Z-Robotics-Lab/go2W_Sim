@@ -37,6 +37,11 @@ ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 #   0728)归因待定(僵尸DDS嫌疑最大,已按流程清除;/manip/cmd_vel 直控面同日 obs 对拍未见输入异常,
 #   obs_diff.md),本轮未复现断崖,见 var/evidence/m1/g2_retest.md(z-manip 仓)。
 POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_yaw/model_7494.pt}"
+# DDS 域号参数化（P2.3，仅参数化不改默认）。默认 42=main 现状——两容器 + 宿主 agent
+# 全在域 42（zmanip-perception 写死 42）。A/B 若用别的域（如 184）隔离 DDS，切臂只需
+# 改此 env，不改文件；但注意 zmanip-perception 写死 42 会脱网（P2 量测不需要 manip，可
+# 接受，见 docs/stability-gates.md A/B 操作说明）。
+ROS_DOMAIN_ID="${GO2W_ROS_DOMAIN_ID:-42}"
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
@@ -207,7 +212,7 @@ up() {
   _phase "navstack supervisor (paired restart)"
   docker rm -f navstack >/dev/null 2>&1 || true
   docker run -d --name navstack --net=host --ipc=host --init --memory 20g --user 0 \
-    -e ROS_DOMAIN_ID=42 -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
+    -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 \
     -e NAV_MODE="${NAV_MODE:-waypoint}" \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     -v "$NAV":/ws -w /ws \
@@ -220,12 +225,19 @@ up() {
   xhost +local: >/dev/null 2>&1 || echo "[bringup] warn: xhost 放行失败（无 X？Isaac 将 headless，不阻塞）"
   # 先清 Isaac 里的旧 sim（字符类防自杀），再起新实例
   docker exec -u 0 go2w-isaac bash -c 'pkill -9 -f "kit/pytho[n]" 2>/dev/null; sleep 2' || true
-  docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=42 \
+  docker exec -d -u 0 -e DISPLAY="${DISPLAY:-:0}" -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp -e FASTDDS_BUILTIN_TRANSPORTS=UDPv4 \
     -e LD_LIBRARY_PATH=/isaac-sim/exts/isaacsim.ros2.bridge/jazzy/lib -e PYTHONUNBUFFERED=1 \
     -e GO2W_STANDSTILL="${GO2W_STANDSTILL:-1}" -e GO2W_FAST_RENDER="${GO2W_FAST_RENDER:-0}" \
     -e GO2W_VIEWPORT_SLIM="${GO2W_VIEWPORT_SLIM:-0}" -e GO2W_CAM_SLOW="${GO2W_CAM_SLOW:-0}" \
     -e GO2W_DLSS_PERF="${GO2W_DLSS_PERF:-0}" -e GO2W_SCENE="${GO2W_SCENE:-office}" \
+    -e GO2W_OBS_DUMP \
+    -e GO2W_POLICY_LEG_STIFFNESS="${GO2W_POLICY_LEG_STIFFNESS:-25.0}" \
+    -e GO2W_POLICY_LEG_DAMPING="${GO2W_POLICY_LEG_DAMPING:-0.5}" \
+    -e GO2W_STANDSTILL_WHEEL_KP="${GO2W_STANDSTILL_WHEEL_KP:-20.0}" \
+    -e GO2W_STANDSTILL_WHEEL_DAMPING="${GO2W_STANDSTILL_WHEEL_DAMPING:-8.0}" \
+    -e GO2W_STANDSTILL_GAIN_TICKS="${GO2W_STANDSTILL_GAIN_TICKS:-10}" \
+    -e GO2W_IMU_ROUTE="${GO2W_IMU_ROUTE:-rotate}" \
     go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
     /isaac-sim/python.sh warehouse_nav.py --env warehouse --enable_cameras --policy $POLICY \
     --shot_dir /workspace/go2w/logs/shots > /workspace/go2w/logs/nav_bridge.log 2>&1"
