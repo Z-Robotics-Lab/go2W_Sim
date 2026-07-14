@@ -203,6 +203,8 @@ class PiperExecutionContractTest(unittest.TestCase):
         source = WAREHOUSE.read_text(encoding="utf-8")
         self.assertIn("camera_data = d435.data", source)
         self.assertIn("wc.require_new_camera_frame(", source)
+        self.assertIn("except RuntimeError as error:", source)
+        self.assertIn("and camera_frame_ready", source)
         self.assertNotIn('"rgb" in d435.data.output', source)
 
     def test_carry_pose_keeps_gripper_closed(self):

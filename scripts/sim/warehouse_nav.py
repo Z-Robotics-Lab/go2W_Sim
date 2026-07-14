@@ -894,6 +894,7 @@ def main():
             f"physics_dt={physics_dt} stride={CAM_STRIDE} "
             f"elapsed={camera_update_dt} update_period={CAM_UPDATE_PERIOD}")
     last_published_camera_frame = None
+    stale_camera_cycles = 0
     # 【3】主循环自愈守卫状态（坑40）：PAUSE→自动 play；STOP→响亮退出；限速防与人工暂停拉锯。
     _resume_ts = []          # 最近一分钟的 auto-resume wall 时间戳
     _RESUME_MAX_PER_MIN = 5  # >5 次/分钟 → 升级 FATAL 退出
@@ -1287,11 +1288,30 @@ def main():
         # 尺寸/step 全用 wrist_camera 常量，杜绝与实际张量口径漂移（旧块曾写死 640，现 848）。
         if step % CAM_STRIDE == 0:
             camera_data = d435.data
-            last_published_camera_frame = wc.require_new_camera_frame(
-                last_published_camera_frame,
-                int(d435.frame[0].item()),
-            )
-        if step % CAM_STRIDE == 0 and "rgb" in camera_data.output:
+            try:
+                last_published_camera_frame = wc.require_new_camera_frame(
+                    last_published_camera_frame,
+                    int(d435.frame[0].item()),
+                )
+                camera_frame_ready = True
+                stale_camera_cycles = 0
+            except RuntimeError as error:
+                # A transient RTX render miss must not acquire a fresh ROS
+                # timestamp. Drop this cycle; sustained misses naturally trip
+                # the existing advancing-stream health gate.
+                camera_frame_ready = False
+                stale_camera_cycles += 1
+                if stale_camera_cycles == 1 or stale_camera_cycles % 10 == 0:
+                    print(
+                        f"[CAMERA][DROP] {error}; "
+                        f"consecutive_stale_cycles={stale_camera_cycles}",
+                        flush=True,
+                    )
+        if (
+            step % CAM_STRIDE == 0
+            and camera_frame_ready
+            and "rgb" in camera_data.output
+        ):
             W, H = wc.CAM_WIDTH, wc.CAM_HEIGHT
             rgb = camera_data.output["rgb"][0]
             if rgb.shape[-1] == 4:
