@@ -15,6 +15,12 @@ from typing import Mapping, Sequence
 PARK_STIFFNESS_ENV = "GO2W_STANDSTILL_WHEEL_KP"
 PARK_DAMPING_ENV = "GO2W_STANDSTILL_WHEEL_DAMPING"
 PARK_TRANSITION_TICKS_ENV = "GO2W_STANDSTILL_GAIN_TICKS"
+STANDSTILL_LINEAR_ENTER_ENV = "GO2W_STANDSTILL_LINEAR_ENTER_MPS"
+STANDSTILL_LINEAR_EXIT_ENV = "GO2W_STANDSTILL_LINEAR_EXIT_MPS"
+STANDSTILL_ANGULAR_ENTER_ENV = "GO2W_STANDSTILL_ANGULAR_ENTER_RPS"
+STANDSTILL_ANGULAR_EXIT_ENV = "GO2W_STANDSTILL_ANGULAR_EXIT_RPS"
+STANDSTILL_ENTER_DURATION_ENV = "GO2W_STANDSTILL_ENTER_DURATION_S"
+STANDSTILL_EXIT_DURATION_ENV = "GO2W_STANDSTILL_EXIT_DURATION_S"
 
 
 def _finite_nonnegative(value: float, name: str) -> float:
@@ -22,6 +28,205 @@ def _finite_nonnegative(value: float, name: str) -> float:
     if not math.isfinite(parsed) or parsed < 0.0:
         raise ValueError(f"{name} must be finite and nonnegative, got {value!r}")
     return parsed
+
+
+def _finite_positive(value: float, name: str) -> float:
+    parsed = _finite_nonnegative(value, name)
+    if parsed <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    return parsed
+
+
+def _positive_integer(value: int, name: str) -> int:
+    if isinstance(value, bool) or int(value) != value or int(value) < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(value)
+
+
+@dataclass(frozen=True)
+class StandstillGateConfig:
+    """SI-unit thresholds for distinguishing parking from motion intent.
+
+    Linear and angular velocity are deliberately gated independently.  Adding
+    metres per second to radians per second in one Euclidean norm has no
+    physical meaning and can hide a valid low-rate manipulation yaw command.
+    """
+
+    linear_enter_mps: float = 0.005
+    linear_exit_mps: float = 0.015
+    angular_enter_rps: float = 0.005
+    angular_exit_rps: float = 0.015
+    enter_duration_s: float = 0.50
+    exit_duration_s: float = 0.04
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "linear_enter_mps",
+            "linear_exit_mps",
+            "angular_enter_rps",
+            "angular_exit_rps",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _finite_nonnegative(getattr(self, field_name), field_name),
+            )
+        if self.linear_enter_mps >= self.linear_exit_mps:
+            raise ValueError("linear standstill enter threshold must be below exit")
+        if self.angular_enter_rps >= self.angular_exit_rps:
+            raise ValueError("angular standstill enter threshold must be below exit")
+        object.__setattr__(
+            self,
+            "enter_duration_s",
+            _finite_positive(self.enter_duration_s, "enter_duration_s"),
+        )
+        object.__setattr__(
+            self,
+            "exit_duration_s",
+            _finite_positive(self.exit_duration_s, "exit_duration_s"),
+        )
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str]) -> "StandstillGateConfig":
+        """Load deployment overrides while retaining explicit physical units."""
+        return cls(
+            linear_enter_mps=float(
+                environ.get(STANDSTILL_LINEAR_ENTER_ENV, "0.005")
+            ),
+            linear_exit_mps=float(
+                environ.get(STANDSTILL_LINEAR_EXIT_ENV, "0.015")
+            ),
+            angular_enter_rps=float(
+                environ.get(STANDSTILL_ANGULAR_ENTER_ENV, "0.005")
+            ),
+            angular_exit_rps=float(
+                environ.get(STANDSTILL_ANGULAR_EXIT_ENV, "0.015")
+            ),
+            enter_duration_s=float(
+                environ.get(STANDSTILL_ENTER_DURATION_ENV, "0.50")
+            ),
+            exit_duration_s=float(
+                environ.get(STANDSTILL_EXIT_DURATION_ENV, "0.04")
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class StandstillDecision:
+    """One command-gate transition evaluated at the policy control rate."""
+
+    parked: bool
+    engage: bool
+    release: bool
+    linear_speed_mps: float
+    angular_speed_rps: float
+    region: str
+
+
+class StandstillCommandGate:
+    """Debounced two-channel hysteresis for the simulator parking brake."""
+
+    def __init__(self, config: StandstillGateConfig):
+        self.config = config
+        self._parked = False
+        self._enter_elapsed_s = 0.0
+        self._exit_elapsed_s = 0.0
+
+    @property
+    def parked(self) -> bool:
+        return self._parked
+
+    @property
+    def enter_elapsed_s(self) -> float:
+        return self._enter_elapsed_s
+
+    @property
+    def exit_elapsed_s(self) -> float:
+        return self._exit_elapsed_s
+
+    def reset(self) -> None:
+        """Return to drive mode without retaining pre-reset debounce history."""
+        self._parked = False
+        self._enter_elapsed_s = 0.0
+        self._exit_elapsed_s = 0.0
+
+    def force_park(self) -> StandstillDecision:
+        """Enter parking immediately for an invalid or stale command source."""
+        engage = not self._parked
+        self._parked = True
+        self._enter_elapsed_s = self.config.enter_duration_s
+        self._exit_elapsed_s = 0.0
+        return StandstillDecision(
+            parked=True,
+            engage=engage,
+            release=False,
+            linear_speed_mps=0.0,
+            angular_speed_rps=0.0,
+            region="forced",
+        )
+
+    def update(
+        self,
+        vx_mps: float,
+        vy_mps: float,
+        wz_rps: float,
+        *,
+        dt_s: float,
+    ) -> StandstillDecision:
+        """Classify one SI ``cmd_vel`` sample and advance the hysteresis state."""
+        values = tuple(float(value) for value in (vx_mps, vy_mps, wz_rps))
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("standstill gate requires finite cmd_vel components")
+        elapsed = _finite_positive(dt_s, "standstill gate dt_s")
+        vx, vy, wz = values
+        linear_speed = math.hypot(vx, vy)
+        angular_speed = abs(wz)
+        inside_enter = (
+            linear_speed <= self.config.linear_enter_mps
+            and angular_speed <= self.config.angular_enter_rps
+        )
+        outside_exit = (
+            linear_speed >= self.config.linear_exit_mps
+            or angular_speed >= self.config.angular_exit_rps
+        )
+        engage = False
+        release = False
+        if inside_enter:
+            region = "enter"
+            self._enter_elapsed_s = min(
+                self.config.enter_duration_s, self._enter_elapsed_s + elapsed
+            )
+            self._exit_elapsed_s = 0.0
+            if (
+                not self._parked
+                and self._enter_elapsed_s >= self.config.enter_duration_s
+            ):
+                self._parked = True
+                engage = True
+        elif outside_exit:
+            region = "exit"
+            self._exit_elapsed_s = min(
+                self.config.exit_duration_s, self._exit_elapsed_s + elapsed
+            )
+            self._enter_elapsed_s = 0.0
+            if (
+                self._parked
+                and self._exit_elapsed_s >= self.config.exit_duration_s
+            ):
+                self._parked = False
+                release = True
+        else:
+            region = "hysteresis"
+            self._enter_elapsed_s = 0.0
+            self._exit_elapsed_s = 0.0
+        return StandstillDecision(
+            parked=self._parked,
+            engage=engage,
+            release=release,
+            linear_speed_mps=linear_speed,
+            angular_speed_rps=angular_speed,
+            region=region,
+        )
 
 
 @dataclass(frozen=True)
@@ -48,11 +253,11 @@ class ParkingBrakeConfig:
             )
         if self.park_stiffness <= 0.0:
             raise ValueError("park_stiffness must be positive for position hold")
-        if isinstance(self.transition_ticks, bool) or int(self.transition_ticks) != self.transition_ticks:
-            raise ValueError("transition_ticks must be a positive integer")
-        if int(self.transition_ticks) < 1:
-            raise ValueError("transition_ticks must be a positive integer")
-        object.__setattr__(self, "transition_ticks", int(self.transition_ticks))
+        object.__setattr__(
+            self,
+            "transition_ticks",
+            _positive_integer(self.transition_ticks, "transition_ticks"),
+        )
 
     @classmethod
     def from_environ(

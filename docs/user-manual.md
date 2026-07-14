@@ -139,6 +139,36 @@ GO2W_SCENE=office bash scripts/nav/bringup.sh            # 默认 warehouse；of
 
 不设 `GO2W_SCENE`（或 `=warehouse`）= 仓库（历史行为不变）；`=office` = 办公室。
 
+### 2.1.2 低速操作与停车滞回
+
+仿真策略在真正的零 `cmd_vel` 下仍可能缓慢爬行，因此 Isaac 端会在命令持续近零时锁住
+轮编码器。停车判定分别比较线速度和角速度，不能把 `m/s` 与 `rad/s` 相加成一个范数。
+默认值如下：
+
+| 环境变量 | 默认值 | 含义 |
+|---|---:|---|
+| `GO2W_STANDSTILL_LINEAR_ENTER_MPS` | `0.005` | 进入停车的线速度上限，m/s |
+| `GO2W_STANDSTILL_LINEAR_EXIT_MPS` | `0.015` | 释放停车的线速度下限，m/s |
+| `GO2W_STANDSTILL_ANGULAR_ENTER_RPS` | `0.005` | 进入停车的角速度上限，rad/s |
+| `GO2W_STANDSTILL_ANGULAR_EXIT_RPS` | `0.015` | 释放停车的角速度下限，rad/s |
+| `GO2W_STANDSTILL_ENTER_DURATION_S` | `0.50` | 进入前连续近零时长，s |
+| `GO2W_STANDSTILL_EXIT_DURATION_S` | `0.04` | 释放前连续运动意图时长，s |
+
+只有线速度和角速度都不高于 enter 阈值才累计停车；任一通道达到 exit 阈值即累计释放。
+中间带清空计数并维持当前模式。默认 exit 值低于视觉伺服在容差外产生的最小有效命令，
+所以低速接近和视觉搜索不会被停车锁吞掉；0.5 s 进入窗口仍能过滤短暂无目标间隙并保持
+稳定真零停车。时长按仿真时间累计，不依赖策略控制频率。`cmd_vel` 单条消息会由桥保持到
+0.5 s watchdog，因此 `0.04 s` 表示持续运动意图，不保证过滤单条非零消息。非法非有限命令
+或 watchdog 失鲜会被转成零并立即请求渐进停车，不会送入策略或杀死 Isaac 主循环。覆盖值
+必须满足各通道 `0 <= enter < exit`，两个时长必须为有限正数。
+
+这些值在 Isaac 启动时读取。调整时通过同一次配对启动传入，例如：
+
+```bash
+GO2W_STANDSTILL_ANGULAR_EXIT_RPS=0.010 \
+  GO2W_SCENE=office bash scripts/nav/bringup.sh up
+```
+
 ## 2.2 和机器狗对话
 
 ```bash

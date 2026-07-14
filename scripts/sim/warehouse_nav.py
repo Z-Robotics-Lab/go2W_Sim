@@ -18,6 +18,8 @@ from pathlib import Path
 from sensor_frame_contract import to_navigation_imu
 from standstill_control import (
     ParkingBrakeConfig,
+    StandstillCommandGate,
+    StandstillGateConfig,
     WheelParkingBrake,
     select_joint_complement,
 )
@@ -703,7 +705,9 @@ def main():
                     dtype=torch.float32, device=robot.data.joint_pos.device),
             )
         return _pose_cache.get(name)
-    cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0}
+    cmd = {"vx": 0.0, "wz": 0.0, "t": 0.0, "valid": True}
+    vy_cmd = {"v": 0.0}
+    invalid_cmd_log = {"not_before": 0.0}
     sim_t = {"now": 0.0}  # 全链路用仿真时钟（墙钟慢于实时会让 SLAM 数据破碎）
     timeline_stop = {"hit": False}
 
@@ -729,10 +733,23 @@ def main():
         return sec, int((t - sec) * 1e9)
 
     def on_cmd(msg: TwistStamped):
-        cmd["vx"] = msg.twist.linear.x
-        vy_cmd["v"] = msg.twist.linear.y
-        cmd["wz"] = msg.twist.angular.z
-        cmd["t"] = sim_t["now"]
+        values = (
+            float(msg.twist.linear.x),
+            float(msg.twist.linear.y),
+            float(msg.twist.angular.z),
+        )
+        if not all(math.isfinite(value) for value in values):
+            cmd.update(vx=0.0, wz=0.0, t=sim_t["now"], valid=False)
+            vy_cmd["v"] = 0.0
+            now = _time.monotonic()
+            if now >= invalid_cmd_log["not_before"]:
+                print("[NAV][CMD][WARN] non-finite cmd_vel rejected; forcing parking",
+                      flush=True)
+                invalid_cmd_log["not_before"] = now + 1.0
+            return
+        vx, vy, wz = values
+        cmd.update(vx=vx, wz=wz, t=sim_t["now"], valid=True)
+        vy_cmd["v"] = vy
 
     node.create_subscription(TwistStamped, "/cmd_vel", on_cmd, 10)
 
@@ -771,49 +788,37 @@ def main():
     if args_cli.policy:
         from go2w_policy import Go2WPolicy
         policy = Go2WPolicy(args_cli.policy, robot, args_cli.device or "cuda:0")
-    vy_cmd = {"v": 0.0}
-
-    # ===== 零指令死区（孪生保真度补丁，CEO 已批）=====
+    # ===== 零指令停车（孪生保真度补丁，CEO 已批）=====
     # 病理（DEBUG.md E0 实锤）：部署策略在零/小指令区永不真正站定——cmd(0,0,0) 下
     #   仍以 0.075 m/s(sim) 向机头爬行；nav 到点/yaw 门压制 vx/路径间隙的每一刻，
     #   CEO 看到的就是"蠕动、没有明显前进"。真机宇树步态零指令本就站定。
-    # 修复：策略喂入路径加死区——命令范数连续 N 拍低于阈值 → 不喂策略，改站姿保持
-    #   （腿=default_pos、轮速=0）；命令回升即恢复喂策略。
-    # 阈值对齐训练：robot_lab UniformThresholdVelocityCommand(_resample):47 用
-    #   `norm(vel_command_b[:2]) > 0.2` 把小的 (vx,vy) 归零（wz 另计）；训练还有
-    #   rel_standing_envs=0.02 把 2% 环境全维置零逼策略学"站定"。故策略本会站定，
-    #   部署却爬行=分布边缘/观测失配。这里用 CEO 批的 3D 范数 norm(vx,vy,wz)<0.2：
-    #   ①比训练 2D 阈值对 (vx,vy) 更严（3D≥2D）；②额外兜住 wz，纯自转指令
-    #   (vx=vy=0,wz=1.4，pathFollower 转弯爆发) 范数=1.4>0.2 不触发死区 → 正常导航
-    #   的原地转/起步段一律不被吃掉（回归硬约束）。
-    # ---- 死区 v2（迟滞 + 柔性过渡）----
+    # 修复：策略喂入路径加停车门——线速度与角速度分别持续近零时不再喂策略，
+    #   改站姿保持（腿=default_pos、轮速=0）；任一通道表达有效运动意图即恢复策略。
+    # metres/second 与 radians/second 不可直接拼成一个范数。旧统一阈值 0.15 会把
+    #   manipulation visual search 的 0.1087 rad/s 有效 yaw 当成停车命令。
+    # ---- 停车 v3（SI 双通道迟滞 + 柔性过渡）----
     # v1 病理（DEBUG 2026-07-07 A/B 实锤）：单阈值 0.2 + 单向 25 拍 debounce，被
     #   pathFollower 无目标 |wz|=1.396 爆发 chatter 每拍清零 → 25 连拍永远凑不满 →
     #   死区在 idle 下 enter 计数=0（等于没开）；且站姿硬钉 default_pos std=4.6cm 抖振
     #   （非自稳点），切换处满幅突变 → 失稳劈叉（win_b）。
-    # v2 三件套：
-    #   ① 迟滞双阈值——进入 norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍；退出 norm>EXIT_THRESH
-    #      连续 EXIT_DEBOUNCE 拍。0.15/0.25 分离带 0.10 → 0.2 附近抖动不再来回切。
-    #      注：真实持续自转爆发（norm=1.4，非 chatter）仍会满足退出 → 正常导航放行（G2）。
+    # v3 三件套：
+    #   ① 线/角速度各自有带 SI 单位的进入、退出阈值和共享 debounce。只有两者都近零才
+    #      进入；任一超过退出阈值就释放。默认退出阈值低于 manipulation 控制器在容差外
+    #      的最小命令；时间滞回不依赖策略控制频率。
     #   ② 柔性进入——腿目标从"进入拍的当前腿位"线性混合到 default，BLEND_TICKS 拍到位，
     #      杜绝站姿硬钉的瞬时突跳。
     #   ③ 柔性退出——喂给策略的 cmd 从 0 斜坡到实际值，RAMP_TICKS 拍到位，杜绝满幅突变。
     #   站姿保持期间轮速目标恒 0（不变）。
     STANDSTILL_ENABLE = _os.environ.get("GO2W_STANDSTILL", "1") == "1"
-    STANDSTILL_ENTER_THRESH = 0.15  # 进入迟滞下阈（比 v1 0.2 更严，只有真近零才进）
-    STANDSTILL_EXIT_THRESH = 0.25   # 退出迟滞上阈（分离带 0.10，抗 0.2 边界抖动）
-    STANDSTILL_ENTER_DEBOUNCE = 25  # 连续低命令拍数才进入（0.5s@50Hz）
-    STANDSTILL_EXIT_DEBOUNCE = 5    # 连续高命令拍数才退出（0.1s，真自转/起步立即放行）
-    STANDSTILL_BLEND_TICKS = 10     # 进入：腿 当前位→default 线性混合拍数（0.2s）
-    STANDSTILL_RAMP_TICKS = 10      # 退出：喂策略 cmd 0→实际 斜坡拍数（0.2s）
-    standstill_low_count = 0        # 连续低命令计数（策略拍）
-    standstill_high_count = 0       # 连续高命令计数（退出迟滞用）
+    STANDSTILL_BLEND_TICKS = 10     # policy config 后与停车增益过渡拍数对齐
+    STANDSTILL_RAMP_TICKS = 10      # policy config 后与停车增益过渡拍数对齐
     standstill_active = False       # 当前是否处于站姿保持
     standstill_blend = 0            # 进入混合剩余拍（BLEND..0 递减；0=已到 default）
     standstill_ramp = 0             # 退出斜坡剩余拍（RAMP..0 递减；0=已喂满幅）
     _blend_from = None              # 进入拍锁存的当前腿位（混合起点）
     # 站姿目标：腿=default（前 12 关节），轮速=0（后 4 关节）。用 policy 的 id/序对齐。
     parking_brake = None
+    standstill_gate = None
     _parking_gains = None
     if policy is not None:
         _stand_leg_ids = policy.leg_ids
@@ -825,7 +830,11 @@ def main():
             drive_stiffness=_wheel_drive_stiffness,
             drive_damping=_wheel_drive_damping,
         )
+        _standstill_config = StandstillGateConfig.from_environ(_os.environ)
         parking_brake = WheelParkingBrake(_parking_config)
+        standstill_gate = StandstillCommandGate(_standstill_config)
+        STANDSTILL_BLEND_TICKS = _parking_config.transition_ticks
+        STANDSTILL_RAMP_TICKS = _parking_config.transition_ticks
         _parking_gains = (
             _parking_config.drive_stiffness,
             _parking_config.drive_damping,
@@ -844,7 +853,13 @@ def main():
         print("[NAV][STANDSTILL] encoder parking brake "
               f"Kp={_parking_config.park_stiffness:.1f} "
               f"D={_parking_config.park_damping:.1f} "
-              f"transition={_parking_config.transition_ticks} policy ticks", flush=True)
+              f"transition={_parking_config.transition_ticks} policy ticks; "
+              f"linear={_standstill_config.linear_enter_mps:.3f}/"
+              f"{_standstill_config.linear_exit_mps:.3f}m/s "
+              f"angular={_standstill_config.angular_enter_rps:.3f}/"
+              f"{_standstill_config.angular_exit_rps:.3f}rad/s "
+              f"debounce={_standstill_config.enter_duration_s:.2f}/"
+              f"{_standstill_config.exit_duration_s:.2f}s", flush=True)
 
     step = 0
     # Effective targets are also published on /piper/cmd.  A completed trajectory
@@ -885,10 +900,11 @@ def main():
                 policy_cache.clear()
                 policy_cache["legs"] = (_stand_leg_ids, _stand_leg_tgt.clone())
                 policy_cache["wheels"] = (_stand_wheel_ids, _stand_wheel_vel.clone())
-                cmd.update(vx=0.0, wz=0.0, t=float("-inf"))
+                cmd.update(vx=0.0, wz=0.0, t=float("-inf"), valid=False)
                 vy_cmd["v"] = 0.0
             if parking_brake is not None:
                 parking_brake.reset()
+                standstill_gate.reset()
                 _apply_wheel_gains(
                     parking_brake.config.drive_stiffness,
                     parking_brake.config.drive_damping,
@@ -897,8 +913,7 @@ def main():
                     parking_brake.config.drive_stiffness,
                     parking_brake.config.drive_damping,
                 )
-            # 清死区态：复位后从"刚落地站姿"重新起算迟滞，避免带入摔倒前的计数/斜坡。
-            standstill_low_count = standstill_high_count = 0
+            # 清死区态：复位后从"刚落地站姿"重新起算迟滞，避免带入摔倒前的时长/斜坡。
             standstill_active = False
             standstill_blend = standstill_ramp = 0
             _blend_from = None
@@ -984,58 +999,54 @@ def main():
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
+            command_fail_closed = False
         else:
-            vx = cmd["vx"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
-            wz = cmd["wz"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            command_fresh = (sim_t["now"] - cmd["t"]) < 0.5
+            command_fail_closed = not command_fresh or not cmd["valid"]
+            vx = cmd["vx"] if not command_fail_closed else 0.0
+            wz = cmd["wz"] if not command_fail_closed else 0.0
 
         if policy is not None:
-            vy = vy_cmd["v"] if (sim_t["now"] - cmd["t"]) < 0.5 else 0.0
+            vy = vy_cmd["v"] if not command_fail_closed else 0.0
             if step % 2 == 0:  # 策略 50Hz（sim 100Hz）
-                # ---- 死区 v2 迟滞状态机：命令 3D 范数 + 双阈值 + 柔性过渡 ----
-                cmd_norm = math.sqrt(vx * vx + vy * vy + wz * wz)
+                # ---- 停车 v3：SI 双通道迟滞 + 柔性过渡 ----
                 if STANDSTILL_ENABLE:
-                    # 进入迟滞：norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍。
-                    if cmd_norm < STANDSTILL_ENTER_THRESH:
-                        standstill_low_count += 1
-                        standstill_high_count = 0
-                        if standstill_low_count >= STANDSTILL_ENTER_DEBOUNCE \
-                                and not standstill_active:
-                            standstill_active = True
-                            parking_brake.engage(
-                                robot.data.joint_pos[0, _stand_wheel_ids].tolist())
-                            # 柔性进入：锁存当前腿位为混合起点，BLEND 拍内 →default。
-                            _blend_from = robot.data.joint_pos[:1, _stand_leg_ids].clone()
-                            standstill_blend = STANDSTILL_BLEND_TICKS
-                            standstill_ramp = 0
-                            print(f"[NAV][STANDSTILL] enter at sim_t={sim_t['now']:.2f} "
-                                  f"cmd_norm={cmd_norm:.4f} (blend {STANDSTILL_BLEND_TICKS})",
-                                  flush=True)
-                    # 退出迟滞：norm>EXIT_THRESH 连续 EXIT_DEBOUNCE 拍（真自转/起步放行）。
-                    elif cmd_norm > STANDSTILL_EXIT_THRESH:
-                        standstill_high_count += 1
-                        standstill_low_count = 0
-                        if standstill_high_count >= STANDSTILL_EXIT_DEBOUNCE \
-                                and standstill_active:
-                            standstill_active = False
-                            parking_brake.release()
-                            # 柔性退出：last_action 复位（站姿⟺a=0，物理诚实）+ 起 cmd 斜坡。
-                            policy.last_action = torch.zeros_like(policy.last_action)
-                            standstill_ramp = STANDSTILL_RAMP_TICKS
-                            standstill_blend = 0
-                            print(f"[NAV][STANDSTILL] exit at sim_t={sim_t['now']:.2f} "
-                                  f"cmd_norm={cmd_norm:.4f} (reset+ramp "
-                                  f"{STANDSTILL_RAMP_TICKS})", flush=True)
-                    else:
-                        # 分离带内（0.15~0.25）：既不累进入也不累退出，维持当前态（迟滞核心）。
-                        standstill_low_count = 0
-                        standstill_high_count = 0
+                    decision = (
+                        standstill_gate.force_park()
+                        if command_fail_closed
+                        else standstill_gate.update(
+                            vx, vy, wz, dt_s=2.0 * physics_dt,
+                        )
+                    )
+                    if decision.engage:
+                        parking_brake.engage(
+                            robot.data.joint_pos[0, _stand_wheel_ids].tolist())
+                        # 柔性进入：锁存当前腿位为混合起点，BLEND 拍内 →default。
+                        _blend_from = robot.data.joint_pos[:1, _stand_leg_ids].clone()
+                        standstill_blend = STANDSTILL_BLEND_TICKS
+                        standstill_ramp = 0
+                        print(f"[NAV][STANDSTILL] enter at sim_t={sim_t['now']:.2f} "
+                              f"linear={decision.linear_speed_mps:.4f}m/s "
+                              f"angular={decision.angular_speed_rps:.4f}rad/s "
+                              f"(blend {STANDSTILL_BLEND_TICKS})", flush=True)
+                    elif decision.release:
+                        parking_brake.release()
+                        # 柔性退出：last_action 复位（站姿⟺a=0，物理诚实）+ 起 cmd 斜坡。
+                        policy.last_action = torch.zeros_like(policy.last_action)
+                        standstill_ramp = STANDSTILL_RAMP_TICKS
+                        standstill_blend = 0
+                        print(f"[NAV][STANDSTILL] exit at sim_t={sim_t['now']:.2f} "
+                              f"linear={decision.linear_speed_mps:.4f}m/s "
+                              f"angular={decision.angular_speed_rps:.4f}rad/s "
+                              f"(reset+ramp {STANDSTILL_RAMP_TICKS})", flush=True)
+                    standstill_active = decision.parked
                 else:
-                    # 死区关闭：确保退出并清态。
+                    # 停车门关闭：确保退出并清态。
                     if standstill_active:
-                        standstill_active = False
                         parking_brake.release()
                         policy.last_action = torch.zeros_like(policy.last_action)
-                    standstill_low_count = standstill_high_count = 0
+                    standstill_gate.reset()
+                    standstill_active = False
                     standstill_blend = standstill_ramp = 0
 
                 # Parking uses only wheel encoders.  Blend gains on transitions;
