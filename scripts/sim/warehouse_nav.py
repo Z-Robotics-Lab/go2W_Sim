@@ -1256,7 +1256,7 @@ def main():
         # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）。必须传入 stride
         # 覆盖的完整仿真时间；否则 ROS 头为 10Hz、实际渲染仅 1Hz，会重复发布旧帧。
         if step % CAM_STRIDE == 0:
-            d435.update(camera_update_dt)
+            d435.update(camera_update_dt, force_recompute=True)
 
         # /clock：仿真时钟广播（导航栈开 use_sim_time 对齐）
         clock_msg.clock.sec, clock_msg.clock.nanosec = sec, nsec

@@ -177,7 +177,8 @@ class PiperExecutionContractTest(unittest.TestCase):
         )
         self.assertIn(
             "math.isclose(camera_update_dt, CAM_UPDATE_PERIOD,", source)
-        self.assertIn("d435.update(camera_update_dt)", source)
+        self.assertIn(
+            "d435.update(camera_update_dt, force_recompute=True)", source)
         self.assertNotIn("d435.update(physics_dt)", source)
 
     def test_camera_update_elapsed_dt_rejects_invalid_clock_inputs(self):
