@@ -60,6 +60,12 @@ NAMED_POSES: dict[str, dict[str, float]] = {
     # 让 0.6m 处的罐子落画面中央而非贴底边（M1 收官 root-cause 修法；见姿态表上方几何依据）。
     "TABLE_VIEW": {"piper_joint2": 1.30, "piper_joint3": -0.86,
                    "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+    # 陡俯近距视（run11 cam_pose_solve.py，go2w 相机 FK 校验 ±0°）：视轴 pitch=-40.8°，
+    # eye(0.265,0,0.217)。把矮罐(base-z-0.14)保在 42.5°竖 FOV 内跨整个够域：off-axis
+    # -7.8°@0.58m … +4.5°@0.75m（0.68m 居中），0.90m 仍 +11.5° IN；cam-罐 0.48-0.60m>0.28 裁剪。
+    # 用途：伺服近距（HOLD/<~0.8m）+ CLOSE 前感知锁矮罐（TABLE_VIEW -20° 在 0.68m 罐落轴下 33°=出框）。
+    "TABLE_VIEW_CLOSE": {"piper_joint2": 1.25, "piper_joint3": -0.45,
+                         "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
 }
 # 默认启动姿态：LOOKOUT（当前 URDF init j2=0.8/j3=-1.2 视轴朝上 +27.9°，过不了 G-b；
 # 拉起后由主循环发一次内部 named_pose=LOOKOUT 切到平视，不动 init_state 落地态）。
@@ -346,6 +352,9 @@ def _selftest_fk() -> None:
         elif name == "TABLE_VIEW":
             gate = ("in[-30,-20] (table PASS)" if -30.0 <= pitch <= -20.0
                     else "NOT in[-30,-20] (table FAIL)")
+        elif name == "TABLE_VIEW_CLOSE":
+            gate = ("in[-44,-38] (close PASS)" if -44.0 <= pitch <= -38.0
+                    else "NOT in[-44,-38] (close FAIL)")
         else:
             gate = "(no level gate)"
         tag = " [default]" if name == DEFAULT_POSE else ""
