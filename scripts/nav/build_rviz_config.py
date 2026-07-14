@@ -228,6 +228,12 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         if display.get("Class") != "rviz_default_plugins/Image"
         and not str(display.get("Name", "")).startswith(("Perception |", "Manipulation |"))
     ]
+    # Keep upstream navigation diagnostics available without letting large
+    # frame axes or the dense free-path fan cover the registered map.
+    for display in displays:
+        if display.get("Name") in {"Vehicle", "FreePaths"}:
+            display["Enabled"] = False
+            display["Value"] = False
     topics = contract["topics"]
 
     image_displays = [

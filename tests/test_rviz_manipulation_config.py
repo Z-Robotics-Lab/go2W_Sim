@@ -40,6 +40,19 @@ def _minimal_stock():
                     "Topic": {"Value": "/registered_scan"},
                 },
                 {
+                    "Class": "rviz_default_plugins/Axes",
+                    "Name": "Vehicle",
+                    "Enabled": True,
+                    "Value": True,
+                },
+                {
+                    "Class": "rviz_default_plugins/PointCloud2",
+                    "Name": "FreePaths",
+                    "Enabled": True,
+                    "Value": True,
+                    "Topic": {"Value": "/free_paths"},
+                },
+                {
                     "Class": "rviz_default_plugins/Image",
                     "Name": "legacy image",
                     "Enabled": True,
@@ -77,6 +90,10 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["RegScan"]["Enabled"] is True
     assert by_name["RegScan"]["Value"] is True
     assert by_name["RegScan"]["Topic"]["Value"] == "/registered_scan"
+    assert by_name["Vehicle"]["Enabled"] is False
+    assert by_name["Vehicle"]["Value"] is False
+    assert by_name["FreePaths"]["Enabled"] is False
+    assert by_name["FreePaths"]["Value"] is False
     assert "legacy image" not in by_name
     # Raw LiDAR uses the pitched physical frame and is an opt-in diagnostic;
     # level /registered_scan remains the default navigation visualization.
