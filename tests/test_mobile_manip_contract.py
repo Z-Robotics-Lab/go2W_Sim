@@ -506,10 +506,11 @@ class PiperExecutionContractTest(unittest.TestCase):
             [0.0, 1.0],
             [0.2] * 6,
             5.0,
-            segment="place_retreat",
+            segment="place_retreat|contract=place-goal-3",
         )
         self.assertEqual(third, 3)
         self.assertEqual(buffer.segment, "place_retreat")
+        self.assertEqual(buffer.contract_id, "place-goal-3")
 
     def test_gripper_identity_is_independent_and_rejection_keeps_last_command(self):
         gripper = GripperCommandBuffer(0.0, 0.07)
@@ -549,6 +550,7 @@ class PiperExecutionContractTest(unittest.TestCase):
         status = format_execution_status(
             trajectory,
             gripper,
+            executor_epoch="executor-test-epoch",
             physical_owner="trajectory_hold",
             measured_aperture=0.043,
         )
@@ -556,6 +558,8 @@ class PiperExecutionContractTest(unittest.TestCase):
         for expected in (
             "command_id=1",
             "segment=lift",
+            "trajectory_contract_id=none",
+            "executor_epoch=executor-test-epoch",
             "trajectory_received_at=7.500000",
             "gripper=accepted:0.0420",
             "gripper_command_id=1",
@@ -569,6 +573,45 @@ class PiperExecutionContractTest(unittest.TestCase):
         source = WAREHOUSE.read_text(encoding="utf-8")
         self.assertIn("segment=_msg.header.frame_id", source)
         self.assertIn("format_execution_status(", source)
+        self.assertIn("executor_epoch=piper_executor_epoch", source)
+
+    def test_place_segments_require_and_echo_a_bounded_contract(self):
+        trajectory = make_buffer()
+        command_id = trajectory.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            4.0,
+            segment="place_approach|contract=place-goal-7",
+        )
+        self.assertEqual(command_id, 1)
+        self.assertEqual(trajectory.segment, "place_approach")
+        self.assertEqual(trajectory.contract_id, "place-goal-7")
+        self.assertIn(
+            "trajectory_contract_id=place-goal-7",
+            trajectory.status_fields("trajectory"),
+        )
+
+    def test_place_segment_contract_rejects_replay_ambiguous_tokens(self):
+        for segment in (
+            "place_approach",
+            "place_retreat|contract=",
+            "place_retreat|contract=bad=value",
+            "place_retreat|contract=bad value",
+            "place_retreat|contract=bad|value",
+            "lift|contract=place-goal-7",
+        ):
+            with self.subTest(segment=segment):
+                with self.assertRaises(TrajectoryValidationError):
+                    make_buffer().submit(
+                        ARM_JOINT_NAMES,
+                        [[0.0] * 6, [0.1] * 6],
+                        [0.0, 1.0],
+                        [0.0] * 6,
+                        4.0,
+                        segment=segment,
+                    )
 
 
 if __name__ == "__main__":

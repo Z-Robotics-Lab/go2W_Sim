@@ -14,6 +14,7 @@
 import argparse
 import math
 from pathlib import Path
+import uuid as _uuid
 
 from sensor_frame_contract import to_navigation_imu
 from standstill_control import (
@@ -568,12 +569,14 @@ def main():
             _velocity_limits,
             endpoint_convergence=_endpoint_convergence,
         )
+        piper_executor_epoch = _uuid.uuid4().hex
         _max_aperture = (
             float(robot.data.joint_pos_limits[0, grip_joint_ids[0], 1])
             - float(robot.data.joint_pos_limits[0, grip_joint_ids[1], 0]))
         gripper_executor = GripperCommandBuffer(0.0, _max_aperture)
         ee_body_idx = ee_body_ids[0]
-        print(f"[PIPER_EXEC] ready arm={arm_joint_names} grip={grip_joint_names} "
+        print(f"[PIPER_EXEC] ready epoch={piper_executor_epoch} "
+              f"arm={arm_joint_names} grip={grip_joint_names} "
               f"limits={_position_limits} "
               f"endpoint_pos={_endpoint_convergence.position_tolerance_rad:.4f}rad "
               f"endpoint_vel={_endpoint_convergence.velocity_tolerance_rad_s:.4f}rad/s "
@@ -586,6 +589,7 @@ def main():
         piper_joint_ids = None
         trajectory_executor = None
         gripper_executor = None
+        piper_executor_epoch = None
         ee_body_idx = None
         print("[NAV] GO2W_WITH_ARM=0: bare trunk, PiPER executor SKIPPED (A/B control)", flush=True)
 
@@ -1240,6 +1244,7 @@ def main():
                 _status.data = format_execution_status(
                     trajectory_executor,
                     gripper_executor,
+                    executor_epoch=piper_executor_epoch,
                     physical_owner=arm_owner["mode"],
                     measured_aperture=_measured_aperture,
                 )

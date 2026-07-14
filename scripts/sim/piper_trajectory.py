@@ -17,6 +17,8 @@ TRAJECTORY_SEGMENTS = frozenset((
     "place_approach",
     "place_retreat",
 ))
+_TRAJECTORY_CONTRACT_SEPARATOR = "|contract="
+_CONTRACTED_SEGMENTS = frozenset(("place_approach", "place_retreat"))
 
 
 class TrajectoryValidationError(ValueError):
@@ -105,6 +107,49 @@ def _clean_status_token(value: object) -> str:
     return text or "unspecified"
 
 
+def _identity_token(value: object, label: str) -> str:
+    """Return one bounded token that cannot corrupt the status protocol."""
+    if not isinstance(value, str):
+        raise TrajectoryValidationError(f"{label} must be a string")
+    token = value.strip()
+    if (
+        not token
+        or token != value
+        or len(token) > 128
+        or any(ord(char) < 0x21 or ord(char) > 0x7e for char in token)
+        or any(char in token for char in ";|=")
+    ):
+        raise TrajectoryValidationError(f"{label} is invalid")
+    return token
+
+
+def parse_trajectory_segment(value: object) -> tuple[str, str]:
+    """Parse a segment and the mandatory place-transaction identity."""
+    if not isinstance(value, str):
+        raise TrajectoryValidationError("segment must be a string")
+    if value.count(_TRAJECTORY_CONTRACT_SEPARATOR) > 1:
+        raise TrajectoryValidationError("trajectory contract delimiter is repeated")
+    if _TRAJECTORY_CONTRACT_SEPARATOR in value:
+        segment, contract_id = value.split(_TRAJECTORY_CONTRACT_SEPARATOR, 1)
+        contract_id = _identity_token(contract_id, "trajectory contract_id")
+    else:
+        segment, contract_id = value, "none"
+    segment = segment.strip()
+    if segment not in TRAJECTORY_SEGMENTS:
+        raise TrajectoryValidationError(
+            f"segment must be one of {sorted(TRAJECTORY_SEGMENTS)}, got {segment!r}",
+        )
+    if segment in _CONTRACTED_SEGMENTS and contract_id == "none":
+        raise TrajectoryValidationError(
+            f"{segment} requires a trajectory contract_id",
+        )
+    if segment not in _CONTRACTED_SEGMENTS and contract_id != "none":
+        raise TrajectoryValidationError(
+            f"{segment} cannot carry a place trajectory contract_id",
+        )
+    return segment, contract_id
+
+
 def _format_optional(value: float | None, *, digits: int = 6) -> str:
     return "none" if value is None else f"{value:.{digits}f}"
 
@@ -145,6 +190,7 @@ class JointTrajectoryBuffer:
         self.phase = "idle"
         self.command_id = 0
         self.segment = "none"
+        self.contract_id = "none"
         self.received_at: float | None = None
         self._times: tuple[float, ...] = ()
         self._positions: tuple[tuple[float, ...], ...] = ()
@@ -183,11 +229,7 @@ class JointTrajectoryBuffer:
         *,
         segment: str,
     ) -> int:
-        segment_name = str(segment).strip()
-        if segment_name not in TRAJECTORY_SEGMENTS:
-            raise TrajectoryValidationError(
-                f"segment must be one of {sorted(TRAJECTORY_SEGMENTS)}, got {segment_name!r}",
-            )
+        segment_name, contract_id = parse_trajectory_segment(segment)
         received_at = float(sim_time)
         if not math.isfinite(received_at) or received_at < 0.0:
             raise TrajectoryValidationError("sim_time must be finite and non-negative")
@@ -263,6 +305,7 @@ class JointTrajectoryBuffer:
         self.settle_dwell_s = 0.0
         self.command_id += 1
         self.segment = segment_name
+        self.contract_id = contract_id
         self.received_at = received_at
         self.owner = "trajectory"
         self.phase = "tracking"
@@ -427,6 +470,7 @@ class JointTrajectoryBuffer:
             f"owner={owner}",
             f"command_id={self.command_id}",
             f"segment={self.segment}",
+            f"trajectory_contract_id={self.contract_id}",
             f"trajectory_received_at={_format_optional(self.received_at)}",
             f"trajectory_phase={self.phase}",
             f"endpoint_position_error={_format_optional(self.endpoint_position_error_rad)}",
@@ -515,6 +559,7 @@ def format_execution_status(
     trajectory: JointTrajectoryBuffer,
     gripper: GripperCommandBuffer,
     *,
+    executor_epoch: str,
     physical_owner: str,
     measured_aperture: float,
 ) -> str:
@@ -523,8 +568,10 @@ def format_execution_status(
     measured = float(measured_aperture)
     if not math.isfinite(measured) or measured < 0.0:
         raise ValueError("measured aperture must be finite and non-negative")
+    epoch = _identity_token(executor_epoch, "executor_epoch")
     return ";".join((
         *trajectory.status_fields(physical_owner),
+        f"executor_epoch={epoch}",
         *gripper.status_fields(),
         f"aperture={measured:.4f}",
     ))
