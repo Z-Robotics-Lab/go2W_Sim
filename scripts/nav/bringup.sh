@@ -32,7 +32,11 @@ ISAAC_TIMEOUT_S="${GO2W_ISAAC_TIMEOUT_S:-600}"  # Isaac 就绪硬上限
 # 切换记录: 2026-07-07 载荷轮 model_5495 落地(⑤门形修正后全门过),见 docs/sim-plan.md
 # 切换记录: 2026-07-13 yaw 轮变体A model_7494 曾短暂落地(G2 部署面 FAIL 回滚,见 retrain-yaw.md)(track_ang_vel_z_exp.weight=1.75;G1 达 0.9857rad/s
 #   rel_err0.2959,G3① 零指令漂移 0.0010m/s,G3②③全过;E-T battery 对跑证重训之功),见 docs/retrain-yaw.md
-POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_5495/model_5495.pt}"
+# 切换记录: 2026-07-14 G2 正式重测 PASS(预注册协议,门槛未回调)——wz=0.5 实测0.3668rad/s(门
+#   ≥0.35)、wz=1.0 实测0.9583rad/s(门≥0.60)、两档0摔;model_7494 复位默认。前次G2 FAIL(drill2_
+#   0728)归因待定(僵尸DDS嫌疑最大,已按流程清除;/manip/cmd_vel 直控面同日 obs 对拍未见输入异常,
+#   obs_diff.md),本轮未复现断崖,见 var/evidence/m1/g2_retest.md(z-manip 仓)。
+POLICY="${GO2W_POLICY:-/workspace/go2w/assets/policies/go2w_flat_payload_yaw/model_7494.pt}"
 
 _phase() {  # 记录当前阶段（覆盖写，供外部/事后诊断读）
   mkdir -p "$REPO/logs"
