@@ -105,8 +105,9 @@ def camera_update_elapsed_dt(physics_dt: float, stride: int) -> float:
     """Return the simulation time covered by one strided camera update.
 
     IsaacLab sensors advance their internal clock only by the ``dt`` passed to
-    ``SensorBase.update``.  Callers that update a camera every ``stride``
-    physics ticks must therefore pass the full elapsed interval, not one tick.
+    ``SensorBase.update``.  The caller intentionally disables SensorBase's
+    float32 period gate and schedules frames by integer physics ticks, but still
+    passes the full elapsed interval so that internal simulated time is honest.
     """
     if not math.isfinite(physics_dt) or physics_dt <= 0.0:
         raise ValueError("physics_dt must be finite and positive")
@@ -119,7 +120,7 @@ def require_new_camera_frame(
     previous_frame: int | None,
     current_frame: int,
 ) -> int:
-    """Reject a ROS image cycle that did not render a new Isaac frame."""
+    """Reject a ROS image cycle that did not acquire a new Isaac camera buffer."""
     if isinstance(current_frame, bool) or not isinstance(current_frame, int):
         raise ValueError("current camera frame must be an integer")
     if current_frame <= 0:

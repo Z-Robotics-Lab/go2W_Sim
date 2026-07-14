@@ -5,6 +5,8 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SIM_SCRIPTS = ROOT / "scripts/sim"
@@ -176,10 +178,37 @@ class PiperExecutionContractTest(unittest.TestCase):
             source,
         )
         self.assertIn(
-            "math.isclose(camera_update_dt, CAM_UPDATE_PERIOD,", source)
+            "math.isclose(camera_update_dt, CAM_PUBLISH_PERIOD,", source)
         self.assertIn(
             "d435.update(camera_update_dt, force_recompute=True)", source)
         self.assertNotIn("d435.update(physics_dt)", source)
+
+    def test_camera_internal_gate_cannot_drop_long_running_strided_updates(self):
+        source = WAREHOUSE.read_text(encoding="utf-8")
+        self.assertIn("CAM_SENSOR_UPDATE_PERIOD = 0.0", source)
+        self.assertIn("update_period=CAM_SENSOR_UPDATE_PERIOD", source)
+        self.assertNotIn("update_period=CAM_PUBLISH_PERIOD", source)
+
+        def missed_updates(update_period: float, cycles: int = 3000) -> list[int]:
+            # Exact model of SensorBase's float32 timestamp gate.  The legacy
+            # 0.1 s gate first fails at cycle 319 despite 0.1 s update calls.
+            timestamp = np.float32(0.0)
+            timestamp_last_update = np.float32(0.0)
+            misses = []
+            for cycle in range(cycles):
+                timestamp = np.float32(timestamp + np.float32(0.1))
+                elapsed = np.float32(
+                    timestamp - timestamp_last_update + np.float32(1.0e-6))
+                if elapsed >= np.float32(update_period):
+                    timestamp_last_update = timestamp
+                else:
+                    misses.append(cycle)
+            return misses
+
+        legacy_misses = missed_updates(0.1)
+        self.assertEqual(legacy_misses[0], 319)
+        self.assertGreater(len(legacy_misses), 400)
+        self.assertEqual(missed_updates(0.0), [])
 
     def test_camera_update_elapsed_dt_rejects_invalid_clock_inputs(self):
         for physics_dt, stride in ((0.0, 10), (float("nan"), 10), (0.01, 0),

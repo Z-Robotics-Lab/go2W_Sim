@@ -72,15 +72,19 @@ if _os.environ.get("GO2W_VIEWPORT_SLIM", "0") == "1":
     _vst.set("/app/viewport/grid/enabled", False)
     print("[NAV] VIEWPORT_SLIM on: main viewport 640x360, grid off", flush=True)
 
-# C2 D435 降频（GO2W_CAM_SLOW=1）：常量驱动，三处一致（CameraCfg update_period、
-# 相机 update 节拍、发布节拍）。10Hz->2Hz（每 50 物理步一帧）。分辨率不动（640x480）。
+# C2 D435 降频（GO2W_CAM_SLOW=1）：相机 update/发布都由整数物理步调度。
+# 10Hz->2Hz（每 50 物理步一帧）。分辨率不动（848x480）。
 # D435 图像仅供 RViz 显示；SLAM 只吃雷达；画质/帧率降级可接受（文件头注释已明示）。
 # 保持"仅发布帧才 update"模式不变（每步 update 会打乱物理指令管线，实测轮速恒 0，坑）。
 _CAM_SLOW = _os.environ.get("GO2W_CAM_SLOW", "0") == "1"
 CAM_STRIDE = 50 if _CAM_SLOW else 10          # 物理步/相机帧：10Hz(=10) or 2Hz(=50)
-CAM_UPDATE_PERIOD = 0.5 if _CAM_SLOW else 0.1  # CameraCfg update_period 与 stride 自洽
+CAM_PUBLISH_PERIOD = 0.5 if _CAM_SLOW else 0.1
+# SensorBase 的时间缓冲为 float32；用 0.1/0.5 做内部门限会在长跑后因
+# 累计误差隔次才过门。置 0 表示每次显式 update 都可取新帧；真实采样节拍
+# 仍唯一由 CAM_STRIDE 决定，不会把相机 update 塞回每个物理步。
+CAM_SENSOR_UPDATE_PERIOD = 0.0
 if _CAM_SLOW:
-    print("[NAV] CAM_SLOW on: D435 10Hz->2Hz (stride 50, update_period 0.5)", flush=True)
+    print("[NAV] CAM_SLOW on: D435 10Hz->2Hz (stride 50, publish_period 0.5)", flush=True)
 
 # C3 DLSS 单项归因（GO2W_DLSS_PERF=1）：拆坑33 的捆——只设 DLSS 两项，四个光追特效
 # 开关(reflections/indirectDiffuse/AO/subsurface)保持默认开。检验假设：伤雷达的是光追
@@ -470,7 +474,8 @@ def main():
     # 仅改 W → fx=fy=617.6px、HFOV≈69°（对齐 D435 标称）。内参源在 wrist_camera.py。
     d435 = Camera(CameraCfg(
         prim_path="/World/Robot/d435_link/d435_cam",
-        update_period=CAM_UPDATE_PERIOD, height=wc.CAM_HEIGHT, width=wc.CAM_WIDTH,
+        update_period=CAM_SENSOR_UPDATE_PERIOD,
+        height=wc.CAM_HEIGHT, width=wc.CAM_WIDTH,
         data_types=["rgb", "distance_to_image_plane"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=wc.CAM_FOCAL_LENGTH_MM,
@@ -887,12 +892,14 @@ def main():
     clock_msg = Clock()
     physics_dt = sim.get_physics_dt()
     camera_update_dt = wc.camera_update_elapsed_dt(physics_dt, CAM_STRIDE)
-    if not math.isclose(camera_update_dt, CAM_UPDATE_PERIOD,
+    if not math.isclose(camera_update_dt, CAM_PUBLISH_PERIOD,
                         rel_tol=0.0, abs_tol=1.0e-9):
         raise RuntimeError(
             "camera timing contract mismatch: "
             f"physics_dt={physics_dt} stride={CAM_STRIDE} "
-            f"elapsed={camera_update_dt} update_period={CAM_UPDATE_PERIOD}")
+            f"elapsed={camera_update_dt} "
+            f"publish_period={CAM_PUBLISH_PERIOD} "
+            f"sensor_update_period={CAM_SENSOR_UPDATE_PERIOD}")
     last_published_camera_frame = None
     stale_camera_cycles = 0
     # 【3】主循环自愈守卫状态（坑40）：PAUSE→自动 play；STOP→响亮退出；限速防与人工暂停拉锯。
@@ -1252,9 +1259,10 @@ def main():
             jc.position = torch.cat([eff_arm_tgt, gripper_tgt]).tolist()
             jc_pub.publish(jc)
 
-        # 相机 update 只在发布帧做：每步 update 会打乱物理指令写入管线
-        # （实测开相机后轮速目标恒为 0、施加力矩变刹车向）。必须传入 stride
-        # 覆盖的完整仿真时间；否则 ROS 头为 10Hz、实际渲染仅 1Hz，会重复发布旧帧。
+        # sim.step(render=True) 已在本块前产生当前 RTX 帧。相机只在发布拍
+        # 拉取缓冲：每物理步 update 曾实测打乱轮控指令管线。传入 stride
+        # 覆盖的完整仿真时间，仅用于保持 SensorBase 内部时钟语义；采样
+        # 节拍由 CAM_STRIDE 决定，SensorBase 浮点时间门已显式禁用。
         if step % CAM_STRIDE == 0:
             d435.update(camera_update_dt, force_recompute=True)
 
