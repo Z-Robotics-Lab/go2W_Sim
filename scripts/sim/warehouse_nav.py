@@ -102,6 +102,8 @@ from std_msgs.msg import String  # noqa: E402
 
 # Z-Manip M0：腕相机口径 + 三姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
 import wrist_camera as wc  # noqa: E402
+# P2.1 IMU raw 路线帧契约（纯助手，无 isaac 依赖；rotate 路线不调用，零开销）。
+import sensor_frame_contract  # noqa: E402
 
 # tf2_ros 可选（Jazzy 标配；缺失不应拖垮整条导航拉起——软降级 + 响亮告警，不静默吞）。
 try:
@@ -204,6 +206,20 @@ IMU_SETTLE_S = float(_os.environ.get("GO2W_IMU_SETTLE_S", "1.5"))
 # Ry(+20°) wxyz 四元数（w=cos10°, y=sin10°）：发布 orientation 用 q_pub=Q_RY20⊗q_imu_raw，
 # 使 arise mapping 模式 init（laserMapping.cpp:487 左乘 q_ext.inverse()）还原雷达真实姿态。
 Q_RY20 = torch.tensor([[0.9848077530122081, 0.0, 0.17364817766693033, 0.0]])
+# IMU 帧路线开关（P2.1，部署 A/B 基建，CEO 已批 2026-07-13）。发布点单点二选一、互斥，
+# 绝不双补偿（否则自洽水平图变真 20°/40° 倾斜）。
+#   rotate（默认=main 现状，一字不动）：sim 主动把 acc/gyr 精确旋到躯干水平系 + orientation
+#     = Ry20⊗q_imu_raw，lidar frameId="sensor"。navstack 侧 imu_laser_rotation_offset=[0,20,0]
+#     声明"雷达相对水平 IMU 前倾 20°"；sim 已预水平化 IMU，两处相消得水平图（A线实测 ~1.7°）。
+#   raw（移植 codex sensor_frame_contract.py）：acc/gyr 原样透传（留在 20° 斜的传感器系）+
+#     orientation=q_imu_raw，lidar frameId="mid360_raw"，靠 ARISE 下游自重力对齐。此路线要求
+#     navstack 侧 imu_laser_rotation_offset 变为单位/0（IMU 与雷达同斜，无需二次旋转）——由
+#     sync_navstack_files.sh 在同一 env 驱动下生成期决定，运行期冻结（见 docs/stability-gates.md）。
+IMU_ROUTE = _os.environ.get("GO2W_IMU_ROUTE", "rotate")
+if IMU_ROUTE not in ("rotate", "raw"):
+    raise SystemExit(
+        f"[NAV] 未知 GO2W_IMU_ROUTE={IMU_ROUTE!r}；可选：rotate|raw")
+LIDAR_FRAME_ID = "sensor" if IMU_ROUTE == "rotate" else "mid360_raw"
 # Mid-360 出厂标定: imu^T_laser=[-0.011,-0.02329,0.04412] -> IMU 在雷达系的位置取反
 IMU_OFFSET_IN_LIDAR = (0.011, 0.02329, -0.04412)
 
@@ -354,7 +370,9 @@ def setup_lidar_ros2():
             og.Controller.Keys.SET_VALUES: [
                 ("lidar_pub.inputs:renderProductPath", rp.path),
                 ("lidar_pub.inputs:topicName", "/lidar/points"),
-                ("lidar_pub.inputs:frameId", "sensor"),
+                # frameId 由 IMU 路线开关决定（P2.1）：rotate="sensor"(main 现状)；
+                # raw="mid360_raw"（ARISE 下游自对齐，见 IMU_ROUTE 注释）。
+                ("lidar_pub.inputs:frameId", LIDAR_FRAME_ID),
                 ("lidar_pub.inputs:type", "point_cloud"),
                 ("lidar_pub.inputs:fullScan", False),  # 增量模式：每拍点云=该拍扫过的方位片，
                 # 到达即时序（坑34：fullScan 整帧的点序非时序，索引铺 offset_time
@@ -1158,14 +1176,24 @@ def main():
         #    站定机体（旧 init 窗含沉降瞬态，重力多偏 -1.35°）；真机开机时本来就已站稳。
         if sim_t["now"] >= IMU_SETTLE_S:
             q_imu = imu.data.quat_w                  # (1,4) wxyz：imu prim 世界姿态
-            q_trunk = robot.data.root_quat_w[0:1]    # (1,4) wxyz：躯干世界姿态
-            f_imu = imu.data.lin_acc_b + math_utils.quat_apply_inverse(
-                q_imu, torch.tensor([[0.0, 0.0, 9.81]], device=q_imu.device))  # 比力（prim 系）
-            acc = math_utils.quat_apply_inverse(
-                q_trunk, math_utils.quat_apply(q_imu, f_imu))[0].tolist()      # 躯干系=水平IMU
-            gyr = math_utils.quat_apply_inverse(
-                q_trunk, math_utils.quat_apply(q_imu, imu.data.ang_vel_b))[0].tolist()
-            quat = math_utils.quat_mul(Q_RY20.to(q_imu.device), q_imu)[0].tolist()
+            if IMU_ROUTE == "rotate":
+                # ---- rotate 路线（默认=main 现状，一字不动）----
+                q_trunk = robot.data.root_quat_w[0:1]    # (1,4) wxyz：躯干世界姿态
+                f_imu = imu.data.lin_acc_b + math_utils.quat_apply_inverse(
+                    q_imu, torch.tensor([[0.0, 0.0, 9.81]], device=q_imu.device))  # 比力（prim 系）
+                acc = math_utils.quat_apply_inverse(
+                    q_trunk, math_utils.quat_apply(q_imu, f_imu))[0].tolist()      # 躯干系=水平IMU
+                gyr = math_utils.quat_apply_inverse(
+                    q_trunk, math_utils.quat_apply(q_imu, imu.data.ang_vel_b))[0].tolist()
+                quat = math_utils.quat_mul(Q_RY20.to(q_imu.device), q_imu)[0].tolist()
+            else:
+                # ---- raw 路线（P2.1，移植 codex sensor_frame_contract.py）----
+                # acc/gyr 原样透传（留在 20° 斜的传感器系，含重力），orientation=q_imu_raw；
+                # ARISE 下游自重力对齐。绝不在此再乘 Ry20/躯干旋转（否则双补偿）。
+                acc_raw = imu.data.lin_acc_b[0].tolist()
+                gyr_raw = imu.data.ang_vel_b[0].tolist()
+                acc, gyr = sensor_frame_contract.to_navigation_imu(acc_raw, gyr_raw)
+                quat = q_imu[0].tolist()
             imu_msg.header.stamp.sec, imu_msg.header.stamp.nanosec = sec, nsec
             imu_msg.header.frame_id = "imu"
             imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z = acc

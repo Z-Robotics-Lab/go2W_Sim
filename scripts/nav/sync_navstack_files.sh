@@ -15,9 +15,20 @@ done
 SLAM_CALIB_DST="$NAV/src/slam/arise_slam_mid360/config/livox/livox_mid360_calibration.yaml"
 if [ -d "$(dirname "$SLAM_CALIB_DST")" ]; then
   cp "$HERE/livox_mid360_calibration.yaml" "$SLAM_CALIB_DST"
+  # P2.1 IMU 路线的 navstack 侧变体（生成期决定，运行期冻结；同一 GO2W_IMU_ROUTE 驱动）：
+  #   rotate（默认）：sim 已把 IMU 预水平化 -> 保留 imu_laser_rotation_offset=[0,20,0]
+  #     （"雷达相对水平 IMU 前倾 20°"），两处相消得水平图。真源文件原样，不改。
+  #   raw：sim 原样透传斜 20° 的 IMU + laser（两者同斜、无相对旋转）-> 外参必须归零
+  #     imu_laser_rotation_offset=[0,0,0]，否则 ARISE 会在已同斜的两传感器间再补 20° = 双补偿。
+  #     用 sed 就地把度数 20.0 -> 0.0（仅此一 offset 段的第二个分量，锚点 data: [0.0, 20.0, 0.0]）。
+  if [ "${GO2W_IMU_ROUTE:-rotate}" = "raw" ]; then
+    sed -i 's/data: \[0\.0, 20\.0, 0\.0\] # 雷达相对水平 IMU/data: [0.0, 0.0, 0.0] # RAW 路线：IMU 与雷达同斜/' \
+      "$SLAM_CALIB_DST"
+    echo "[sync] GO2W_IMU_ROUTE=raw -> imu_laser_rotation_offset 归零（防双补偿）"
+  fi
   # 主配置（含 sensor_mount_pitch_deg=20：odom/TF 车体系化，A线第二层修复 2026-07-08）
   cp "$HERE/livox_mid360.yaml" "$NAV/src/slam/arise_slam_mid360/config/livox_mid360.yaml"
-  echo "[sync] SLAM 外参+主配置 -> $NAV/src/slam/arise_slam_mid360/config/"
+  echo "[sync] SLAM 外参+主配置 -> $NAV/src/slam/arise_slam_mid360/config/ (IMU_ROUTE=${GO2W_IMU_ROUTE:-rotate})"
 else
   echo "[sync] WARN: SLAM config 目录不存在（refs 未克隆？）跳过外参同步" >&2
 fi
