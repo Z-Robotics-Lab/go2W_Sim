@@ -110,6 +110,10 @@ POLICY_EVERY = max(1, int(round(EVAL_PHYS_HZ / 50.0)))
 SPAWN_Z = 0.42               # match warehouse_nav.py init height
 TRANSIENT_S = 0.5            # discard this much spin-up before steady-state averaging
 
+# M1 断崖取证：模块级 sim 时钟（评估链无运行时钟）。settle/run_segment 每物理步 +PHYS_DT，
+# ObsDumper 用它做限频与 sim_t 打戳，与 live 链（用 nav 的 sim_t）语义同源。
+SIM_CLOCK = {"now": 0.0}
+
 URDF_LOADED = "/workspace/go2w/assets/urdf/go2w_sensored.urdf"
 URDF_BARE = "/workspace/go2w/assets/urdf/go2w_bare.urdf"
 URDF_PATH = args_cli.urdf or (URDF_LOADED if args_cli.body == "loaded" else URDF_BARE)
@@ -199,30 +203,45 @@ def reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy):
         policy.last_action = torch.zeros_like(policy.last_action)
 
 
-def apply_policy(robot, policy, default_pos, cmd):
+def apply_policy(robot, policy, default_pos, cmd, dumper=None):
     """One 50 Hz policy application: hold arm/gripper at default, override legs+wheels.
 
     Mirrors warehouse_nav.py exactly: default_pos is written FIRST so the PiPER arm/gripper
     hold their default pose (payload stays mounted, not limp), then policy legs/wheels override.
+
+    dumper (M1 断崖取证): 非 None 则在 act() 前后旁路记 shim 的 obs57/act16（红线不改）。
     """
     robot.set_joint_position_target(default_pos)  # arm/gripper hold
+    # M1 取证两段式：obs 在 act() 之前采（此刻 last_action=本拍旧值，与 live 链逐位对齐），
+    # act 在 act() 之后补。红线 go2w_policy.py 不改。
+    _pending = dumper.begin(policy, cmd[0], cmd[1], cmd[2]) if dumper else None
     leg_ids, leg_tgt, wheel_ids, wheel_vel = policy.act(*cmd)
+    if dumper:
+        dumper.finish(_pending, policy.last_action)
     robot.set_joint_position_target(leg_tgt, joint_ids=leg_ids)
     robot.set_joint_velocity_target(wheel_vel, joint_ids=wheel_ids)
 
 
-def settle(sim, robot, policy, default_pos, steps=100):
-    """Let the robot settle standing (zero cmd) before a segment; not measured."""
+def settle(sim, robot, policy, default_pos, steps=100, dumper=None):
+    """Let the robot settle standing (zero cmd) before a segment; not measured.
+
+    dumper: settle 阶段一般不记（cmd=0、非测量段）；默认不传。若传则也记，供分析起手态。
+    """
     for i in range(steps):
         if i % POLICY_EVERY == 0:
-            apply_policy(robot, policy, default_pos, (0.0, 0.0, 0.0))
+            apply_policy(robot, policy, default_pos, (0.0, 0.0, 0.0), dumper=dumper)
         robot.write_data_to_sim()
         sim.step()
         robot.update(PHYS_DT)
+        SIM_CLOCK["now"] += PHYS_DT
 
 
-def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duration_s, fall_deg):
-    """Drive the policy at a fixed cmd for duration_s; return GT trajectory stats."""
+def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duration_s,
+                fall_deg, dumper=None):
+    """Drive the policy at a fixed cmd for duration_s; return GT trajectory stats.
+
+    dumper (M1 断崖取证): 非 None 则每 policy 拍旁路记 shim obs57/act16（红线不改）。
+    """
     n_steps = int(round(duration_s / PHYS_DT))
     # discard the first TRANSIENT_S of transient before averaging steady-state signals
     # (yaw rate / speed spin-up). Yaw command tracking (G1) reads the steady window only.
@@ -235,10 +254,12 @@ def run_segment(sim, robot, policy, default_pos, cmd_vx, cmd_vy, cmd_wz, duratio
     yaw_rates = []          # signed GT yaw rate (rad/s), steady window only
     for i in range(n_steps):
         if i % POLICY_EVERY == 0:
-            apply_policy(robot, policy, default_pos, (cmd_vx, cmd_vy, cmd_wz))
+            apply_policy(robot, policy, default_pos, (cmd_vx, cmd_vy, cmd_wz),
+                         dumper=dumper)
         robot.write_data_to_sim()
         sim.step()
         robot.update(PHYS_DT)
+        SIM_CLOCK["now"] += PHYS_DT
         v = robot.data.root_lin_vel_w[0, :2]
         speeds.append(float(torch.linalg.norm(v).item()))
         q = robot.data.root_quat_w[0].tolist()
@@ -340,6 +361,11 @@ def main():
     from go2w_policy import Go2WPolicy
     policy = Go2WPolicy(args_cli.policy, robot, DEVICE)
 
+    # M1 断崖取证：GO2W_OBS_DUMP 存在才启用（旁路、只读）。评估链标 chain="eval"，
+    # 用模块 SIM_CLOCK 打戳/限频，与 live 链（chain="live"）对拍。未设=零开销。
+    from obs_dump import ObsDumper
+    obs_dumper = ObsDumper.maybe("eval", lambda: SIM_CLOCK["now"])
+
     birth_root = robot.data.default_root_state.clone()
     birth_jpos = robot.data.default_joint_pos.clone()
     birth_jvel = robot.data.default_joint_vel.clone()
@@ -413,7 +439,9 @@ def main():
     for wz in (1.0, 1.4):
         reset_to_birth(robot, birth_root, birth_jpos, birth_jvel, policy)
         settle(sim, robot, policy, default_pos, steps=100)
-        r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, wz, 5.0, args_cli.fall_deg)
+        # 3b 是纯 wz 断崖对拍面：把 dumper 喂进本段（settle 不记，只记测量段）。
+        r = run_segment(sim, robot, policy, default_pos, 0.0, 0.0, wz, 5.0,
+                        args_cli.fall_deg, dumper=obs_dumper)
         achieved = r["yaw_rate_abs_rad_s"]
         rel_err = abs(achieved - wz) / wz if wz > 0 else 0.0
         write_row(args_cli.out, {**meta, "segment": f"3b_wz_track_{wz}",
@@ -438,6 +466,8 @@ def main():
                                  "pass": (not r["fell"]) and (rel_err <= args_cli.track_tol)})
 
     print("[ACCEPT] suite complete.", flush=True)
+    if obs_dumper:
+        obs_dumper.close()
     simulation_app.close()
 
 

@@ -704,6 +704,10 @@ def main():
         from go2w_policy import Go2WPolicy
         policy = Go2WPolicy(args_cli.policy, robot, args_cli.device or "cuda:0")
     vy_cmd = {"v": 0.0}
+    # M1 断崖取证（GO2W_OBS_DUMP 存在才启用；未设=零开销、零行为改变，纯旁路）。
+    # 记 shim 每拍实际吃到的 57 维 obs + 吐出的 16 维 act，供 live vs 评估态对拍。
+    from obs_dump import ObsDumper
+    obs_dumper = ObsDumper.maybe("live", lambda: sim_t["now"])
 
     # ===== 零指令死区（孪生保真度补丁，CEO 已批）=====
     # 病理（DEBUG.md E0 实锤）：部署策略在零/小指令区永不真正站定——cmd(0,0,0) 下
@@ -871,8 +875,16 @@ def main():
                         standstill_ramp -= 1
                     else:
                         scale = 1.0
+                    # M1 取证：obs 在 act() 之前采（此刻 last_action=本拍旧值，逐位对齐 shim）；
+                    # act 在 act() 之后补。两段式保证 dump 的 obs = shim 真喂进网络的 obs。
+                    _dump_pending = (obs_dumper.begin(
+                        policy, vx * scale, vy * scale, wz * scale,
+                        extra={"scale": round(scale, 4), "step": step})
+                        if obs_dumper else None)
                     leg_ids, leg_tgt, wheel_ids_p, wheel_vel = policy.act(
                         vx * scale, vy * scale, wz * scale)
+                    if obs_dumper:
+                        obs_dumper.finish(_dump_pending, policy.last_action)
                     policy_cache["legs"] = (leg_ids, leg_tgt)
                     policy_cache["wheels"] = (wheel_ids_p, wheel_vel)
             robot.set_joint_position_target(default_pos)  # 臂/夹爪保持
@@ -1179,6 +1191,8 @@ def main():
             print(f"[POSE] step={step} root=({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})")
 
     # 收尾照旧；stopped=True 时响亮死给 status.sh/监管看，绝不再留 527% CPU 焊死僵尸。
+    if obs_dumper:
+        obs_dumper.close()
     node.destroy_node()
     rclpy.shutdown()
     simulation_app.close()
