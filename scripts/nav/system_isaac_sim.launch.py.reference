@@ -25,6 +25,7 @@ def generate_launch_description():
   autonomySpeed = LaunchConfiguration('autonomySpeed')
   maxAccel = LaunchConfiguration('maxAccel')
   maxYawRate = LaunchConfiguration('maxYawRate')
+  stopDisThre = LaunchConfiguration('stopDisThre')
   goalReachedThreshold = LaunchConfiguration('goalReachedThreshold')
   obstacleHeightThre = LaunchConfiguration('obstacleHeightThre')
 
@@ -62,6 +63,10 @@ def generate_launch_description():
   declare_maxYawRate = DeclareLaunchArgument(
     'maxYawRate', default_value=os.environ.get('NAV_MAX_YAW_RATE_DEG_S', '15.0'),
     description='legacy degrees/s yaw cap')
+  declare_stopDisThre = DeclareLaunchArgument(
+    'stopDisThre',
+    default_value=os.environ.get('PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD', '0.10'),
+    description='pathFollower stop distance in metres; must remain below arrival threshold')
   declare_goalReachedThreshold = DeclareLaunchArgument(
     'goalReachedThreshold',
     default_value=os.environ.get('LOCAL_PLANNER_GOAL_REACHED_THRESHOLD', '0.15'), description='m')
@@ -81,6 +86,7 @@ def generate_launch_description():
       'autonomySpeed': autonomySpeed,
       'maxAccel': maxAccel,
       'maxYawRate': maxYawRate,
+      'stopDisThre': stopDisThre,
       'goalReachedThreshold': goalReachedThreshold,
       'obstacleHeightThre': obstacleHeightThre,
       'use_sim_time': 'true',
@@ -214,6 +220,7 @@ def generate_launch_description():
   ld.add_action(declare_autonomySpeed)
   ld.add_action(declare_maxAccel)
   ld.add_action(declare_maxYawRate)
+  ld.add_action(declare_stopDisThre)
   ld.add_action(declare_goalReachedThreshold)
   ld.add_action(declare_obstacleHeightThre)
 

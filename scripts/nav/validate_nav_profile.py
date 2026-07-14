@@ -15,6 +15,8 @@ import yaml
 MAX_SPEED_MPS = 1.0
 MAX_COMMAND_RAMP_COEFFICIENT = 2.0
 MAX_YAW_RATE_DEG_S = 60.0
+MIN_STOP_DISTANCE_M = 0.02
+MAX_STOP_DISTANCE_M = 0.15
 MIN_GOAL_THRESHOLD_M = 0.02
 MAX_GOAL_THRESHOLD_M = 0.20
 MIN_OBSTACLE_HEIGHT_M = 0.05
@@ -92,6 +94,7 @@ def validate_profile(
     bridge_speed: float,
     command_ramp_coefficient: float,
     yaw_rate_deg_s: float,
+    stop_distance: float,
     goal_threshold: float,
     obstacle_height: float,
     robot_config: str,
@@ -103,6 +106,7 @@ def validate_profile(
         bridge_speed,
         command_ramp_coefficient,
         yaw_rate_deg_s,
+        stop_distance,
         goal_threshold,
         obstacle_height,
     )
@@ -122,10 +126,20 @@ def validate_profile(
         raise ValueError(
             f"yaw rate exceeds {MAX_YAW_RATE_DEG_S:.1f} deg/s safety cap"
         )
+    if not MIN_STOP_DISTANCE_M <= stop_distance <= MAX_STOP_DISTANCE_M:
+        raise ValueError(
+            "pathFollower stop distance must be in "
+            f"[{MIN_STOP_DISTANCE_M:.2f}, {MAX_STOP_DISTANCE_M:.2f}] m"
+        )
     if not MIN_GOAL_THRESHOLD_M <= goal_threshold < MAX_GOAL_THRESHOLD_M:
         raise ValueError(
             "arrival threshold must be in "
             f"[{MIN_GOAL_THRESHOLD_M:.2f}, {MAX_GOAL_THRESHOLD_M:.2f}) m"
+        )
+    if stop_distance >= goal_threshold:
+        raise ValueError(
+            "pathFollower stop distance must be strictly below the localPlanner "
+            "arrival threshold"
         )
     if not MIN_OBSTACLE_HEIGHT_M <= obstacle_height <= MAX_OBSTACLE_HEIGHT_M:
         raise ValueError(
@@ -152,6 +166,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--bridge-speed", type=float, required=True)
     parser.add_argument("--command-ramp", type=float, required=True)
     parser.add_argument("--yaw-rate-deg-s", type=float, required=True)
+    parser.add_argument("--stop-distance", type=float, required=True)
     parser.add_argument("--goal-threshold", type=float, required=True)
     parser.add_argument("--obstacle-height", type=float, required=True)
     parser.add_argument("--robot-config", required=True)
@@ -168,6 +183,7 @@ def main() -> int:
             bridge_speed=args.bridge_speed,
             command_ramp_coefficient=args.command_ramp,
             yaw_rate_deg_s=args.yaw_rate_deg_s,
+            stop_distance=args.stop_distance,
             goal_threshold=args.goal_threshold,
             obstacle_height=args.obstacle_height,
             robot_config=args.robot_config,

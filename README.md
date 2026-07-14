@@ -75,6 +75,13 @@ waypoint → FAR/local planner → cmd_vel → 差速轮速 → Go2W 在 full_wa
 ARISE 用静止重力对两路数据施加同一水平化旋转。二者的相对外参为零，桥与
 `imu_laser_rotation_offset` 均不得再次叠加 20°。
 
+Office 移动操作默认使用 `GO2W_NAV_PROFILE=manipulation_tracking`。该 profile 在
+sim/real 共用的 launch child 最终合并层设置 `pathFollower.stopDisThre=0.10 m`，
+并保持 `stopDisThre < localPlanner.goalReachedThreshold=0.15 m`；启动校验同时将
+stop distance 显式限制在 `[0.02, 0.15] m`，避免 follower 在 planner 发布
+`/goal_reached` 之前停车。仅可通过 `GO2W_NAV_STOP_DISTANCE_THRESHOLD` 覆盖，
+且宿主、容器 supervisor 和运行时参数门会共同拒绝越界或不一致的配置。
+
 ```bash
 # 1) Isaac 侧（传感器桥：/lidar/points /imu/data /clock 出、/cmd_vel 入）
 docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=184 \

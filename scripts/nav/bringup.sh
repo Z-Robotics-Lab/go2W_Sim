@@ -40,12 +40,14 @@ case "$GO2W_NAV_PROFILE" in
     _profile_autonomy_speed=0.60
     _profile_max_accel=1.50
     _profile_max_yaw_rate_deg_s=40.0
+    _profile_stop_distance_threshold=0.10
     ;;
   manipulation_tracking)
     _profile_max_speed=0.25
     _profile_autonomy_speed=0.20
     _profile_max_accel=0.35
     _profile_max_yaw_rate_deg_s=15.0
+    _profile_stop_distance_threshold=0.10
     ;;
   *)
     # Keep teardown available even if the caller misspelled an up-only profile.
@@ -54,12 +56,14 @@ case "$GO2W_NAV_PROFILE" in
     _profile_autonomy_speed=0.60
     _profile_max_accel=1.50
     _profile_max_yaw_rate_deg_s=40.0
+    _profile_stop_distance_threshold=0.10
     ;;
 esac
 NAV_MAX_SPEED="${GO2W_NAV_MAX_SPEED:-$_profile_max_speed}"
 NAV_AUTONOMY_SPEED="${GO2W_NAV_AUTONOMY_SPEED:-$_profile_autonomy_speed}"
 NAV_MAX_ACCEL="${GO2W_NAV_MAX_ACCEL:-$_profile_max_accel}"
 NAV_MAX_YAW_RATE_DEG_S="${GO2W_NAV_MAX_YAW_RATE_DEG_S:-$_profile_max_yaw_rate_deg_s}"
+PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD="${GO2W_NAV_STOP_DISTANCE_THRESHOLD:-$_profile_stop_distance_threshold}"
 NAV_SPEED="$NAV_AUTONOMY_SPEED"
 NAV_ROBOT_CONFIG="${GO2W_NAV_ROBOT_CONFIG:-${NAV_ROBOT_CONFIG:-unitree/unitree_go2}}"
 LOCAL_PLANNER_GOAL_REACHED_THRESHOLD="${LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15}"
@@ -89,6 +93,7 @@ _validate_nav_profile() {
     --bridge-speed "$NAV_SPEED" \
     --command-ramp "$NAV_MAX_ACCEL" \
     --yaw-rate-deg-s "$NAV_MAX_YAW_RATE_DEG_S" \
+    --stop-distance "$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD" \
     --goal-threshold "$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD" \
     --obstacle-height "$LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE" \
     --robot-config "$NAV_ROBOT_CONFIG" \
@@ -141,20 +146,25 @@ _local_planner_contract() {
       "$(value /pathFollower autonomySpeed)" \
       "$(value /pathFollower maxAccel)" \
       "$(value /pathFollower maxYawRate)" \
+      "$(value /pathFollower stopDisThre)" \
       "$NAV_MAX_SPEED" "$NAV_AUTONOMY_SPEED" "$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD" \
       "$LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE" "$NAV_MAX_ACCEL" \
-      "$NAV_MAX_YAW_RATE_DEG_S" <<"PY"
+      "$NAV_MAX_YAW_RATE_DEG_S" "$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD" <<"PY"
 import math
 import sys
 
-actual = tuple(map(float, sys.argv[1:9]))
+actual = tuple(map(float, sys.argv[1:10]))
 expected = tuple(map(float, (
-    sys.argv[9], sys.argv[10], sys.argv[11], sys.argv[12],
-    sys.argv[9], sys.argv[10], sys.argv[13], sys.argv[14],
+    sys.argv[10], sys.argv[11], sys.argv[12], sys.argv[13],
+    sys.argv[10], sys.argv[11], sys.argv[14], sys.argv[15], sys.argv[16],
 )))
 if not all(math.isfinite(value) for value in (*actual, *expected)):
     raise SystemExit(1)
-if float(sys.argv[11]) <= 0.0 or float(sys.argv[11]) >= 0.20:
+goal_threshold = float(sys.argv[12])
+stop_distance = float(sys.argv[16])
+if goal_threshold <= 0.0 or goal_threshold >= 0.20:
+    raise SystemExit(1)
+if stop_distance <= 0.0 or stop_distance > 0.15 or stop_distance >= goal_threshold:
     raise SystemExit(1)
 if any(abs(left - right) > 1e-9 for left, right in zip(actual, expected)):
     raise SystemExit(1)
@@ -173,6 +183,7 @@ _runtime_dds_matches() {
     "NAV_AUTONOMY_SPEED=$NAV_AUTONOMY_SPEED" \
     "NAV_MAX_ACCEL=$NAV_MAX_ACCEL" \
     "NAV_MAX_YAW_RATE_DEG_S=$NAV_MAX_YAW_RATE_DEG_S" \
+    "PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD=$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD" \
     "NAV_SPEED=$NAV_SPEED" \
     "NAV_ROBOT_CONFIG=$NAV_ROBOT_CONFIG" \
     "LOCAL_PLANNER_GOAL_REACHED_THRESHOLD=$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD" \
@@ -419,6 +430,7 @@ up() {
     -e NAV_AUTONOMY_SPEED="$NAV_AUTONOMY_SPEED" \
     -e NAV_MAX_ACCEL="$NAV_MAX_ACCEL" \
     -e NAV_MAX_YAW_RATE_DEG_S="$NAV_MAX_YAW_RATE_DEG_S" \
+    -e PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD="$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD" \
     -e NAV_SPEED="$NAV_SPEED" \
     -e NAV_ROBOT_CONFIG="$NAV_ROBOT_CONFIG" \
     -e LOCAL_PLANNER_GOAL_REACHED_THRESHOLD="$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD" \
@@ -451,7 +463,7 @@ up() {
   done
   bash "$HERE/status.sh"
   echo "[bringup] DDS domain=$ROS_DOMAIN_ID; critical publishers unique and streams advancing; require_gui=$REQUIRE_GUI"
-  echo "[bringup] nav_profile=$GO2W_NAV_PROFILE robot_config=$NAV_ROBOT_CONFIG speed=$NAV_AUTONOMY_SPEED/$NAV_MAX_SPEED m/s command_ramp_100hz=$NAV_MAX_ACCEL yaw_cap=$NAV_MAX_YAW_RATE_DEG_S deg/s goal=$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD m"
+  echo "[bringup] nav_profile=$GO2W_NAV_PROFILE robot_config=$NAV_ROBOT_CONFIG speed=$NAV_AUTONOMY_SPEED/$NAV_MAX_SPEED m/s command_ramp_100hz=$NAV_MAX_ACCEL yaw_cap=$NAV_MAX_YAW_RATE_DEG_S deg/s stop=$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD m goal=$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD m"
   _phase "up (green)"
   echo "[bringup] ALL-GREEN: 全链就绪"
   exit 0

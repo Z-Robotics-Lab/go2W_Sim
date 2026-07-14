@@ -24,6 +24,9 @@ def test_xml_child_is_only_a_python_compatibility_wrapper():
     assert arguments["autonomySpeed"] == "$(env NAV_AUTONOMY_SPEED 0.20)"
     assert arguments["maxAccel"] == "$(env NAV_MAX_ACCEL 0.35)"
     assert arguments["maxYawRate"] == "$(env NAV_MAX_YAW_RATE_DEG_S 15.0)"
+    assert arguments["stopDisThre"] == (
+        "$(env PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD 0.10)"
+    )
     assert arguments["goalReachedThreshold"] == (
         "$(env LOCAL_PLANNER_GOAL_REACHED_THRESHOLD 0.15)"
     )
@@ -44,7 +47,8 @@ def test_xml_child_is_only_a_python_compatibility_wrapper():
         "config", "robot_config", "twoWayDrive", "realRobot", "autonomyMode",
         "use_sim_time", "startOdomTransformer", "overrideMountOffsets",
         "maxSpeed", "autonomySpeed",
-        "maxAccel", "maxYawRate", "goalReachedThreshold", "obstacleHeightThre",
+        "maxAccel", "maxYawRate", "stopDisThre", "goalReachedThreshold",
+        "obstacleHeightThre",
         "sensorOffsetX", "sensorOffsetY", "sensorOffsetZ",
     ):
         assert forwarded[name] == f"$(var {name})"
@@ -56,7 +60,7 @@ def test_xml_child_is_only_a_python_compatibility_wrapper():
 def test_system_launches_forward_every_motion_argument_instead_of_hardcoding_speed():
     names = (
         "maxSpeed", "autonomySpeed", "maxAccel", "maxYawRate",
-        "goalReachedThreshold", "obstacleHeightThre",
+        "stopDisThre", "goalReachedThreshold", "obstacleHeightThre",
     )
     for path in SYSTEM_LAUNCHES:
         source = path.read_text(encoding="utf-8")
@@ -88,11 +92,12 @@ def test_office_profile_is_resolved_once_and_passed_to_launch_and_speed_recovery
 
     assert 'GO2W_NAV_PROFILE="${GO2W_NAV_PROFILE:-manipulation_tracking}"' in bringup
     assert "manipulation_tracking)" in bringup
-    for value in ("0.25", "0.20", "0.35", "15.0"):
+    for value in ("0.25", "0.20", "0.35", "15.0", "0.10"):
         assert value in bringup
     for name in (
         "NAV_MAX_SPEED", "NAV_AUTONOMY_SPEED", "NAV_MAX_ACCEL",
         "NAV_MAX_YAW_RATE_DEG_S", "NAV_ROBOT_CONFIG",
+        "PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD",
         "LOCAL_PLANNER_GOAL_REACHED_THRESHOLD",
     ):
         assert f'-e {name}="${name}"' in bringup
@@ -106,6 +111,10 @@ def test_office_profile_is_resolved_once_and_passed_to_launch_and_speed_recovery
     assert 'autonomySpeed:="$NAV_AUTONOMY_SPEED"' in supervisor
     assert 'maxAccel:="$NAV_MAX_ACCEL"' in supervisor
     assert 'maxYawRate:="$NAV_MAX_YAW_RATE_DEG_S"' in supervisor
+    assert 'stopDisThre:="$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD"' in supervisor
+    assert '--stop-distance "$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD"' in bringup
+    assert '--stop-distance "$PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD"' in supervisor
+    assert 'value /pathFollower stopDisThre' in bringup
     assert "ros2 param set /localPlanner" not in supervisor
     assert "if ! python3 /ws/validate_nav_profile.py" in supervisor
     assert "invalid navigation profile; refusing to start" in supervisor
@@ -145,6 +154,7 @@ def test_python_child_structurally_merges_yaml_before_final_motion_profile():
         "NAV_AUTONOMY_SPEED",
         "NAV_MAX_ACCEL",
         "NAV_MAX_YAW_RATE_DEG_S",
+        "PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD",
         "LOCAL_PLANNER_GOAL_REACHED_THRESHOLD",
         "LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE",
         "NAV_ROBOT_CONFIG",
@@ -159,6 +169,9 @@ def test_python_child_structurally_merges_yaml_before_final_motion_profile():
     assert '"obstacleHeightThre": obstacle_height' in source
     assert '"maxAccel": command_ramp' in source
     assert '"maxYawRate": yaw_rate' in source
+    assert '"stopDisThre": stop_distance' in source
+    assert "stop_distance >= goal_threshold" in source
+    assert "MAX_STOP_DISTANCE_M = 0.15" in source
     assert '"realRobot": real_robot' in source
     assert '_bool_value(context, "realRobot")' in source
     assert '_bool_value(context, "overrideMountOffsets")' in source
@@ -184,6 +197,7 @@ def test_python_child_structurally_merges_yaml_before_final_motion_profile():
     )
     follower_final = source.index('"maxAccel": command_ramp')
     assert follower_generic < follower_robot < follower_final
+    assert follower_robot < source.index('"stopDisThre": stop_distance')
 
     real_launches = list(
         (ROOT / "refs/Navigation-Physical-Experiment/src/base_autonomy/vehicle_simulator/launch").glob(
@@ -208,6 +222,7 @@ def _valid_profile():
         "bridge_speed": 0.20,
         "command_ramp_coefficient": 0.35,
         "yaw_rate_deg_s": 15.0,
+        "stop_distance": 0.10,
         "goal_threshold": 0.15,
         "obstacle_height": 0.20,
         "robot_config": "unitree/unitree_go2",
@@ -222,6 +237,7 @@ def _valid_profile():
         ("bridge_speed", 0.21),
         ("command_ramp_coefficient", 2.01),
         ("yaw_rate_deg_s", 60.01),
+        ("stop_distance", 0.151),
         ("goal_threshold", 0.20),
         ("obstacle_height", 0.201),
         ("robot_config", "../../unsafe"),
@@ -240,6 +256,21 @@ def test_shared_validator_accepts_office_profile_and_existing_go2_config():
         ROOT / "refs/Navigation-Physical-Experiment/src/base_autonomy/local_planner/config"
     )
     _validator_module().validate_profile(**values)
+
+
+def test_shared_validator_requires_stop_distance_strictly_below_goal_threshold():
+    values = _valid_profile()
+    values["stop_distance"] = values["goal_threshold"]
+    with pytest.raises(ValueError, match="strictly below"):
+        _validator_module().validate_profile(**values)
+
+
+def test_shared_validator_applies_stop_distance_cap_independently_of_goal_threshold():
+    values = _valid_profile()
+    values["goal_threshold"] = 0.19
+    values["stop_distance"] = 0.151
+    with pytest.raises(ValueError, match=r"\[0.02, 0.15\]"):
+        _validator_module().validate_profile(**values)
 
 
 def test_shared_validator_accepts_documented_root_level_robot_config():
@@ -300,3 +331,10 @@ def test_max_accel_is_documented_as_wall_loop_command_ramp_not_sim_time_accelera
     )
     assert "100 Hz" in sources or "100Hz" in sources
     assert "m/s^2 linear acceleration" not in sources
+
+
+def test_readme_documents_shared_stop_before_arrival_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "pathFollower.stopDisThre=0.10 m" in readme
+    assert "stopDisThre < localPlanner.goalReachedThreshold=0.15 m" in readme
+    assert "GO2W_NAV_STOP_DISTANCE_THRESHOLD" in readme

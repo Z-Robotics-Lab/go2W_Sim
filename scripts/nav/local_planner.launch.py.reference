@@ -13,6 +13,8 @@ from launch_ros.actions import Node
 
 
 CONFIG_COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+MIN_STOP_DISTANCE_M = 0.02
+MAX_STOP_DISTANCE_M = 0.15
 
 
 def _env(name, default):
@@ -151,6 +153,7 @@ def _launch_setup(context):
     autonomy_speed = _float_value(context, "autonomySpeed")
     command_ramp = _float_value(context, "maxAccel")
     yaw_rate = _float_value(context, "maxYawRate")
+    stop_distance = _float_value(context, "stopDisThre")
     goal_threshold = _float_value(context, "goalReachedThreshold")
     obstacle_height = _float_value(context, "obstacleHeightThre")
     if not 0.0 < maximum_speed <= 1.0:
@@ -161,8 +164,15 @@ def _launch_setup(context):
         raise ValueError("maxAccel 100 Hz command-ramp coefficient must be in (0, 2.0]")
     if not 0.0 < yaw_rate <= 60.0:
         raise ValueError("maxYawRate must be in (0, 60] deg/s")
+    if not MIN_STOP_DISTANCE_M <= stop_distance <= MAX_STOP_DISTANCE_M:
+        raise ValueError(
+            "stopDisThre must be in "
+            f"[{MIN_STOP_DISTANCE_M:.2f}, {MAX_STOP_DISTANCE_M:.2f}] m"
+        )
     if not 0.02 <= goal_threshold < 0.20:
         raise ValueError("goalReachedThreshold must be in [0.02, 0.20) m")
+    if stop_distance >= goal_threshold:
+        raise ValueError("stopDisThre must be strictly below goalReachedThreshold")
     if not 0.05 <= obstacle_height <= 0.20:
         raise ValueError("obstacleHeightThre must be in [0.05, 0.20] m")
 
@@ -306,6 +316,7 @@ def _launch_setup(context):
             "autonomySpeed": autonomy_speed,
             "maxAccel": command_ramp,
             "maxYawRate": yaw_rate,
+            "stopDisThre": stop_distance,
         }
     )
 
@@ -404,6 +415,10 @@ def generate_launch_description():
         DeclareLaunchArgument("maxAccel", default_value=_env("NAV_MAX_ACCEL", "0.35")),
         DeclareLaunchArgument(
             "maxYawRate", default_value=_env("NAV_MAX_YAW_RATE_DEG_S", "15.0")
+        ),
+        DeclareLaunchArgument(
+            "stopDisThre",
+            default_value=_env("PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD", "0.10"),
         ),
         DeclareLaunchArgument(
             "goalReachedThreshold",

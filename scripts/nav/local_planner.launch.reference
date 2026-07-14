@@ -18,6 +18,7 @@
   <arg name="autonomySpeed" default="$(env NAV_AUTONOMY_SPEED 0.20)"/>
   <arg name="maxAccel" default="$(env NAV_MAX_ACCEL 0.35)"/>
   <arg name="maxYawRate" default="$(env NAV_MAX_YAW_RATE_DEG_S 15.0)"/>
+  <arg name="stopDisThre" default="$(env PATH_FOLLOWER_STOP_DISTANCE_THRESHOLD 0.10)"/>
   <arg name="goalReachedThreshold" default="$(env LOCAL_PLANNER_GOAL_REACHED_THRESHOLD 0.15)"/>
   <arg name="obstacleHeightThre" default="$(env LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE 0.20)"/>
 
@@ -54,6 +55,7 @@
     <arg name="autonomySpeed" value="$(var autonomySpeed)"/>
     <arg name="maxAccel" value="$(var maxAccel)"/>
     <arg name="maxYawRate" value="$(var maxYawRate)"/>
+    <arg name="stopDisThre" value="$(var stopDisThre)"/>
     <arg name="goalReachedThreshold" value="$(var goalReachedThreshold)"/>
     <arg name="obstacleHeightThre" value="$(var obstacleHeightThre)"/>
     <arg name="sensorOffsetX" value="$(var sensorOffsetX)"/>
