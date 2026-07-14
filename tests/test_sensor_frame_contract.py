@@ -134,6 +134,8 @@ imu_laser_rotation_offset: !!opencv-matrix
             'LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15',
             bringup,
         )
+        self.assertIn('&& _local_planner_contract', bringup)
+        self.assertIn('expected >= 0.20', bringup)
         self.assertIn(
             'ros2 param set /localPlanner goalReachedThreshold "$GOAL_THRE"',
             supervisor,
