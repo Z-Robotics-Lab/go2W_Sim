@@ -76,6 +76,7 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Navigation map"]["Enabled"] is True
     assert by_name["RegScan"]["Enabled"] is True
     assert by_name["RegScan"]["Value"] is True
+    assert by_name["RegScan"]["Topic"]["Value"] == "/registered_scan"
     assert "legacy image" not in by_name
     # Raw LiDAR uses the pitched physical frame and is an opt-in diagnostic;
     # level /registered_scan remains the default navigation visualization.
@@ -91,13 +92,18 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Validated Target Cloud [upstream required]"]["Enabled"] is False
     assert by_name["Scene Collision Cloud [upstream required]"]["Enabled"] is False
     assert by_name["6DoF Grasp Candidates [upstream required]"]["Enabled"] is False
+    assert by_name["6DoF Grasp Candidates [upstream required]"]["Value"] is False
     assert by_name["Selected Pregrasp + Grasp [LIVE when planned]"]["Enabled"] is True
+    assert by_name["Selected Pregrasp + Grasp [LIVE when planned]"]["Value"] is True
     assert by_name["Planned TCP Trajectory [LIVE when planned]"]["Enabled"] is True
+    assert by_name["Planned TCP Trajectory [LIVE when planned]"]["Pose Style"] == "None"
     assert by_name["Octomap Occupied Cells [octomap_server required]"]["Enabled"] is False
     assert by_name["Perception Contract Status"]["Enabled"] is False
     assert by_name["PiPER Execution Status"]["Enabled"] is False
     assert by_name["TF Tree [diagnostic opt-in]"]["Enabled"] is False
     assert by_name["TF Tree [diagnostic opt-in]"]["Show Axes"] is False
+    assert by_name["Key Frames"]["Enabled"] is False
+    assert by_name["Key Frames"]["Value"] is False
     assert by_name["Platform | base_link"]["Reference Frame"] == "base_link"
     assert by_name["Tool | piper_link8"]["Reference Frame"] == "piper_link8"
     assert (
@@ -179,6 +185,9 @@ def test_planning_displays_match_live_z_manip_debug_contract():
     assert selected["Topic"]["Value"] == "/z_manip/debug/markers"
     assert path["Class"] == "rviz_default_plugins/Path"
     assert path["Topic"]["Value"] == "/z_manip/debug/arm_path"
+    assert path["Pose Style"] == "None"
+    assert path["Line Style"] == "Billboards"
+    assert path["Line Width"] > 0.0
 
 
 def test_only_standard_jazzy_display_plugins_are_required():

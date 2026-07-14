@@ -151,6 +151,9 @@ def _marker_array(name: str, topic: str, *, enabled: bool = False) -> dict[str, 
 
 
 def _path(name: str, topic: str, *, color: str, enabled: bool = False) -> dict[str, Any]:
+    # A Path can contain hundreds of poses.  Rendering every pose as an axes
+    # glyph obscures both the trajectory line and the registered scan, so all
+    # TCP paths are deliberately line-only.
     return {
         "Alpha": 1,
         "Buffer Length": 1,
@@ -165,7 +168,7 @@ def _path(name: str, topic: str, *, color: str, enabled: bool = False) -> dict[s
         "Name": name,
         "Offset": {"X": 0, "Y": 0, "Z": 0},
         "Pose Color": color,
-        "Pose Style": "Axes",
+        "Pose Style": "None",
         "Radius": 0.01,
         "Shaft Diameter": 0.02,
         "Shaft Length": 0.05,
@@ -309,6 +312,7 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
                         radius=0.005,
                     ),
                 ],
+                enabled=False,
             ),
             {
                 "Alpha": 0.75,
