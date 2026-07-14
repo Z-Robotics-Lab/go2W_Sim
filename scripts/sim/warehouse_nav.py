@@ -161,7 +161,18 @@ SCENES = {
         # X[-4.3,5.3] Y[-9.3,0.1]；原点 (0,0) 在 reception 顶墙=拥挤角落（净空~1.5m），
         # 开阔厅在 -Y。选 (-2.5,-5.0)=/terrain_map 证实开阔（障碍净空 3m+）、手动驱动
         # origin→此点全程直立可达。z=0.42 同 warehouse 贴地策略。回滚原点见 git 历史。
-        "spawn": (-2.5, -5.0, 0.42),
+        #
+        # 抓取尾链 shakedown 出生点（CEO 打法调整 2026-07-14，env-gated，默认不变）：
+        # 设 GO2W_SPAWN_GRASP=1 时出生点改到 (-1.88,-5.18,0.42) 朝向 +X（identity quat）——
+        # 距 soup_can (-1.18,-5.18) 恰 0.70m、bearing 0.0°，落在 HOLD 窗 [0.55,0.75] 内。
+        # 目的：出生即 standoff → 静止 + TABLE_VIEW 秒锁（三次实证的强项）→ HOLD 立即达成，
+        # 跳过"运动中锁定"这一攻坚难点，直接打穿尾链（handoff→PRE_GRASP→IK→joint_cmd→
+        # CLOSE→LIFT→GT 裁判）。默认导航出生点 (-2.5,-5.0) 完全不动（sibling nav 场景不受扰）。
+        "spawn": (
+            (-1.88, -5.18, 0.42)
+            if _os.environ.get("GO2W_SPAWN_GRASP", "0") != "0"
+            else (-2.5, -5.0, 0.42)
+        ),
         # 箱子放出生点 +X 前方 1m 开阔地（6cm 低于障碍阈值不被绕开）。
         "box": (-1.5, -5.0, 0.031),
         # 启动视角：出生点斜后上方 3-4m、eye 高度 2.4m（office 天花板下——高了被顶棚挡、
