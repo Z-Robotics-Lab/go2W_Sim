@@ -59,7 +59,7 @@ txt = txt.replace("Name: SemanticImage", "Name: WristDepth")
 # 面板：Perception(overlay Image)/TargetCloud(PointCloud2)/TargetMarker(Marker)/
 # GraspCandidates(MarkerArray, M2 爪形+approach 箭头)/TargetPose(/perception/
 # target_3d 的 Pose 箭头，msg 类型是 PoseStamped 不是 PointStamped——RViz 按类型
-# 选面板类)/ServoDebug(Marker, /servo/debug_marker 当前目标点+状态色)/
+# 选面板类)/ServoDebug(Marker, /servo/debug_marker 当前目标点+状态色)/GraspExec(Marker, /manip/grasp_exec/marker 目标TCP+stage)/
 # SoupCanGT(Odometry, /objects/soup_can/odom 人眼调试用，actor 不订阅不算作弊)。
 # 缩进：Group 本身在 4 空格 '-' 顶层；组内子面板整体再缩进 2 格（6 空格 '-'、
 # 8 空格子键、10 空格 Topic 子键）——错一格 RViz 静默不加载（坑）。QoS：图像流/点云
@@ -148,6 +148,18 @@ M1_DISPLAYS = (
     "            History Policy: Keep Last\n"
     "            Reliability Policy: Reliable\n"
     "            Value: /servo/debug_marker\n"
+    "          Value: true\n"
+    # M3 抓取执行观测（路线B）：目标 TCP 位姿箭头 + stage 文字（同话题 id0=ARROW
+    # 沿 approach 轴、id1=TEXT）。人眼调试用；无人订阅=不构成作弊。低频 Reliable。
+    "        - Class: rviz_default_plugins/Marker\n"
+    "          Enabled: true\n"
+    "          Name: GraspExec\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Reliable\n"
+    "            Value: /manip/grasp_exec/marker\n"
     "          Value: true\n"
     # soup_can GT odom（人眼调试用；actor 不订阅 = 不构成作弊，只是给人看真值）。
     "        - Class: rviz_default_plugins/Odometry\n"
