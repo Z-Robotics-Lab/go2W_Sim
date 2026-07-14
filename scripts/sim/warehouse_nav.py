@@ -387,10 +387,18 @@ def main():
         light = sim_utils.DomeLightCfg(intensity=2000.0); light.func("/World/Light", light)
 
     if args_cli.policy:
-        # 训练态增益（必须与 robot_lab UNITREE_GO2W_CFG 一致，策略才有效）
-        GO2W_NAV_CFG.actuators["legs"].stiffness = 25.0
-        GO2W_NAV_CFG.actuators["legs"].damping = 0.5
+        # 训练态增益（必须与 robot_lab UNITREE_GO2W_CFG 一致，策略才有效）。
+        # 载荷态腿增益环境覆盖（P1.1，CEO 已批 2026-07-13）：训练态腿增益 25/0.5 是裸机身
+        # 定的，扛不住臂+NUC 载荷（部署实测狗向后倒，audit 定罪）。GO2W_POLICY_LEG_STIFFNESS/
+        # DAMPING 允许在 A/B 门实验里把 B 臂调到 4×（100/5）而**不改文件**。默认严格保持 main
+        # 现状 25.0/0.5 不翻——过门后才另行提交翻默认（红线纪律：只动增益读取处，diff 最小）。
+        _leg_k = float(_os.environ.get("GO2W_POLICY_LEG_STIFFNESS", "25.0"))
+        _leg_d = float(_os.environ.get("GO2W_POLICY_LEG_DAMPING", "0.5"))
+        GO2W_NAV_CFG.actuators["legs"].stiffness = _leg_k
+        GO2W_NAV_CFG.actuators["legs"].damping = _leg_d
         GO2W_NAV_CFG.actuators["legs"].effort_limit_sim = 23.5
+        print(f"[NAV] policy leg gains=({_leg_k:.1f},{_leg_d:.1f}) "
+              f"(env GO2W_POLICY_LEG_STIFFNESS/DAMPING; default 25.0/0.5)", flush=True)
         GO2W_NAV_CFG.actuators["wheels"].stiffness = 0.0
         GO2W_NAV_CFG.actuators["wheels"].damping = 0.5
         GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
