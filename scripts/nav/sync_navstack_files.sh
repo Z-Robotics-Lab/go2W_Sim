@@ -43,64 +43,117 @@ txt = txt.replace("Name: Image", "Name: WristColor")
 txt = txt.replace("Value: /camera/semantic_image",
                   "Value: /camera/aligned_depth_to_color/image_raw")
 txt = txt.replace("Name: SemanticImage", "Name: WristDepth")
-# Z-Manip M1 感知可视化（CEO 点名：分割掩码叠加/目标点云/追踪框）：向 Visualization
-# Manager 的 Displays 列表尾追加四个面板——Perception(overlay Image)/TargetCloud
-# (PointCloud2)/TargetMarker(Marker)/GraspCandidates(MarkerArray, M2 爪形+approach 箭头)。缩进必须对齐 stock Display 列表项（4 空格 '-'、
-# 6 空格子键、8 空格 Topic 子键），错一格 RViz 静默不加载（坑）。QoS：图像流用 Best
-# Effort 对齐感知节点高频发布；Marker 低频用 Reliable。锚点=Displays 列表末尾唯一的
-# "\n  Enabled: true\n  Global Options:"（2 空格顶层 Global Options 全文件仅一处）。
+# Z-Manip 感知/伺服/抓取可视化（CEO 点名）：向 Visualization Manager 的 Displays
+# 列表尾追加一个 "Manip" 分组（rviz_common/Group，折叠面板用，整洁）——组内七个
+# 面板：Perception(overlay Image)/TargetCloud(PointCloud2)/TargetMarker(Marker)/
+# GraspCandidates(MarkerArray, M2 爪形+approach 箭头)/TargetPose(/perception/
+# target_3d 的 Pose 箭头，msg 类型是 PoseStamped 不是 PointStamped——RViz 按类型
+# 选面板类)/ServoDebug(Marker, /servo/debug_marker 当前目标点+状态色)/
+# SoupCanGT(Odometry, /objects/soup_can/odom 人眼调试用，actor 不订阅不算作弊)。
+# 缩进：Group 本身在 4 空格 '-' 顶层；组内子面板整体再缩进 2 格（6 空格 '-'、
+# 8 空格子键、10 空格 Topic 子键）——错一格 RViz 静默不加载（坑）。QoS：图像流/点云
+# 用 Best Effort 对齐高频发布节点；低频 Marker/Odometry 用 Reliable。锚点=
+# Displays 列表末尾唯一的 "\n  Enabled: true\n  Global Options:"（2 空格顶层
+# Global Options 全文件仅一处）。
 M1_DISPLAYS = (
-    "    - Class: rviz_default_plugins/Image\n"
-    "      Enabled: true\n"
-    "      Max Value: 1\n"
-    "      Median window: 5\n"
-    "      Min Value: 0\n"
-    "      Name: Perception\n"
-    "      Normalize Range: true\n"
-    "      Topic:\n"
-    "        Depth: 5\n"
-    "        Durability Policy: Volatile\n"
-    "        History Policy: Keep Last\n"
-    "        Reliability Policy: Best Effort\n"
-    "        Value: /perception/overlay\n"
-    "      Value: true\n"
-    "    - Class: rviz_default_plugins/PointCloud2\n"
-    "      Enabled: true\n"
-    "      Name: TargetCloud\n"
-    "      Size (Pixels): 4\n"
-    "      Style: Points\n"
-    "      Color: 255; 0; 255\n"
-    "      Color Transformer: FlatColor\n"
-    "      Topic:\n"
-    "        Depth: 5\n"
-    "        Durability Policy: Volatile\n"
-    "        History Policy: Keep Last\n"
-    "        Reliability Policy: Best Effort\n"
-    "        Value: /perception/target_cloud\n"
-    "      Value: true\n"
-    "    - Class: rviz_default_plugins/Marker\n"
-    "      Enabled: true\n"
-    "      Name: TargetMarker\n"
-    "      Topic:\n"
-    "        Depth: 5\n"
-    "        Durability Policy: Volatile\n"
-    "        History Policy: Keep Last\n"
-    "        Reliability Policy: Reliable\n"
-    "        Value: /perception/target_marker\n"
-    "      Value: true\n"
+    "    - Class: rviz_common/Group\n"
+    "      Displays:\n"
+    "        - Class: rviz_default_plugins/Image\n"
+    "          Enabled: true\n"
+    "          Max Value: 1\n"
+    "          Median window: 5\n"
+    "          Min Value: 0\n"
+    "          Name: Perception\n"
+    "          Normalize Range: true\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Best Effort\n"
+    "            Value: /perception/overlay\n"
+    "          Value: true\n"
+    "        - Class: rviz_default_plugins/PointCloud2\n"
+    "          Enabled: true\n"
+    "          Name: TargetCloud\n"
+    "          Size (Pixels): 4\n"
+    "          Style: Points\n"
+    "          Color: 255; 0; 255\n"
+    "          Color Transformer: FlatColor\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Best Effort\n"
+    "            Value: /perception/target_cloud\n"
+    "          Value: true\n"
+    "        - Class: rviz_default_plugins/Marker\n"
+    "          Enabled: true\n"
+    "          Name: TargetMarker\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Reliable\n"
+    "            Value: /perception/target_marker\n"
+    "          Value: true\n"
+    # /perception/target_3d 是 PoseStamped（非 PointStamped）——Pose 面板才认它。
+    "        - Class: rviz_default_plugins/Pose\n"
+    "          Enabled: true\n"
+    "          Name: TargetPose\n"
+    "          Color: 255; 170; 0\n"
+    "          Shape: Arrow\n"
+    "          Head Length: 0.08\n"
+    "          Head Radius: 0.04\n"
+    "          Shaft Length: 0.12\n"
+    "          Shaft Radius: 0.02\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Reliable\n"
+    "            Value: /perception/target_3d\n"
+    "          Value: true\n"
     # Z-Manip M2 抓取候选（爪形 LINE_LIST + approach 箭头，z_manip.grasp 发布）
-    "    - Class: rviz_default_plugins/MarkerArray\n"
+    "        - Class: rviz_default_plugins/MarkerArray\n"
+    "          Enabled: true\n"
+    "          Name: GraspCandidates\n"
+    "          Namespaces:\n"
+    "            {}\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Reliable\n"
+    "            Value: /manip/grasp/markers\n"
+    "          Value: true\n"
+    # 伺服调试目标点（z_manip.servo.viz 新增发布器；SEARCH/APPROACH 的当前
+    # waypoint 或 HOLD 目标，按状态着色——纯眼球观察，节点自身不订阅这个话题。
+    "        - Class: rviz_default_plugins/Marker\n"
+    "          Enabled: true\n"
+    "          Name: ServoDebug\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Reliable\n"
+    "            Value: /servo/debug_marker\n"
+    "          Value: true\n"
+    # soup_can GT odom（人眼调试用；actor 不订阅 = 不构成作弊，只是给人看真值）。
+    "        - Class: rviz_default_plugins/Odometry\n"
+    "          Enabled: true\n"
+    "          Name: SoupCanGT\n"
+    "          Keep: 1\n"
+    "          Shape:\n"
+    "            Value: Axes\n"
+    "          Topic:\n"
+    "            Depth: 5\n"
+    "            Durability Policy: Volatile\n"
+    "            History Policy: Keep Last\n"
+    "            Reliability Policy: Reliable\n"
+    "            Value: /objects/soup_can/odom\n"
+    "          Value: true\n"
     "      Enabled: true\n"
-    "      Name: GraspCandidates\n"
-    "      Namespaces:\n"
-    "        {}\n"
-    "      Topic:\n"
-    "        Depth: 5\n"
-    "        Durability Policy: Volatile\n"
-    "        History Policy: Keep Last\n"
-    "        Reliability Policy: Reliable\n"
-    "        Value: /manip/grasp/markers\n"
-    "      Value: true\n"
+    "      Name: Manip\n"
 )
 new_txt, n_inj = re.subn(r"(\n  Enabled: true\n  Global Options:)",
                          "\n" + M1_DISPLAYS.rstrip("\n") + r"\1", txt, count=1)
@@ -109,6 +162,7 @@ if n_inj != 1:
 txt = new_txt
 open(f"{nav}/go2w.rviz", "w").write(txt)
 print("[sync] go2w.rviz (TeleopPanel removed; Image panels -> wrist cam; "
-      "+M1 Perception/TargetCloud/TargetMarker; +M2 GraspCandidates)")
+      "+Manip group: Perception/TargetCloud/TargetMarker/TargetPose/"
+      "GraspCandidates/ServoDebug/SoupCanGT)")
 PYEOF
 echo "[sync] scripts/nav -> $NAV OK"
