@@ -399,8 +399,12 @@ def main():
         GO2W_NAV_CFG.actuators["legs"].effort_limit_sim = 23.5
         print(f"[NAV] policy leg gains=({_leg_k:.1f},{_leg_d:.1f}) "
               f"(env GO2W_POLICY_LEG_STIFFNESS/DAMPING; default 25.0/0.5)", flush=True)
-        GO2W_NAV_CFG.actuators["wheels"].stiffness = 0.0
-        GO2W_NAV_CFG.actuators["wheels"].damping = 0.5
+        # 轮驱动增益（速度模式：stiffness=0）。命名成变量供驻车刹车(P1.2)读作 drive 基准，
+        # 咬合时从此 0/0.5 混合到 park Kp/D，释放时再混回——单一真源，杜绝漂移。
+        _wheel_drive_stiffness = 0.0
+        _wheel_drive_damping = 0.5
+        GO2W_NAV_CFG.actuators["wheels"].stiffness = _wheel_drive_stiffness
+        GO2W_NAV_CFG.actuators["wheels"].damping = _wheel_drive_damping
         GO2W_NAV_CFG.actuators["wheels"].effort_limit_sim = 23.5
     if not WITH_ARM:
         # 裸机 A/B 对照：bare URDF 无 piper 关节，去掉臂/夹爪执行器与臂 init_state
@@ -773,11 +777,46 @@ def main():
     standstill_ramp = 0             # 退出斜坡剩余拍（RAMP..0 递减；0=已喂满幅）
     _blend_from = None              # 进入拍锁存的当前腿位（混合起点）
     # 站姿目标：腿=default（前 12 关节），轮速=0（后 4 关节）。用 policy 的 id/序对齐。
+    # 驻车刹车（WheelParkingBrake，P1.2 移植自 codex 分支 standstill_control.py，CEO 已批）：
+    #   病理——站姿保持只把轮**速度**目标钉 0，但轮执行器是纯速度模式(Kp=0)，无位置锁；
+    #   载荷斜面/推力下轮子仍会缓慢自转打滑，基座 XY 漂移（分支实锤零指令蠕动 0.075 m/s）。
+    #   修法——咬合时锁存当前轮编码器位置，把轮执行器增益从 drive(Kp=0/D=0.5) 混合到
+    #   park(Kp=20/D=8)，并给一个位置目标=锁存编码器角，令轮子物理位置保持不动=真"刹车"。
+    #   释放时把位置目标重新对齐到当前实测编码器角（recenter），令残余 Kp 不与速度斜坡对抗。
+    #   反馈只用本体轮编码器(robot.data.joint_pos)，绝不读 root/GT——GT 仍是纯输出真值台。
+    parking_brake = None
+    _parking_gains = None
     if policy is not None:
         _stand_leg_ids = policy.leg_ids
         _stand_leg_tgt = policy.default_pos[:1, :12].clone()
         _stand_wheel_ids = policy.wheel_ids
         _stand_wheel_vel = torch.zeros(1, len(policy.wheel_ids), device=policy.device)
+        from standstill_control import ParkingBrakeConfig, WheelParkingBrake
+        _parking_config = ParkingBrakeConfig.from_environ(
+            _os.environ,
+            drive_stiffness=_wheel_drive_stiffness,
+            drive_damping=_wheel_drive_damping,
+        )
+        parking_brake = WheelParkingBrake(_parking_config)
+        _parking_gains = (
+            _parking_config.drive_stiffness,
+            _parking_config.drive_damping,
+        )
+
+        def _apply_wheel_gains(stiffness, damping):
+            """把驻车混合增益写进 PhysX + IsaacLab 缓存（两处一致，扭矩诊断才不漂）。"""
+            robot.write_joint_stiffness_to_sim(
+                stiffness, joint_ids=_stand_wheel_ids)
+            robot.write_joint_damping_to_sim(
+                damping, joint_ids=_stand_wheel_ids)
+            wheel_actuator = robot.actuators["wheels"]
+            wheel_actuator.stiffness.fill_(float(stiffness))
+            wheel_actuator.damping.fill_(float(damping))
+
+        print("[NAV][STANDSTILL] encoder parking brake "
+              f"Kp={_parking_config.park_stiffness:.1f} "
+              f"D={_parking_config.park_damping:.1f} "
+              f"transition={_parking_config.transition_ticks} policy ticks", flush=True)
 
     step = 0
     # 臂有效目标（属主协调后实际写入的 8 关节目标）——/piper/cmd 报此，杜绝与写入漂移。
@@ -807,9 +846,23 @@ def main():
             standstill_active = False
             standstill_blend = standstill_ramp = 0
             _blend_from = None
+            # 驻车刹车复位：复位是"停"边界，立刻放掉锁存编码器 + 把轮增益写回 drive 基准，
+            # 避免带入摔倒前的 park 增益/锚点（否则复位后轮子被钉在旧角度打架）。
+            if parking_brake is not None:
+                parking_brake.reset()
+                _apply_wheel_gains(
+                    parking_brake.config.drive_stiffness,
+                    parking_brake.config.drive_damping,
+                )
+                _parking_gains = (
+                    parking_brake.config.drive_stiffness,
+                    parking_brake.config.drive_damping,
+                )
+                policy_cache.pop("wheel_position", None)
             print(f"[NAV][RESET] done at sim_t={sim_t['now']:.2f} "
                   f"root->birth {SCENE_SPAWN} (scene={SCENE_NAME}), vel=0", flush=True)
         # cmd_vel 看门狗：0.5s（仿真时）无新指令则停
+        manip_active_nonzero = False  # 驻车 rule 2 用：CMDMUX 选中 MANIP 且命令非零
         if args_cli.selftest:
             vx, wz = st["vx"], st["wz"]
             # selftest 不走 manip 仲裁（vy 沿用既有 /cmd_vel 门控读法，语义不变）。
@@ -833,13 +886,32 @@ def main():
                       f"(vx={vx:.3f} vy={vy:.3f} wz={wz:.3f})", flush=True)
                 manip_src["last_log_t"] = sim_t["now"]
             manip_src["active"] = manip_fresh
+            # 驻车 rule 2（CEO 裁定 2026-07-13）：CMDMUX 选中 MANIP 源且命令非零时，精伺服的
+            # 微弧命令（~0.1 m/s 量级）可能低于死区 EXIT=0.25 迟滞带——若放任死区/驻车按迟滞
+            # 慢慢退出，驻车会跟精伺服打架毁掉抓取管线。MANIP 源的**任何**非零命令 = 无条件
+            # "有意运动"：立即释放驻车 + 本拍禁止咬合（绕过 ENTER debounce），无迟滞延迟。
+            manip_active_nonzero = manip_fresh and (
+                vx != 0.0 or vy != 0.0 or wz != 0.0)
 
         if policy is not None:
             # vy 已在上方仲裁/门控确定（manip 优先或 pathFollower 回落）。
             if step % 2 == 0:  # 策略 50Hz（sim 100Hz）
                 # ---- 死区 v2 迟滞状态机：命令 3D 范数 + 双阈值 + 柔性过渡 ----
                 cmd_norm = math.sqrt(vx * vx + vy * vy + wz * wz)
-                if STANDSTILL_ENABLE:
+                if manip_active_nonzero:
+                    # 驻车 rule 2：MANIP 精伺服有意运动——无条件立即退出+禁咬合（绕迟滞）。
+                    standstill_low_count = 0
+                    standstill_high_count = STANDSTILL_EXIT_DEBOUNCE
+                    if standstill_active:
+                        standstill_active = False
+                        parking_brake.release()
+                        policy.last_action = torch.zeros_like(policy.last_action)
+                        standstill_ramp = STANDSTILL_RAMP_TICKS
+                        standstill_blend = 0
+                        print(f"[NAV][STANDSTILL] MANIP-override release at "
+                              f"sim_t={sim_t['now']:.2f} cmd_norm={cmd_norm:.4f} "
+                              f"(精伺服有意运动，绕迟滞立即放行)", flush=True)
+                elif STANDSTILL_ENABLE:
                     # 进入迟滞：norm<ENTER_THRESH 连续 ENTER_DEBOUNCE 拍。
                     if cmd_norm < STANDSTILL_ENTER_THRESH:
                         standstill_low_count += 1
@@ -847,6 +919,9 @@ def main():
                         if standstill_low_count >= STANDSTILL_ENTER_DEBOUNCE \
                                 and not standstill_active:
                             standstill_active = True
+                            # 咬合驻车：锁存当前轮编码器位置（本体反馈，不读 GT）。
+                            parking_brake.engage(
+                                robot.data.joint_pos[0, _stand_wheel_ids].tolist())
                             # 柔性进入：锁存当前腿位为混合起点，BLEND 拍内 →default。
                             _blend_from = robot.data.joint_pos[:1, _stand_leg_ids].clone()
                             standstill_blend = STANDSTILL_BLEND_TICKS
@@ -861,6 +936,7 @@ def main():
                         if standstill_high_count >= STANDSTILL_EXIT_DEBOUNCE \
                                 and standstill_active:
                             standstill_active = False
+                            parking_brake.release()
                             # 柔性退出：last_action 复位（站姿⟺a=0，物理诚实）+ 起 cmd 斜坡。
                             policy.last_action = torch.zeros_like(policy.last_action)
                             standstill_ramp = STANDSTILL_RAMP_TICKS
@@ -876,9 +952,31 @@ def main():
                     # 死区关闭：确保退出并清态。
                     if standstill_active:
                         standstill_active = False
+                        parking_brake.release()
                         policy.last_action = torch.zeros_like(policy.last_action)
                     standstill_low_count = standstill_high_count = 0
                     standstill_blend = standstill_ramp = 0
+
+                # 驻车刹车推进一拍：只用轮编码器。过渡拍混合增益；释放期纯逻辑把位置目标
+                # recenter 到当前编码器角，令残余 Kp 不与速度斜坡对抗。增益变化才写 sim。
+                parking_command = parking_brake.step(
+                    robot.data.joint_pos[0, _stand_wheel_ids].tolist())
+                next_parking_gains = (
+                    parking_command.stiffness, parking_command.damping)
+                if next_parking_gains != _parking_gains:
+                    _apply_wheel_gains(
+                        parking_command.stiffness, parking_command.damping)
+                    _parking_gains = next_parking_gains
+                if parking_command.position_target is None:
+                    policy_cache.pop("wheel_position", None)
+                else:
+                    parking_target = torch.tensor(
+                        [parking_command.position_target],
+                        dtype=robot.data.joint_pos.dtype,
+                        device=robot.data.joint_pos.device,
+                    )
+                    policy_cache["wheel_position"] = (
+                        _stand_wheel_ids, parking_target)
 
                 if standstill_active:
                     # 站姿保持：腿目标（柔性进入混合）、轮速目标恒 0（不推进策略）。
@@ -899,6 +997,9 @@ def main():
                         standstill_ramp -= 1
                     else:
                         scale = 1.0
+                    # 速度斜坡不得快于驻车增益释放：残余 park Kp(blend>0) 仍在钉轮位时，
+                    # 把喂进策略的 cmd 幅度压到 (1-blend)，令位置锁与速度命令不对抗。
+                    scale = min(scale, 1.0 - parking_command.blend)
                     # M1 取证：obs 在 act() 之前采（此刻 last_action=本拍旧值，逐位对齐 shim）；
                     # act 在 act() 之后补。两段式保证 dump 的 obs = shim 真喂进网络的 obs。
                     _dump_pending = (obs_dumper.begin(
@@ -917,6 +1018,12 @@ def main():
                                                 joint_ids=policy_cache["legs"][0])
                 robot.set_joint_velocity_target(policy_cache["wheels"][1],
                                                 joint_ids=policy_cache["wheels"][0])
+            # 驻车咬合/释放期：给轮**位置**目标=锁存/recenter 编码器角（park Kp>0 才生效）。
+            # 写在轮速目标之后：速度模式(Kp=0)下位置目标无效应，混合到 park Kp 后位置锁才咬。
+            if "wheel_position" in policy_cache:
+                robot.set_joint_position_target(
+                    policy_cache["wheel_position"][1],
+                    joint_ids=policy_cache["wheel_position"][0])
         else:
             robot.set_joint_position_target(default_pos)
             vel_t = robot.data.default_joint_vel.clone()
