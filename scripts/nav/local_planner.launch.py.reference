@@ -1,0 +1,417 @@
+import math
+import os
+import re
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
+
+import yaml
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+CONFIG_COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+
+
+def _env(name, default):
+    return os.environ.get(name, default)
+
+
+def _value(context, name):
+    return LaunchConfiguration(name).perform(context)
+
+
+def _bool_value(context, name):
+    value = _value(context, name).strip().lower()
+    if value in {"true", "1", "yes", "on"}:
+        return True
+    if value in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
+def _float_value(context, name):
+    value = float(_value(context, name))
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    return value
+
+
+def _optional_float(context, name, default):
+    raw = _value(context, name)
+    if raw == "":
+        value = float(default)
+    else:
+        value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+    return value
+
+
+def _safe_config_path(config_root, name, label):
+    """Resolve a package-owned config name without resolving colcon symlinks."""
+    relative = PurePosixPath(name)
+    parts = relative.parts
+    if (
+        not name
+        or name.endswith(".yaml")
+        or relative.is_absolute()
+        or not parts
+        or any(
+            part in {".", ".."} or not CONFIG_COMPONENT_PATTERN.fullmatch(part)
+            for part in parts
+        )
+    ):
+        raise ValueError(
+            f"{label} must be a safe relative config name without a .yaml suffix"
+        )
+    candidate = config_root.joinpath(*parts[:-1], f"{parts[-1]}.yaml")
+    # A symlink-install points individual files back into src/. The user-supplied
+    # path is already lexically confined above, so following that package-owned
+    # file symlink is both required and safe.
+    if not candidate.is_file():
+        raise ValueError(f"{label} does not exist: {name}")
+    return candidate
+
+
+def _load_config(path, label):
+    with path.open("r", encoding="utf-8") as stream:
+        data = yaml.safe_load(stream) or {}
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{label} must contain a YAML mapping")
+    return data
+
+
+def _node_parameters(data, node_name, label):
+    """Merge wildcard and exact-node blocks into one native parameter dict."""
+    parameters = {}
+    for selector in ("/**", node_name, f"/{node_name}"):
+        block = data.get(selector)
+        if block is None:
+            continue
+        if not isinstance(block, Mapping):
+            raise ValueError(f"{label} block {selector!r} must be a mapping")
+        ros_parameters = block.get("ros__parameters", {})
+        if not isinstance(ros_parameters, Mapping):
+            raise ValueError(
+                f"{label} block {selector!r}.ros__parameters must be a mapping"
+            )
+        parameters.update(ros_parameters)
+    return parameters
+
+
+def _mapping_float(mapping, key, default):
+    value = float(mapping.get(key, default))
+    if not math.isfinite(value):
+        raise ValueError(f"robot config value {key} must be finite")
+    return value
+
+
+def _required_parameters(data, node_name):
+    block = data.get(node_name)
+    if not isinstance(block, Mapping):
+        raise ValueError(f"robot config requires a {node_name} mapping")
+    parameters = block.get("ros__parameters")
+    if not isinstance(parameters, Mapping):
+        raise ValueError(
+            f"robot config requires {node_name}.ros__parameters mapping"
+        )
+    return parameters
+
+
+def _required_mapping_float(mapping, key, *, positive=False):
+    if key not in mapping:
+        raise ValueError(f"robot config requires parameter {key}")
+    try:
+        value = float(mapping[key])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"robot config parameter {key} must be numeric") from exc
+    if not math.isfinite(value) or (positive and value <= 0.0):
+        qualifier = "finite and positive" if positive else "finite"
+        raise ValueError(f"robot config parameter {key} must be {qualifier}")
+    return value
+
+
+def _launch_setup(context):
+    local_planner_share = Path(get_package_share_directory("local_planner"))
+    config_root = local_planner_share / "config"
+    if not config_root.is_dir():
+        raise ValueError(f"local planner config directory does not exist: {config_root}")
+
+    config_name = _value(context, "config")
+    robot_config_name = _value(context, "robot_config")
+    generic_path = _safe_config_path(config_root, config_name, "local planner config")
+    robot_path = _safe_config_path(config_root, robot_config_name, "robot config")
+    generic_data = _load_config(generic_path, "local planner config")
+    robot_data = _load_config(robot_path, "robot config")
+
+    maximum_speed = _float_value(context, "maxSpeed")
+    autonomy_speed = _float_value(context, "autonomySpeed")
+    command_ramp = _float_value(context, "maxAccel")
+    yaw_rate = _float_value(context, "maxYawRate")
+    goal_threshold = _float_value(context, "goalReachedThreshold")
+    obstacle_height = _float_value(context, "obstacleHeightThre")
+    if not 0.0 < maximum_speed <= 1.0:
+        raise ValueError("maxSpeed must be in (0, 1.0] m/s")
+    if not 0.0 < autonomy_speed <= maximum_speed:
+        raise ValueError("autonomySpeed must be positive and no greater than maxSpeed")
+    if not 0.0 < command_ramp <= 2.0:
+        raise ValueError("maxAccel 100 Hz command-ramp coefficient must be in (0, 2.0]")
+    if not 0.0 < yaw_rate <= 60.0:
+        raise ValueError("maxYawRate must be in (0, 60] deg/s")
+    if not 0.02 <= goal_threshold < 0.20:
+        raise ValueError("goalReachedThreshold must be in [0.02, 0.20) m")
+    if not 0.05 <= obstacle_height <= 0.20:
+        raise ValueError("obstacleHeightThre must be in [0.05, 0.20] m")
+
+    use_sim_time = _bool_value(context, "use_sim_time")
+    start_odom_transformer = _bool_value(context, "startOdomTransformer")
+    override_mount_offsets = _bool_value(context, "overrideMountOffsets")
+    autonomy_mode = _bool_value(context, "autonomyMode")
+    real_robot = _bool_value(context, "realRobot")
+    two_way_drive = _bool_value(context, "twoWayDrive")
+    joy_to_speed_delay = _float_value(context, "joyToSpeedDelay")
+    goal_x = _float_value(context, "goalX")
+    goal_y = _float_value(context, "goalY")
+
+    mounting_offsets = _required_parameters(robot_data, "sensorMountingOffsets")
+    robot_local_parameters = _required_parameters(robot_data, "localPlanner")
+    _required_mapping_float(robot_local_parameters, "vehicleLength", positive=True)
+    _required_mapping_float(robot_local_parameters, "vehicleWidth", positive=True)
+    _required_parameters(robot_data, "pathFollower")
+
+    sensor_offsets = {
+        key: _required_mapping_float(mounting_offsets, key)
+        for key in ("sensorOffsetX", "sensorOffsetY", "sensorOffsetZ")
+    }
+    camera_offsets = {
+        key: _mapping_float(mounting_offsets, key, 0.0)
+        for key in (
+            "cameraOffsetX",
+            "cameraOffsetY",
+            "cameraOffsetZ",
+            "cameraOffsetRoll",
+            "cameraOffsetPitch",
+            "cameraOffsetYaw",
+        )
+    }
+    camera_link = str(mounting_offsets.get("cameraLink", "camera_link")).strip()
+    if override_mount_offsets:
+        for key in sensor_offsets:
+            sensor_offsets[key] = _optional_float(context, key, sensor_offsets[key])
+        for key in camera_offsets:
+            camera_offsets[key] = _optional_float(context, key, camera_offsets[key])
+        requested_camera_link = _value(context, "cameraLink").strip()
+        if requested_camera_link:
+            camera_link = requested_camera_link
+    if not camera_link or any(character.isspace() for character in camera_link):
+        raise ValueError("cameraLink must be a non-empty frame name without whitespace")
+
+    local_parameters = {
+        "pathFolder": str(local_planner_share / "paths"),
+        "twoWayDrive": True,
+        "laserVoxelSize": 0.05,
+        "terrainVoxelSize": 0.2,
+        "useTerrainAnalysis": True,
+        "checkObstacle": True,
+        "checkRotObstacle": False,
+        "adjacentRange": 3.5,
+        "groundHeightThre": 0.1,
+        "costHeightThre1": 0.1,
+        "costHeightThre2": 0.05,
+        "useCost": False,
+        "slowPathNumThre": 5,
+        "slowGroupNumThre": 1,
+        "pointPerPathThre": 2,
+        "minRelZ": -0.4,
+        "maxRelZ": 0.3,
+        "dirWeight": 0.02,
+        "dirThre": 90.0,
+        "dirToVehicle": False,
+        "pathScale": 0.875,
+        "minPathScale": 0.675,
+        "pathScaleStep": 0.1,
+        "pathScaleBySpeed": True,
+        "minPathRange": 0.8,
+        "pathRangeStep": 0.6,
+        "pathRangeBySpeed": True,
+        "pathCropByGoal": True,
+        "joyToCheckObstacleDelay": 5.0,
+        "freezeAng": 90.0,
+        "freezeTime": 0.0,
+    }
+    local_parameters.update(
+        _node_parameters(generic_data, "localPlanner", "local planner config")
+    )
+    local_parameters.update(
+        _node_parameters(robot_data, "localPlanner", "robot config")
+    )
+    local_parameters.update(
+        {
+            "use_sim_time": use_sim_time,
+            "twoWayDrive": True,
+            "autonomyMode": autonomy_mode,
+            "joyToSpeedDelay": joy_to_speed_delay,
+            "goalX": goal_x,
+            "goalY": goal_y,
+        }
+    )
+    # Motion/safety values must be the final merge layer. Passing YAML files and
+    # a wildcard dict separately lets exact node blocks silently win in rcl.
+    local_parameters.update(
+        {
+            "maxSpeed": maximum_speed,
+            "autonomySpeed": autonomy_speed,
+            "goalReachedThreshold": goal_threshold,
+            "obstacleHeightThre": obstacle_height,
+        }
+    )
+
+    path_parameters = {
+        "pubSkipNum": 1,
+        "switchTimeThre": 1.0,
+        "useInclRateToSlow": False,
+        "inclRateThre": 120.0,
+        "slowRate1": 0.25,
+        "slowRate2": 0.5,
+        "slowRate3": 0.75,
+        "slowTime1": 2.0,
+        "slowTime2": 2.0,
+        "useInclToStop": False,
+        "inclThre": 45.0,
+        "stopTime": 5.0,
+        "noRotAtStop": False,
+        "noRotAtGoal": False,
+    }
+    path_parameters.update(
+        _node_parameters(generic_data, "pathFollower", "local planner config")
+    )
+    path_parameters.update(
+        _node_parameters(robot_data, "pathFollower", "robot config")
+    )
+    path_parameters.update(
+        {
+            "use_sim_time": use_sim_time,
+            "realRobot": real_robot,
+            "twoWayDrive": two_way_drive,
+            "autonomyMode": autonomy_mode,
+            "joyToSpeedDelay": joy_to_speed_delay,
+        }
+    )
+    path_parameters.update(
+        {
+            "maxSpeed": maximum_speed,
+            "autonomySpeed": autonomy_speed,
+            "maxAccel": command_ramp,
+            "maxYawRate": yaw_rate,
+        }
+    )
+
+    local_planner = Node(
+        package="local_planner",
+        executable="localPlanner",
+        name="localPlanner",
+        output="screen",
+        parameters=[local_parameters],
+    )
+    path_follower = Node(
+        package="local_planner",
+        executable="pathFollower",
+        name="pathFollower",
+        output="screen",
+        parameters=[path_parameters],
+    )
+    vehicle_transform = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="vehicleTransPublisher",
+        arguments=[
+            str(-sensor_offsets["sensorOffsetX"]),
+            str(-sensor_offsets["sensorOffsetY"]),
+            str(-sensor_offsets["sensorOffsetZ"]),
+            "0", "0", "0", "sensor", "base_link",
+        ],
+    )
+    camera_transform = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="sensorTransPublisher",
+        arguments=[
+            str(camera_offsets["cameraOffsetX"]),
+            str(camera_offsets["cameraOffsetY"]),
+            str(camera_offsets["cameraOffsetZ"]),
+            str(camera_offsets["cameraOffsetRoll"]),
+            str(camera_offsets["cameraOffsetPitch"]),
+            str(camera_offsets["cameraOffsetYaw"]),
+            "sensor", camera_link,
+        ],
+    )
+
+    actions = [local_planner, path_follower, vehicle_transform, camera_transform]
+    if start_odom_transformer:
+        actions.append(
+            Node(
+                package="odom_transformer",
+                executable="odom_transformer_node",
+                name="odom_transformer",
+                output="screen",
+                parameters=[{
+                    "use_sim_time": use_sim_time,
+                    "source_frame": "sensor",
+                    "target_frame": "base_link",
+                    "odom_topic_in": "/state_estimation",
+                    "odom_topic_out": "/odom_base_link",
+                }],
+            )
+        )
+    return actions
+
+
+def generate_launch_description():
+    robot_config = _env(
+        "NAV_ROBOT_CONFIG", _env("ROBOT_CONFIG_PATH", "unitree/unitree_go2")
+    )
+    arguments = [
+        DeclareLaunchArgument("config", default_value="omniDir"),
+        DeclareLaunchArgument("robot_config", default_value=robot_config),
+        DeclareLaunchArgument("twoWayDrive", default_value="false"),
+        DeclareLaunchArgument("realRobot", default_value="false"),
+        DeclareLaunchArgument("autonomyMode", default_value="false"),
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("startOdomTransformer", default_value="true"),
+        # Real-robot parents still pass legacy generic mount defaults. Keep the
+        # selected robot YAML authoritative unless a simulation wrapper opts in.
+        DeclareLaunchArgument("overrideMountOffsets", default_value="false"),
+        DeclareLaunchArgument("joyToSpeedDelay", default_value="2.0"),
+        DeclareLaunchArgument("goalX", default_value="0.0"),
+        DeclareLaunchArgument("goalY", default_value="0.0"),
+        DeclareLaunchArgument("sensorOffsetX", default_value=""),
+        DeclareLaunchArgument("sensorOffsetY", default_value=""),
+        DeclareLaunchArgument("sensorOffsetZ", default_value=""),
+        DeclareLaunchArgument("cameraOffsetX", default_value=""),
+        DeclareLaunchArgument("cameraOffsetY", default_value=""),
+        DeclareLaunchArgument("cameraOffsetZ", default_value=""),
+        DeclareLaunchArgument("cameraOffsetRoll", default_value=""),
+        DeclareLaunchArgument("cameraOffsetPitch", default_value=""),
+        DeclareLaunchArgument("cameraOffsetYaw", default_value=""),
+        DeclareLaunchArgument("cameraLink", default_value=""),
+        DeclareLaunchArgument("maxSpeed", default_value=_env("NAV_MAX_SPEED", "0.25")),
+        DeclareLaunchArgument(
+            "autonomySpeed", default_value=_env("NAV_AUTONOMY_SPEED", "0.20")
+        ),
+        DeclareLaunchArgument("maxAccel", default_value=_env("NAV_MAX_ACCEL", "0.35")),
+        DeclareLaunchArgument(
+            "maxYawRate", default_value=_env("NAV_MAX_YAW_RATE_DEG_S", "15.0")
+        ),
+        DeclareLaunchArgument(
+            "goalReachedThreshold",
+            default_value=_env("LOCAL_PLANNER_GOAL_REACHED_THRESHOLD", "0.15"),
+        ),
+        DeclareLaunchArgument(
+            "obstacleHeightThre",
+            default_value=_env("LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE", "0.20"),
+        ),
+    ]
+    return LaunchDescription([*arguments, OpaqueFunction(function=_launch_setup)])

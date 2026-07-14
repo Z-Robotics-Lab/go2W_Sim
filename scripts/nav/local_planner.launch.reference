@@ -1,0 +1,70 @@
+<launch>
+  <!-- Compatibility entry point for simulation. All controller parameters are
+       merged and validated by the Python launch; this wrapper only preserves
+       the legacy XML API and simulation TF/clock behavior. -->
+  <arg name="config" default="omniDir"/>
+  <arg name="robot_config" default="$(env NAV_ROBOT_CONFIG unitree/unitree_go2)"/>
+  <arg name="twoWayDrive" default="false"/>
+  <arg name="realRobot" default="false"/>
+  <arg name="autonomyMode" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="startOdomTransformer" default="false"/>
+  <arg name="overrideMountOffsets" default="true"/>
+  <arg name="joyToSpeedDelay" default="2.0"/>
+  <arg name="goalX" default="0.0"/>
+  <arg name="goalY" default="0.0"/>
+
+  <arg name="maxSpeed" default="$(env NAV_MAX_SPEED 0.25)"/>
+  <arg name="autonomySpeed" default="$(env NAV_AUTONOMY_SPEED 0.20)"/>
+  <arg name="maxAccel" default="$(env NAV_MAX_ACCEL 0.35)"/>
+  <arg name="maxYawRate" default="$(env NAV_MAX_YAW_RATE_DEG_S 15.0)"/>
+  <arg name="goalReachedThreshold" default="$(env LOCAL_PLANNER_GOAL_REACHED_THRESHOLD 0.15)"/>
+  <arg name="obstacleHeightThre" default="$(env LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE 0.20)"/>
+
+  <!-- Public sensor offsets are base_link -> sensor. The Python child emits
+       the inverse sensor -> base_link TF used by ARISE/local planner. -->
+  <arg name="sensorOffsetX" default="0.0"/>
+  <arg name="sensorOffsetY" default="0.0"/>
+  <arg name="sensorOffsetZ" default="0.0"/>
+
+  <!-- Preserve the legacy sim-only sensor -> camera transform exactly. Real
+       launches omit these values and use the selected robot YAML instead. -->
+  <arg name="cameraOffsetX" default="0.0"/>
+  <arg name="cameraOffsetY" default="0.0"/>
+  <arg name="cameraOffsetZ" default="0.0"/>
+  <arg name="cameraOffsetRoll" default="-1.5707963"/>
+  <arg name="cameraOffsetPitch" default="0.0"/>
+  <arg name="cameraOffsetYaw" default="-1.5707963"/>
+  <arg name="cameraLink" default="camera"/>
+
+  <include file="$(find-pkg-share local_planner)/launch/local_planner.launch.py">
+    <arg name="config" value="$(var config)"/>
+    <arg name="robot_config" value="$(var robot_config)"/>
+    <arg name="twoWayDrive" value="$(var twoWayDrive)"/>
+    <arg name="realRobot" value="$(var realRobot)"/>
+    <arg name="autonomyMode" value="$(var autonomyMode)"/>
+    <arg name="use_sim_time" value="$(var use_sim_time)"/>
+    <!-- system_isaac_sim owns the single sensor->base odom transformer. -->
+    <arg name="startOdomTransformer" value="$(var startOdomTransformer)"/>
+    <arg name="overrideMountOffsets" value="$(var overrideMountOffsets)"/>
+    <arg name="joyToSpeedDelay" value="$(var joyToSpeedDelay)"/>
+    <arg name="goalX" value="$(var goalX)"/>
+    <arg name="goalY" value="$(var goalY)"/>
+    <arg name="maxSpeed" value="$(var maxSpeed)"/>
+    <arg name="autonomySpeed" value="$(var autonomySpeed)"/>
+    <arg name="maxAccel" value="$(var maxAccel)"/>
+    <arg name="maxYawRate" value="$(var maxYawRate)"/>
+    <arg name="goalReachedThreshold" value="$(var goalReachedThreshold)"/>
+    <arg name="obstacleHeightThre" value="$(var obstacleHeightThre)"/>
+    <arg name="sensorOffsetX" value="$(var sensorOffsetX)"/>
+    <arg name="sensorOffsetY" value="$(var sensorOffsetY)"/>
+    <arg name="sensorOffsetZ" value="$(var sensorOffsetZ)"/>
+    <arg name="cameraOffsetX" value="$(var cameraOffsetX)"/>
+    <arg name="cameraOffsetY" value="$(var cameraOffsetY)"/>
+    <arg name="cameraOffsetZ" value="$(var cameraOffsetZ)"/>
+    <arg name="cameraOffsetRoll" value="$(var cameraOffsetRoll)"/>
+    <arg name="cameraOffsetPitch" value="$(var cameraOffsetPitch)"/>
+    <arg name="cameraOffsetYaw" value="$(var cameraOffsetYaw)"/>
+    <arg name="cameraLink" value="$(var cameraLink)"/>
+  </include>
+</launch>

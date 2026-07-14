@@ -13,6 +13,30 @@ source /ws/install/setup.bash
 #   explore  = system_isaac_sim_with_exploration.launch.py（额外拉 TARE 探索规划器）
 # 未知值一律回退 waypoint（fail-safe：不因拼写错就整条 system 链起不来）。
 NAV_MODE="${NAV_MODE:-waypoint}"
+NAV_MAX_SPEED="${NAV_MAX_SPEED:-0.25}"
+NAV_AUTONOMY_SPEED="${NAV_AUTONOMY_SPEED:-0.20}"
+NAV_MAX_ACCEL="${NAV_MAX_ACCEL:-0.35}"
+NAV_MAX_YAW_RATE_DEG_S="${NAV_MAX_YAW_RATE_DEG_S:-15.0}"
+NAV_ROBOT_CONFIG="${NAV_ROBOT_CONFIG:-unitree/unitree_go2}"
+LOCAL_PLANNER_GOAL_REACHED_THRESHOLD="${LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15}"
+LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE="${LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE:-0.20}"
+NAV_SPEED="${NAV_SPEED:-$NAV_AUTONOMY_SPEED}"
+export NAV_MAX_SPEED NAV_AUTONOMY_SPEED NAV_MAX_ACCEL NAV_MAX_YAW_RATE_DEG_S
+export NAV_SPEED NAV_ROBOT_CONFIG LOCAL_PLANNER_GOAL_REACHED_THRESHOLD
+export LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE
+if ! python3 /ws/validate_nav_profile.py \
+    --max-speed "$NAV_MAX_SPEED" \
+    --autonomy-speed "$NAV_AUTONOMY_SPEED" \
+    --bridge-speed "$NAV_SPEED" \
+    --command-ramp "$NAV_MAX_ACCEL" \
+    --yaw-rate-deg-s "$NAV_MAX_YAW_RATE_DEG_S" \
+    --goal-threshold "$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD" \
+    --obstacle-height "$LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE" \
+    --robot-config "$NAV_ROBOT_CONFIG" \
+    --config-root /ws/src/base_autonomy/local_planner/config; then
+  echo "[SUPERVISOR] invalid navigation profile; refusing to start" >&2
+  exit 2
+fi
 case "$NAV_MODE" in
   explore) SYSTEM_LAUNCH="system_isaac_sim_with_exploration.launch.py" ;;
   waypoint) SYSTEM_LAUNCH="system_isaac_sim.launch.py" ;;
@@ -50,38 +74,16 @@ echo "[SUPERVISOR] $(date) start" > /ws/supervisor.log
 ) &
 
 echo "[SUPERVISOR] NAV_MODE=$NAV_MODE -> $SYSTEM_LAUNCH" >> /ws/supervisor.log
-(
-  OBSTACLE_THRE="${LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE:-0.2}"
-  # Keep the upstream stopping radius strictly inside Z-Manip's measured
-  # work-pose acceptance radius (0.20 m). The final gap is closed by visual
-  # servo after coarse navigation reports a truthful READY.
-  GOAL_THRE="${LOCAL_PLANNER_GOAL_REACHED_THRESHOLD:-0.15}"
-  APPLIED=""
-  while true; do
-    if ros2 node list 2>/dev/null | grep -qx "/localPlanner"; then
-      if ros2 param set /localPlanner obstacleHeightThre "$OBSTACLE_THRE" \
-          >/dev/null 2>&1 \
-          && ros2 param set /localPlanner goalReachedThreshold "$GOAL_THRE" \
-          >/dev/null 2>&1; then
-        CONTRACT="$OBSTACLE_THRE/$GOAL_THRE"
-        if [ "$APPLIED" != "$CONTRACT" ]; then
-          echo "[SUPERVISOR] localPlanner obstacleHeightThre=$OBSTACLE_THRE goalReachedThreshold=$GOAL_THRE" \
-            >> /ws/supervisor.log
-          APPLIED="$CONTRACT"
-        fi
-        sleep 30
-      else
-        sleep 2
-      fi
-    else
-      APPLIED=""
-      sleep 2
-    fi
-  done
-) &
+echo "[SUPERVISOR] startup nav profile=${GO2W_NAV_PROFILE:-direct} robot_config=$NAV_ROBOT_CONFIG speed=$NAV_AUTONOMY_SPEED/$NAV_MAX_SPEED command_ramp_100hz=$NAV_MAX_ACCEL yaw=$NAV_MAX_YAW_RATE_DEG_S goal=$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD obstacle=$LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE" \
+  >> /ws/supervisor.log
 (
   while true; do
     ros2 launch "/ws/$SYSTEM_LAUNCH" sensorOffsetX:=0.27 sensorOffsetY:=0.0 \
+      robotConfig:="$NAV_ROBOT_CONFIG" \
+      maxSpeed:="$NAV_MAX_SPEED" autonomySpeed:="$NAV_AUTONOMY_SPEED" \
+      maxAccel:="$NAV_MAX_ACCEL" maxYawRate:="$NAV_MAX_YAW_RATE_DEG_S" \
+      goalReachedThreshold:="$LOCAL_PLANNER_GOAL_REACHED_THRESHOLD" \
+      obstacleHeightThre:="$LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE" \
       >> /ws/system.log 2>&1
     echo "SYSTEM-DIED exit=$? $(date)" >> /ws/system.log
     sleep 3

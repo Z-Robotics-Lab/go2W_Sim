@@ -24,7 +24,8 @@ def test_sim_launches_separate_raw_mount_from_level_arise_frame_and_publish_base
             assert f"default_value=sensorOffset{axis}" in source
             assert f"ld.add_action(declare_rawSensorOffset{axis})" in source
         for offset in ("sensorOffsetX", "sensorOffsetY", "sensorOffsetZ"):
-            assert f"PythonExpression(['str(-float(', {offset}, '))'])" in source
+            assert f"'{offset}': {offset}" in source
+        assert "PythonExpression" not in source
 
         assert "package='odom_transformer'" in source
         assert "executable='odom_transformer_node'" in source
@@ -56,6 +57,9 @@ def test_sim_launches_separate_raw_mount_from_level_arise_frame_and_publish_base
             source.index("start_odom_transformer = Node(")
         ]
         assert "sensorMountPitch" not in local_planner_block
+        assert "'use_sim_time': 'true'" in local_planner_block
+        assert "'startOdomTransformer': 'false'" in local_planner_block
+        assert "'overrideMountOffsets': 'true'" in local_planner_block
 
 
 def test_odom_stream_is_a_fail_closed_bringup_contract():

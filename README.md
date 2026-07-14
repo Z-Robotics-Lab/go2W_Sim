@@ -83,8 +83,9 @@ docker exec -d -u 0 -e DISPLAY=:0 -e ROS_DISTRO=jazzy -e ROS_DOMAIN_ID=184 \
   go2w-isaac bash -c "cd /workspace/go2w/scripts/sim && TERM=xterm \
   /isaac-sim/python.sh warehouse_nav.py --env warehouse --shot_dir /workspace/go2w/logs/shots"
 # 2) 导航栈容器（首次：clone 导航栈到 refs/ 并 bash scripts/nav/patch_navstack.sh refs/<repo>，
-#    再按其 docker/README 构建 jazzy-dev 镜像 + colcon build）
-docker exec -d navstack bash /ws/run_navstack.sh
+#    再按其 docker/README 构建 jazzy-dev 镜像 + colcon build）。正常使用统一的
+#    配对重启入口；旧的 /ws/run_navstack.sh 仅作为兼容入口并委托同一 supervisor。
+DISPLAY=:1 GO2W_REQUIRE_GUI=1 GO2W_SCENE=office bash scripts/nav/restart_all.sh
 # 3) 发导航目标
 docker exec navstack bash -c "export ROS_DOMAIN_ID=184 && source /opt/ros/jazzy/setup.bash && \
   source /ws/install/setup.bash && ros2 topic pub --once /way_point \

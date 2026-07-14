@@ -21,6 +21,7 @@
 TARE（探索时自动发）。二者会互抢同一话题，故桥维护 nav_owner 互斥状态机，见下。
 """
 import json
+import math
 import os
 import threading
 import time
@@ -56,6 +57,24 @@ STATE = {
     # 抓取管线（任务③）：箱子 GT / 夹持中心 GT / 臂关节实测+目标 / 状态机状态
     "object": None, "ee": None, "arm": None, "grasp_status": None,
 }
+
+
+def _nav_speed_limits():
+    cruise = float(os.environ.get("NAV_SPEED", "0.20"))
+    maximum = float(os.environ.get("NAV_MAX_SPEED", "0.25"))
+    planned = float(os.environ.get("NAV_AUTONOMY_SPEED", str(cruise)))
+    if not all(
+        math.isfinite(value) and value > 0.0
+        for value in (cruise, maximum, planned)
+    ):
+        raise ValueError("navigation speeds must be finite and positive")
+    if maximum > 1.0:
+        raise ValueError("NAV_MAX_SPEED exceeds the 1.0 m/s safety cap")
+    if cruise > maximum:
+        raise ValueError("NAV_SPEED cannot exceed NAV_MAX_SPEED")
+    if not math.isclose(cruise, planned, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("NAV_SPEED must match NAV_AUTONOMY_SPEED")
+    return cruise, maximum
 
 
 def ros_main():
@@ -145,7 +164,7 @@ def ros_main():
     from sensor_msgs.msg import Joy
     STATE["speed_pub"] = node.create_publisher(Float32, "/speed", 5)
     STATE["joy_pub"] = node.create_publisher(Joy, "/joy", 5)
-    nav_speed = float(os.environ.get("NAV_SPEED", "0.6"))
+    nav_speed, _nav_max_speed = _nav_speed_limits()
 
     def _pub_speed():
         m = Float32(); m.data = nav_speed
@@ -294,8 +313,10 @@ class Handler(BaseHTTPRequestHandler):
             # （2026-07-07 实测："去5,5" 后 cmd_vel 全零 30+ 分钟，坑41）。
             from sensor_msgs.msg import Joy
             cj = Joy()
-            # maxSpeed 与 local_planner launch 默认(0.875)同源；改 launch 需同步此处。
-            _joy_speed = min(1.0, float(os.environ.get("NAV_SPEED", "0.6")) / 0.875)
+            # Use the same startup contract as localPlanner/pathFollower. A
+            # literal divisor silently changes speed when a profile changes.
+            _nav_speed, _nav_max_speed = _nav_speed_limits()
+            _joy_speed = min(1.0, _nav_speed / _nav_max_speed)
             cj.axes = [0.0, 0.0, -1.0, 0.0, _joy_speed, 1.0, 0.0, 0.0]
             # buttons 必须补满：terrainAnalysis(.cpp:188)/Ext 直接索引 buttons[5]
             # 无长度检查——空 buttons 会让地形节点 SIGSEGV（2026-07-06 实证：矫正 joy

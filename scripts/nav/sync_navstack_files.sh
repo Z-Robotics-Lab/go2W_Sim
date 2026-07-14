@@ -9,7 +9,7 @@ NAV="${1:-$HERE/../../refs/Navigation-Physical-Experiment}"
 NAV="$(cd "$NAV" && pwd)"
 for f in pc2_to_livox.py run_navstack.sh agent_bridge.py diagnostic_level.py \
          manip_rviz_bridge.py \
-         ros_stream_gate.py run_all_forever.sh; do
+         ros_stream_gate.py run_all_forever.sh validate_nav_profile.py; do
   cp "$HERE/$f" "$NAV/$f"
 done
 # One tracked mux contract is shared by simulation and real-robot launch files.
@@ -17,6 +17,45 @@ done
 MUX_CONTRACT="$HERE/../../configs/nav/cmd_vel_mux_params.yaml"
 MUX_RUNTIME="$NAV/src/utilities/cmd_vel_mux/config/cmd_vel_mux_params.yaml"
 install -D -m 0644 "$MUX_CONTRACT" "$MUX_RUNTIME"
+# The upstream child launch otherwise consumes only robot YAML defaults and
+# silently ignores the motion arguments passed by the system launch.
+LOCAL_PLANNER_LAUNCH="$NAV/src/base_autonomy/local_planner/launch/local_planner.launch"
+install -D -m 0644 "$HERE/local_planner.launch.reference" "$LOCAL_PLANNER_LAUNCH"
+LOCAL_PLANNER_PY_LAUNCH="$NAV/src/base_autonomy/local_planner/launch/local_planner.launch.py"
+install -D -m 0644 "$HERE/local_planner.launch.py.reference" "$LOCAL_PLANNER_PY_LAUNCH"
+
+refresh_installed_launch() {
+  local source_file="$1" installed_file="$2" expected_container_target="$3"
+  [ -e "$installed_file" ] || [ -L "$installed_file" ] || return 0
+  if [ -L "$installed_file" ]; then
+    local target resolved_source resolved_target
+    target="$(readlink "$installed_file")"
+    resolved_source="$(readlink -f "$source_file")"
+    resolved_target="$(readlink -f "$installed_file" 2>/dev/null || true)"
+    if [ "$target" != "$expected_container_target" ] \
+       && [ "$resolved_target" != "$resolved_source" ]; then
+      echo "[sync] unexpected local_planner launch symlink: $installed_file -> $target" >&2
+      return 1
+    fi
+    return 0
+  fi
+  # A non-symlink colcon install owns a regular copy. Refresh it explicitly so
+  # ros2 launch cannot keep loading the pre-profile implementation.
+  install -m 0644 "$source_file" "$installed_file"
+  cmp -s "$source_file" "$installed_file"
+}
+
+for install_launch_dir in \
+    "$NAV/install/local_planner/share/local_planner/launch" \
+    "$NAV/install/share/local_planner/launch"; do
+  [ -d "$install_launch_dir" ] || continue
+  refresh_installed_launch \
+    "$LOCAL_PLANNER_LAUNCH" "$install_launch_dir/local_planner.launch" \
+    "/ws/src/base_autonomy/local_planner/launch/local_planner.launch"
+  refresh_installed_launch \
+    "$LOCAL_PLANNER_PY_LAUNCH" "$install_launch_dir/local_planner.launch.py" \
+    "/ws/src/base_autonomy/local_planner/launch/local_planner.launch.py"
+done
 # ARISE's calibration install rule creates a regular file rather than a symlink.
 # Validate the sim-only zero relative rotation, then refresh the exact file loaded
 # by ros2 launch. This prevents source/install drift from silently restoring +20 deg.

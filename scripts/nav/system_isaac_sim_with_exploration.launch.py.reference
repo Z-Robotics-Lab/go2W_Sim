@@ -5,7 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource, FrontendLaunchDescriptionSource
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
   world_name = LaunchConfiguration('world_name')
@@ -21,15 +21,21 @@ def generate_launch_description():
   vehicleX = LaunchConfiguration('vehicleX')
   vehicleY = LaunchConfiguration('vehicleY')
   checkTerrainConn = LaunchConfiguration('checkTerrainConn')
+  robotConfig = LaunchConfiguration('robotConfig')
+  maxSpeed = LaunchConfiguration('maxSpeed')
+  autonomySpeed = LaunchConfiguration('autonomySpeed')
+  maxAccel = LaunchConfiguration('maxAccel')
+  maxYawRate = LaunchConfiguration('maxYawRate')
+  goalReachedThreshold = LaunchConfiguration('goalReachedThreshold')
+  obstacleHeightThre = LaunchConfiguration('obstacleHeightThre')
 
   declare_world_name = DeclareLaunchArgument('world_name', default_value='real_world', description='')
   declare_exploration_planner_config = DeclareLaunchArgument('exploration_planner_config', default_value='indoor_small', description='')
   declare_sensorOffsetX = DeclareLaunchArgument('sensorOffsetX', default_value='0.27', description='')
   declare_sensorOffsetY = DeclareLaunchArgument('sensorOffsetY', default_value='0.0', description='')
   declare_sensorOffsetZ = DeclareLaunchArgument('sensorOffsetZ', default_value='0.10', description='')
-  # The legacy XML include rebinds sensorOffset* to its inverse TF arguments.
-  # Snapshot the public offsets under distinct names before executing it so the
-  # physical base_link -> mid360_raw transform cannot inherit those negatives.
+  # Keep separate names for the physical pitched frame and the ARISE navigation
+  # frame. Both consume the same public base_link -> sensor translation.
   declare_rawSensorOffsetX = DeclareLaunchArgument(
     'rawSensorOffsetX', default_value=sensorOffsetX, description='')
   declare_rawSensorOffsetY = DeclareLaunchArgument(
@@ -43,6 +49,27 @@ def generate_launch_description():
   declare_vehicleX = DeclareLaunchArgument('vehicleX', default_value='0.0', description='')
   declare_vehicleY = DeclareLaunchArgument('vehicleY', default_value='0.0', description='')
   declare_checkTerrainConn = DeclareLaunchArgument('checkTerrainConn', default_value='true', description='')
+  declare_robotConfig = DeclareLaunchArgument(
+    'robotConfig', default_value=os.environ.get('NAV_ROBOT_CONFIG', 'unitree/unitree_go2'),
+    description='Robot config path without .yaml suffix')
+  # Office mobile manipulation selects its bounded tracking profile through
+  # launch arguments shared with the real-robot Python launch.
+  declare_maxSpeed = DeclareLaunchArgument(
+    'maxSpeed', default_value=os.environ.get('NAV_MAX_SPEED', '0.25'), description='m/s hard cap')
+  declare_autonomySpeed = DeclareLaunchArgument(
+    'autonomySpeed', default_value=os.environ.get('NAV_AUTONOMY_SPEED', '0.20'), description='m/s cruise speed')
+  declare_maxAccel = DeclareLaunchArgument(
+    'maxAccel', default_value=os.environ.get('NAV_MAX_ACCEL', '0.35'),
+    description='pathFollower 100 Hz command-ramp coefficient')
+  declare_maxYawRate = DeclareLaunchArgument(
+    'maxYawRate', default_value=os.environ.get('NAV_MAX_YAW_RATE_DEG_S', '15.0'),
+    description='legacy degrees/s yaw cap')
+  declare_goalReachedThreshold = DeclareLaunchArgument(
+    'goalReachedThreshold',
+    default_value=os.environ.get('LOCAL_PLANNER_GOAL_REACHED_THRESHOLD', '0.15'), description='m')
+  declare_obstacleHeightThre = DeclareLaunchArgument(
+    'obstacleHeightThre',
+    default_value=os.environ.get('LOCAL_PLANNER_OBSTACLE_HEIGHT_THRE', '0.20'), description='m')
   
   start_local_planner = IncludeLaunchDescription(
     FrontendLaunchDescriptionSource(os.path.join(
@@ -51,15 +78,22 @@ def generate_launch_description():
     launch_arguments={
       'realRobot': 'false',
       'autonomyMode': 'true',
-      'maxSpeed': '0.6',
-      'autonomySpeed': '0.6',
+      'robot_config': robotConfig,
+      'maxSpeed': maxSpeed,
+      'autonomySpeed': autonomySpeed,
+      'maxAccel': maxAccel,
+      'maxYawRate': maxYawRate,
+      'goalReachedThreshold': goalReachedThreshold,
+      'obstacleHeightThre': obstacleHeightThre,
+      'use_sim_time': 'true',
+      'startOdomTransformer': 'false',
+      'overrideMountOffsets': 'true',
       # Public offsets describe base_link -> the ARISE navigation-frame origin.
-      # The legacy XML publishes the inverse sensor -> base_link TF. Its
-      # rotation stays identity because ARISE gravity-levels the raw LiDAR and
-      # IMU together; this virtual sensor frame is not the pitched raw frame.
-      'sensorOffsetX': PythonExpression(['str(-float(', sensorOffsetX, '))']),
-      'sensorOffsetY': PythonExpression(['str(-float(', sensorOffsetY, '))']),
-      'sensorOffsetZ': PythonExpression(['str(-float(', sensorOffsetZ, '))']),
+      # The shared Python child performs the one required inversion when it
+      # publishes sensor -> base_link.
+      'sensorOffsetX': sensorOffsetX,
+      'sensorOffsetY': sensorOffsetY,
+      'sensorOffsetZ': sensorOffsetZ,
       'cameraOffsetZ': cameraOffsetZ,
       'goalX': vehicleX,
       'goalY': vehicleY,
@@ -188,6 +222,13 @@ def generate_launch_description():
   ld.add_action(declare_vehicleX)
   ld.add_action(declare_vehicleY)
   ld.add_action(declare_checkTerrainConn)
+  ld.add_action(declare_robotConfig)
+  ld.add_action(declare_maxSpeed)
+  ld.add_action(declare_autonomySpeed)
+  ld.add_action(declare_maxAccel)
+  ld.add_action(declare_maxYawRate)
+  ld.add_action(declare_goalReachedThreshold)
+  ld.add_action(declare_obstacleHeightThre)
   ld.add_action(declare_exploration_planner_config)
 
   ld.add_action(start_local_planner)
