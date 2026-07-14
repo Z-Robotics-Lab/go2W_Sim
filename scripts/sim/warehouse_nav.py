@@ -163,13 +163,17 @@ SCENES = {
         # origin→此点全程直立可达。z=0.42 同 warehouse 贴地策略。回滚原点见 git 历史。
         #
         # 抓取尾链 shakedown 出生点（CEO 打法调整 2026-07-14，env-gated，默认不变）：
-        # 设 GO2W_SPAWN_GRASP=1 时出生点改到 (-1.88,-5.18,0.42) 朝向 +X（identity quat）——
-        # 距 soup_can (-1.18,-5.18) 恰 0.70m、bearing 0.0°，落在 HOLD 窗 [0.55,0.75] 内。
-        # 目的：出生即 standoff → 静止 + TABLE_VIEW 秒锁（三次实证的强项）→ HOLD 立即达成，
-        # 跳过"运动中锁定"这一攻坚难点，直接打穿尾链（handoff→PRE_GRASP→IK→joint_cmd→
-        # CLOSE→LIFT→GT 裁判）。默认导航出生点 (-2.5,-5.0) 完全不动（sibling nav 场景不受扰）。
+        # 设 GO2W_SPAWN_GRASP=1 时出生点 (-2.08,-5.18,0.42) 朝向 +X（identity quat）——
+        # 距 soup_can (-1.18,-5.18) 恰 0.90m、bearing 0.0°。
+        # 【0.70m→0.90m 后移，CEO 目击撞台修正 2026-07-14】：初版 0.70m 只算了底盘中心到
+        # 罐距离，没算 Go2 机身前伸（体长+臂前悬）+落地前冲——CEO 亲眼目击机器人前部怼进
+        # 托盘、soup_can 被撞倒。后移到 0.90m 留出机身余量，最后 ~25cm 由伺服 APPROACH 收口
+        # （run1 实证伺服能刹在 0.638-0.664m 不碰）。
+        # 目的：出生 standoff（不撞）→ 静止 + TABLE_VIEW 锁定 → 伺服 APPROACH 收到 HOLD 窗 →
+        # 打穿尾链（handoff→PRE_GRASP→IK→joint_cmd→CLOSE→LIFT→GT 裁判）。
+        # 默认导航出生点 (-2.5,-5.0) 完全不动（sibling nav 场景不受扰）。
         "spawn": (
-            (-1.88, -5.18, 0.42)
+            (-2.08, -5.18, 0.42)
             if _os.environ.get("GO2W_SPAWN_GRASP", "0") != "0"
             else (-2.5, -5.0, 0.42)
         ),
