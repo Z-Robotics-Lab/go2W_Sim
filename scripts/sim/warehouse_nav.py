@@ -292,12 +292,21 @@ def _rest_z(bbox_z: float) -> float:
 # 入选 3 件的立高 = 核验 bbox Y 分量（立正后即竖直尺寸）：soup 首抓 Ø66×H102 /
 # sugar 薄盒立起 176 高、38mm 薄边呈爪 / mustard 瓶 191 高、瓶身 58mm 呈爪。
 _H_SOUP, _H_SUGAR, _H_MUSTARD = 0.10185, 0.17625, 0.1913
-# ===== 爪子友好的窄抓取物：纯红小立方（CEO 令 2026-07-14）=====
+# ===== 爪子友好的窄抓取物：纯红小盒（CEO 令 2026-07-14；run35 各向异化 2026-07-15）=====
 # 缘由：PiPER 平行爪最大张开 GRIPPER_WIDTH_MAX=0.070m；soup_can Ø66mm 仅 4mm 余量，
 # 平行爪物理上兜不过最粗处 → CEO 换更窄目标。取景同治：纯色小盒比俯视罐盖好检测/好肉眼分辨。
-# 尺寸配置驱动（真机换真实小物只改这一常量，带单位）：立方边长 0.04m ≤ 0.6×0.070=0.042m
-# （留 30mm 余量，vs soup 4mm）。立方对称 → 无姿态歧义、检测词形状分明。
-_RED_BLOCK_W = 0.04                 # 立方边长 [m]（宽=高=深；≤0.6×GRIPPER_WIDTH_MAX 0.042）
+# ── run35 实测根因（DEBUG.md）：0.04m 立方对 YOLOE-seg 太小，纯红面积不足，任意 prompt 都
+#    死在 conf≈0.15 < τ_det 0.4（prompt 不敏感，纯视觉 objectness 封顶），链永不 LOCK；而
+#    soup_can(6.6cm) 同距 conf 0.63。⇒ 检测受物体像素面积驱动，须放大可视面。约束张力：爪要
+#    宽≤~0.042，YOLOE 要大 → 立方无解 ⇒ 各向异化：抓取/来向轴 X 保持 0.04（爪宽+reach 余量+
+#    contract 中心不变），仅横向 Y/高 Z 放大补像素。rot 用单位阵（非 _UPRIGHT Rx90，那会把 Y↔Z
+#    对调成竖高易倒）；X 面正对机器人来向（短轴面向机器人，不动 reach 窄带 0.12m 余量）。
+_RED_BLOCK_W = 0.04                 # 抓取/来向轴 X 世界边长 [m]（爪跨此轴；≤0.6×GRIPPER_WIDTH_MAX 0.042，不变）
+_RED_BLOCK_LAT = 0.08              # 横向 Y 世界边长 [m]（补检测像素；≤邻件空档：soup(-0.18)/sugar(0) 间隙半宽~0.046）
+_RED_BLOCK_H = 0.06               # 高 Z 世界边长 [m]（补检测像素；X-Z 纵横比 1.5 低倾覆；正面 Y×Z=80×60≈soup 73%）
+# rot 仍用 _UPRIGHT(Rx90)：m0.5 立正 gate(test_m05_props up_z=2(qy·qz+qw·qx)) 量的是物体**局部 +Y**
+# 轴的世界-z 分量（YCB 网格 Y-up 约定），Rx90⇒up_z=1 过 gate；单位阵⇒up_z=0 会被误判 90°倾覆(假失败,
+# run35 陷阱)。而 Rx90 把局部尺寸(x,y,z)映到世界(x,z,y)，故局部尺寸须写(W, H, LAT) 才得世界(W,LAT,H)。
 _RED_BLOCK_COLOR = (0.9, 0.05, 0.05)  # 纯红 diffuse（PreviewSurfaceCfg；好检测好分辨）
 _RED_BLOCK_MASS = 0.05              # [kg] 轻质塑料小盒量级（YCB soup 罐 ~0.35kg，此更轻）
 # 一列贴 -X 近边（托盘转向后短轴面向机器人来向）：列 X = 锚-0.08（距转向后 -X 台缘
@@ -330,14 +339,15 @@ PROPS_OFFICE = [
     # （立方对称，Rx90° 无害）→ 过 G-p7 立正 gate 的同一判据。
     {"name": "red_block",
      "spawn": sim_utils.CuboidCfg(
-         size=(_RED_BLOCK_W, _RED_BLOCK_W, _RED_BLOCK_W),
+         # 局部尺寸(W,H,LAT)——经 rot=_UPRIGHT(Rx90) 映射为世界(W,LAT,H)=(0.04,0.08,0.06)。
+         size=(_RED_BLOCK_W, _RED_BLOCK_H, _RED_BLOCK_LAT),
          rigid_props=sim_utils.RigidBodyPropertiesCfg(),
          mass_props=sim_utils.MassPropertiesCfg(mass=_RED_BLOCK_MASS),
          collision_props=sim_utils.CollisionPropertiesCfg(),
          visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=_RED_BLOCK_COLOR),
          physics_material=sim_utils.RigidBodyMaterialCfg(
              static_friction=1.5, dynamic_friction=1.3, restitution=0.0)),
-     "pos": (_ROW_X, _ANCHOR_Y - 0.09, _rest_z(_RED_BLOCK_W)),
+     "pos": (_ROW_X, _ANCHOR_Y - 0.09, _rest_z(_RED_BLOCK_H)),
      "rot": _UPRIGHT, "physics": True},
 ]
 SCENES["office"]["props"] = PROPS_OFFICE  # 回填占位（前向引用规避）
