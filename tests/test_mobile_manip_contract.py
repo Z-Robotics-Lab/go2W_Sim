@@ -580,6 +580,7 @@ class PiperExecutionContractTest(unittest.TestCase):
             "command_id=1",
             "segment=lift",
             "trajectory_contract_id=none",
+            "trajectory_token=none",
             "executor_epoch=executor-test-epoch",
             "trajectory_received_at=7.500000",
             "gripper=accepted:0.0420",
@@ -604,13 +605,38 @@ class PiperExecutionContractTest(unittest.TestCase):
             [0.0, 1.0],
             [0.0] * 6,
             4.0,
-            segment="place_approach|contract=place-goal-7",
+            segment=(
+                "place_approach|contract=place-goal-7|token=trajectory-abc"
+            ),
         )
         self.assertEqual(command_id, 1)
         self.assertEqual(trajectory.segment, "place_approach")
         self.assertEqual(trajectory.contract_id, "place-goal-7")
+        self.assertEqual(trajectory.trajectory_token, "trajectory-abc")
         self.assertIn(
             "trajectory_contract_id=place-goal-7",
+            trajectory.status_fields("trajectory"),
+        )
+        self.assertIn(
+            "trajectory_token=trajectory-abc",
+            trajectory.status_fields("trajectory"),
+        )
+
+    def test_non_place_segment_echoes_unique_trajectory_token(self):
+        trajectory = make_buffer()
+        trajectory.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            4.0,
+            segment="approach|token=trajectory-def",
+        )
+
+        self.assertEqual(trajectory.segment, "approach")
+        self.assertEqual(trajectory.trajectory_token, "trajectory-def")
+        self.assertIn(
+            "trajectory_token=trajectory-def",
             trajectory.status_fields("trajectory"),
         )
 
@@ -622,6 +648,10 @@ class PiperExecutionContractTest(unittest.TestCase):
             "place_retreat|contract=bad value",
             "place_retreat|contract=bad|value",
             "lift|contract=place-goal-7",
+            "lift|token=bad|token=repeated",
+            "lift|token=bad=value",
+            "lift|token=bad value",
+            "place_approach|token=trajectory-abc|contract=place-goal-7",
         ):
             with self.subTest(segment=segment):
                 with self.assertRaises(TrajectoryValidationError):

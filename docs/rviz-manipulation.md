@@ -67,7 +67,8 @@ strictly increasing identities:
 
 ```text
 active;owner=trajectory;command_id=4;segment=place_approach;
-trajectory_contract_id=place-goal-7;executor_epoch=4f8c...;
+trajectory_contract_id=place-goal-7;trajectory_token=trajectory-a81f...;
+executor_epoch=4f8c...;
 trajectory_received_at=81.230000;gripper=accepted:0.0440;
 gripper_command_id=2;gripper_command_aperture=0.0440;
 gripper_received_at=81.110000;gripper_event_received_at=81.110000;
@@ -76,10 +77,14 @@ aperture=0.0452
 
 `place_approach` and `place_retreat` commands must encode the same bounded
 transaction ID in `JointTrajectory.header.frame_id` as
-`<segment>|contract=<place_goal_id>`. The executor allocates a process-unique
-`executor_epoch` and echoes both identities with its monotonic command ID and
-source receive time. Release verification can therefore reject retained
-status, executor restarts, cross-goal messages, and approach/retreat ID reuse.
+`<segment>|contract=<place_goal_id>|token=<trajectory_token>`. Every non-place
+command uses `<segment>|token=<trajectory_token>`. The task creates a fresh
+bounded token for every publication; the executor echoes it unchanged with its
+process-unique `executor_epoch`, monotonic command ID, and source receive time.
+The task therefore cannot bind a delayed status or DDS command from an earlier
+publication, even when its executor receive time is newer than the current
+publish time. Release verification can also reject retained status, executor
+restarts, cross-goal messages, and approach/retreat ID reuse.
 
 The trajectory `segment` is read from `JointTrajectory.header.frame_id` and
 must belong to the executor's explicit segment allowlist. Place approach and

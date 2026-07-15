@@ -18,6 +18,7 @@ TRAJECTORY_SEGMENTS = frozenset((
     "place_retreat",
 ))
 _TRAJECTORY_CONTRACT_SEPARATOR = "|contract="
+_TRAJECTORY_TOKEN_SEPARATOR = "|token="
 _CONTRACTED_SEGMENTS = frozenset(("place_approach", "place_retreat"))
 
 
@@ -123,10 +124,20 @@ def _identity_token(value: object, label: str) -> str:
     return token
 
 
-def parse_trajectory_segment(value: object) -> tuple[str, str]:
-    """Parse a segment and the mandatory place-transaction identity."""
+def parse_trajectory_segment(value: object) -> tuple[str, str, str]:
+    """Parse a segment plus optional place and per-publication identities."""
     if not isinstance(value, str):
         raise TrajectoryValidationError("segment must be a string")
+    if value.count(_TRAJECTORY_TOKEN_SEPARATOR) > 1:
+        raise TrajectoryValidationError("trajectory token delimiter is repeated")
+    if _TRAJECTORY_TOKEN_SEPARATOR in value:
+        value, trajectory_token = value.split(_TRAJECTORY_TOKEN_SEPARATOR, 1)
+        trajectory_token = _identity_token(
+            trajectory_token,
+            "trajectory token",
+        )
+    else:
+        trajectory_token = "none"
     if value.count(_TRAJECTORY_CONTRACT_SEPARATOR) > 1:
         raise TrajectoryValidationError("trajectory contract delimiter is repeated")
     if _TRAJECTORY_CONTRACT_SEPARATOR in value:
@@ -147,7 +158,7 @@ def parse_trajectory_segment(value: object) -> tuple[str, str]:
         raise TrajectoryValidationError(
             f"{segment} cannot carry a place trajectory contract_id",
         )
-    return segment, contract_id
+    return segment, contract_id, trajectory_token
 
 
 def _format_optional(value: float | None, *, digits: int = 6) -> str:
@@ -191,6 +202,7 @@ class JointTrajectoryBuffer:
         self.command_id = 0
         self.segment = "none"
         self.contract_id = "none"
+        self.trajectory_token = "none"
         self.received_at: float | None = None
         self._times: tuple[float, ...] = ()
         self._positions: tuple[tuple[float, ...], ...] = ()
@@ -229,7 +241,9 @@ class JointTrajectoryBuffer:
         *,
         segment: str,
     ) -> int:
-        segment_name, contract_id = parse_trajectory_segment(segment)
+        segment_name, contract_id, trajectory_token = parse_trajectory_segment(
+            segment,
+        )
         received_at = float(sim_time)
         if not math.isfinite(received_at) or received_at < 0.0:
             raise TrajectoryValidationError("sim_time must be finite and non-negative")
@@ -306,6 +320,7 @@ class JointTrajectoryBuffer:
         self.command_id += 1
         self.segment = segment_name
         self.contract_id = contract_id
+        self.trajectory_token = trajectory_token
         self.received_at = received_at
         self.owner = "trajectory"
         self.phase = "tracking"
@@ -471,6 +486,7 @@ class JointTrajectoryBuffer:
             f"command_id={self.command_id}",
             f"segment={self.segment}",
             f"trajectory_contract_id={self.contract_id}",
+            f"trajectory_token={self.trajectory_token}",
             f"trajectory_received_at={_format_optional(self.received_at)}",
             f"trajectory_phase={self.phase}",
             f"endpoint_position_error={_format_optional(self.endpoint_position_error_rad)}",
