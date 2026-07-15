@@ -68,6 +68,8 @@ strictly increasing identities:
 ```text
 active;owner=trajectory;command_id=4;segment=place_approach;
 trajectory_contract_id=place-goal-7;trajectory_token=trajectory-a81f...;
+trajectory_event_token=trajectory-a81f...;
+trajectory_event_received_at=81.230000;
 executor_epoch=4f8c...;
 trajectory_received_at=81.230000;gripper=accepted:0.0440;
 gripper_command_id=2;gripper_command_aperture=0.0440;
@@ -85,6 +87,12 @@ The task therefore cannot bind a delayed status or DDS command from an earlier
 publication, even when its executor receive time is newer than the current
 publish time. Release verification can also reject retained status, executor
 restarts, cross-goal messages, and approach/retreat ID reuse.
+
+`trajectory_token` belongs to the last accepted command. The independent
+`trajectory_event_token` and `trajectory_event_received_at` identify the most
+recent parseable attempt even when limits, timing, velocity, or start-state
+validation rejects it. Rejection therefore leaves accepted command IDs and
+source timestamps untouched while still failing the matching task immediately.
 
 The trajectory `segment` is read from `JointTrajectory.header.frame_id` and
 must belong to the executor's explicit segment allowlist. Place approach and

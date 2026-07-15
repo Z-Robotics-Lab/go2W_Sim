@@ -639,6 +639,43 @@ class PiperExecutionContractTest(unittest.TestCase):
             "trajectory_token=trajectory-def",
             trajectory.status_fields("trajectory"),
         )
+        self.assertIn(
+            "trajectory_event_token=trajectory-def",
+            trajectory.status_fields("trajectory"),
+        )
+        self.assertIn(
+            "trajectory_event_received_at=4.000000",
+            trajectory.status_fields("trajectory"),
+        )
+
+    def test_rejected_attempt_echoes_event_without_mutating_accepted_identity(self):
+        trajectory = make_buffer()
+        trajectory.submit(
+            ARM_JOINT_NAMES,
+            [[0.0] * 6, [0.1] * 6],
+            [0.0, 1.0],
+            [0.0] * 6,
+            4.0,
+            segment="transit|token=trajectory-old",
+        )
+
+        with self.assertRaises(TrajectoryValidationError):
+            trajectory.submit(
+                ARM_JOINT_NAMES,
+                [[0.0] * 6, [4.0] + [0.0] * 5],
+                [0.0, 1.0],
+                [0.0] * 6,
+                5.0,
+                segment="approach|token=trajectory-new",
+            )
+        trajectory.cancel([0.0] * 6, reason="rejected:position_limit")
+
+        self.assertEqual(trajectory.command_id, 1)
+        self.assertEqual(trajectory.segment, "transit")
+        self.assertEqual(trajectory.trajectory_token, "trajectory-old")
+        self.assertEqual(trajectory.received_at, 4.0)
+        self.assertEqual(trajectory.trajectory_event_token, "trajectory-new")
+        self.assertEqual(trajectory.trajectory_event_received_at, 5.0)
 
     def test_place_segment_contract_rejects_replay_ambiguous_tokens(self):
         for segment in (

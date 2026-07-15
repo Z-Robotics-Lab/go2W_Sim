@@ -204,6 +204,8 @@ class JointTrajectoryBuffer:
         self.contract_id = "none"
         self.trajectory_token = "none"
         self.received_at: float | None = None
+        self.trajectory_event_token = "none"
+        self.trajectory_event_received_at: float | None = None
         self._times: tuple[float, ...] = ()
         self._positions: tuple[tuple[float, ...], ...] = ()
         self._started_at = 0.0
@@ -247,6 +249,13 @@ class JointTrajectoryBuffer:
         received_at = float(sim_time)
         if not math.isfinite(received_at) or received_at < 0.0:
             raise TrajectoryValidationError("sim_time must be finite and non-negative")
+        # Event identity is independent from the last accepted command.  Keep it
+        # even when a later validation rejects this attempt so the task can
+        # correlate the rejection immediately without mutating command_id.
+        self.trajectory_event_token = trajectory_token
+        self.trajectory_event_received_at = (
+            received_at if trajectory_token != "none" else None
+        )
         names = tuple(command_joint_names)
         if len(names) != len(set(names)):
             raise TrajectoryValidationError("joint_names contains duplicates")
@@ -488,6 +497,9 @@ class JointTrajectoryBuffer:
             f"trajectory_contract_id={self.contract_id}",
             f"trajectory_token={self.trajectory_token}",
             f"trajectory_received_at={_format_optional(self.received_at)}",
+            f"trajectory_event_token={self.trajectory_event_token}",
+            "trajectory_event_received_at="
+            f"{_format_optional(self.trajectory_event_received_at)}",
             f"trajectory_phase={self.phase}",
             f"endpoint_position_error={_format_optional(self.endpoint_position_error_rad)}",
             f"endpoint_velocity={_format_optional(self.endpoint_velocity_rad_s)}",
