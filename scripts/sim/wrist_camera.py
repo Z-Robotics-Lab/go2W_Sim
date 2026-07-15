@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Z-Manip M0：腕部 D435i 相机口径 + 三姿态常量与纯助手函数。
+"""Z-Manip M0：腕部 D435i 相机口径 + 命名姿态常量与纯助手函数。
 
 设计意图（把 M0 的所有"数字"集中在此，warehouse_nav.py 只做接线，避免散落硬编码）：
-  1) NAMED_POSES  —— STOW/LOOKOUT/CARRY 三姿态 8 关节目标（j1..j6 臂 + j7/j8 爪，rad）。
+  1) NAMED_POSES  —— STOW/LOOKOUT/MANIP_LOOKOUT/CARRY 四姿态 8 关节目标
+     （j1..j6 臂 + j7/j8 爪，rad）。
      全部经真实 URDF FK 推导（go2w_sensored.urdf 链），非目测；见文件尾 FK 自检说明。
   2) 相机内参 —— 848x480，fx/fy/cx/cy 从相机 cfg 常量（focal_length/horizontal_aperture）
      实算，保证 CameraInfo.K 与相机张量口径永远自洽（不写死可能与 cfg 漂移的 fx）。
@@ -26,7 +27,7 @@ import os
 import numpy as np
 
 # ======================================================================== 姿态
-# 三姿态 8 关节目标表（j1..j6 臂 + j7/j8 爪；单位 rad）。
+# 四姿态 8 关节目标表（j1..j6 臂 + j7/j8 爪；单位 rad）。
 # 约定：j1=j4=j5=j6=0（保持在臂矢状面内，相机无侧偏，纯 pitch）；爪非抓取时 OPEN。
 # 关节顺序 = PiperGraspController.all_ids 顺序 = [j1,j2,j3,j4,j5,j6, j7,j8]
 #   （find_joints("piper_joint[1-6]") + find_joints("piper_joint[78]")）。
@@ -35,8 +36,9 @@ import numpy as np
 # FK 实证（go2w_sensored.urdf 全链，见文件尾自检）——视轴=相机 prim +X（world 约定）：
 #   STOW    (j2=0.80,j3=-1.20): 视轴 pitch=+27.91°（朝上，收臂 park；导航态）。
 #   LOOKOUT (j2=0.43,j3=-0.34): 视轴 pitch=-0.16° （水平前视；SCAN/ALIGN；**默认启动姿态**）。
+#   MANIP_LOOKOUT 与 CARRY 共用实测可行的臂姿，但保持夹爪 OPEN（操作观察/预抓取态）。
 #   CARRY   (j2=1.00,j3=-0.71): 视轴 pitch=-11.62°（胸前握持略俯视；载物导航态）。
-# URDF 关节限位核对：j2∈[0,3.14], j3∈[-2.967,0]（三姿态全在域内）；
+# URDF 关节限位核对：j2∈[0,3.14], j3∈[-2.967,0]（四姿态全在域内）；
 #                    j7∈[0,0.035], j8∈[-0.035,0]（OPEN/CLOSED 全在域内）。
 _GRIP_OPEN = (0.035, -0.035)
 
@@ -48,6 +50,12 @@ NAMED_POSES: dict[str, dict[str, float]] = {
                 "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
     "LOOKOUT": {"piper_joint2": 0.43, "piper_joint3": -0.34,
                 "piper_joint7": _GRIP_OPEN[0], "piper_joint8": _GRIP_OPEN[1]},
+    "MANIP_LOOKOUT": {
+        "piper_joint2": 1.00,
+        "piper_joint3": -0.71,
+        "piper_joint7": _GRIP_OPEN[0],
+        "piper_joint8": _GRIP_OPEN[1],
+    },
     "CARRY":   {"piper_joint2": 1.00, "piper_joint3": -0.71,
                 "piper_joint7": 0.0, "piper_joint8": 0.0},
 }
@@ -309,7 +317,7 @@ def optical_axis_pitch_deg(base_to_optical_quat_wxyz) -> float:
 
 
 # ==================================================================== FK 自检
-# 独立可跑的 5 行 FK 自检（impl-map 1f/§9.5 铁则）：打印三姿态视轴 pitch，核对 G-b。
+# 独立可跑的 FK 自检（impl-map 1f/§9.5 铁则）：打印四姿态视轴 pitch，核对 G-b。
 # 不依赖 isaac；纯 URDF 关节表 FK。`python3 wrist_camera.py` 即跑。
 def _selftest_fk() -> None:
     def rpy_to_R(r, p, y):

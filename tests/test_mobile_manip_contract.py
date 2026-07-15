@@ -28,6 +28,9 @@ from piper_trajectory import (  # noqa: E402
 )
 from wrist_camera import (  # noqa: E402
     camera_update_elapsed_dt,
+    DEFAULT_POSE,
+    NAMED_POSES,
+    pose_target_by_names,
     require_new_camera_frame,
 )
 
@@ -247,6 +250,24 @@ class PiperExecutionContractTest(unittest.TestCase):
         self.assertIsNotNone(carry)
         self.assertIn('"piper_joint7": 0.0', carry.group(1))
         self.assertIn('"piper_joint8": 0.0', carry.group(1))
+
+    def test_manip_lookout_reuses_carry_arm_with_open_gripper(self):
+        self.assertEqual(DEFAULT_POSE, "LOOKOUT")
+        self.assertIn("MANIP_LOOKOUT", NAMED_POSES)
+
+        joint_names = tuple(
+            f"piper_joint{index}" for index in (6, 4, 2, 8, 1, 7, 5, 3)
+        )
+        manip_target = pose_target_by_names("MANIP_LOOKOUT", joint_names)
+        carry_target = pose_target_by_names("CARRY", joint_names)
+        by_name = dict(zip(joint_names, manip_target))
+        carry_by_name = dict(zip(joint_names, carry_target))
+
+        for index in range(1, 7):
+            name = f"piper_joint{index}"
+            self.assertEqual(by_name[name], carry_by_name[name])
+        self.assertEqual(by_name["piper_joint7"], 0.035)
+        self.assertEqual(by_name["piper_joint8"], -0.035)
 
     def test_reordered_joint_names_interpolate_in_canonical_order_on_sim_time(self):
         buffer = make_buffer()

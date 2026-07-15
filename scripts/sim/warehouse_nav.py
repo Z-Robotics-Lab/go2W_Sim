@@ -117,7 +117,7 @@ from std_msgs.msg import Float32  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 from trajectory_msgs.msg import JointTrajectory  # noqa: E402
 
-# Z-Manip M0：腕相机口径 + 三姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
+# Z-Manip M0：腕相机口径 + 四姿态常量（同目录 sibling；纯常量/助手，无 isaac 依赖）。
 import wrist_camera as wc  # noqa: E402
 from manip_scene import legacy_grasp_box_enabled, load_manip_scene  # noqa: E402
 from piper_trajectory import (  # noqa: E402
@@ -698,7 +698,8 @@ def main():
         Float32, "/piper/gripper_aperture", on_gripper_aperture, 5)
     node.create_subscription(Bool, "/piper/cancel", on_execution_cancel, 5)
 
-    # Z-Manip M0：三姿态切换通道 /piper/named_pose(std_msgs/String ∈ {STOW,LOOKOUT,CARRY})。
+    # Z-Manip M0：四姿态切换通道
+    # /piper/named_pose(std_msgs/String ∈ {STOW,LOOKOUT,MANIP_LOOKOUT,CARRY})。
     # sim 内部 String 通道，不经 HTTP 桥、不加 nav_owner 态。
     # 回调只置目标姿态名（校验合法），主循环按属主协调写臂目标（见抓取块 if/else 排他分支）。
     # 默认目标=LOOKOUT：拉起后主循环把臂切到平视（当前 URDF init 视轴朝上 +27.9° 过不了 G-b）。
