@@ -251,7 +251,7 @@ class PiperExecutionContractTest(unittest.TestCase):
         self.assertIn('"piper_joint7": 0.0', carry.group(1))
         self.assertIn('"piper_joint8": 0.0', carry.group(1))
 
-    def test_manip_lookout_reuses_carry_arm_with_open_gripper(self):
+    def test_manip_lookout_adds_downward_wrist_pitch_with_open_gripper(self):
         self.assertEqual(DEFAULT_POSE, "LOOKOUT")
         self.assertIn("MANIP_LOOKOUT", NAMED_POSES)
 
@@ -263,9 +263,10 @@ class PiperExecutionContractTest(unittest.TestCase):
         by_name = dict(zip(joint_names, manip_target))
         carry_by_name = dict(zip(joint_names, carry_target))
 
-        for index in range(1, 7):
+        for index in (1, 2, 3, 4, 6):
             name = f"piper_joint{index}"
             self.assertEqual(by_name[name], carry_by_name[name])
+        self.assertGreater(by_name["piper_joint5"], carry_by_name["piper_joint5"])
         self.assertEqual(by_name["piper_joint7"], 0.035)
         self.assertEqual(by_name["piper_joint8"], -0.035)
 

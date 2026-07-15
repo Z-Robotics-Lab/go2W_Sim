@@ -36,8 +36,10 @@ import numpy as np
 # FK 实证（go2w_sensored.urdf 全链，见文件尾自检）——视轴=相机 prim +X（world 约定）：
 #   STOW    (j2=0.80,j3=-1.20): 视轴 pitch=+27.91°（朝上，收臂 park；导航态）。
 #   LOOKOUT (j2=0.43,j3=-0.34): 视轴 pitch=-0.16° （水平前视；SCAN/ALIGN；**默认启动姿态**）。
-#   MANIP_LOOKOUT 与 CARRY 共用实测可行的臂姿，但保持夹爪 OPEN（操作观察/预抓取态）。
-#   CARRY   (j2=1.00,j3=-0.71): 视轴 pitch=-11.62°（胸前握持略俯视；载物导航态）。
+#   MANIP_LOOKOUT 在 CARRY 几何上增加腕部俯角 j5=0.30，使近场目标在接近期间
+#                 保持于垂直 FOV 内；夹爪保持 OPEN（操作观察/预抓取态）。
+#   CARRY   (j2=1.00,j3=-0.71,j5=0.00): 视轴 pitch=-11.62°（载物导航态）。
+#   MANIP   (j2=1.00,j3=-0.71,j5=0.30): 视轴 pitch=-28.81°（近场操作态）。
 # URDF 关节限位核对：j2∈[0,3.14], j3∈[-2.967,0]（四姿态全在域内）；
 #                    j7∈[0,0.035], j8∈[-0.035,0]（OPEN/CLOSED 全在域内）。
 _GRIP_OPEN = (0.035, -0.035)
@@ -53,6 +55,7 @@ NAMED_POSES: dict[str, dict[str, float]] = {
     "MANIP_LOOKOUT": {
         "piper_joint2": 1.00,
         "piper_joint3": -0.71,
+        "piper_joint5": 0.30,
         "piper_joint7": _GRIP_OPEN[0],
         "piper_joint8": _GRIP_OPEN[1],
     },
