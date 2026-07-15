@@ -1,13 +1,18 @@
 # RViz mobile-manipulation view
 
 The normal `GO2W_SCENE=office NAV_MODE=waypoint` bringup now loads one combined
-RViz configuration.  It keeps every upstream navigation display and adds two
-live dock panes plus grouped 3-D manipulation diagnostics.  It is an observer:
+RViz configuration.  It keeps the upstream navigation displays in one compact
+group and adds two live dock panes plus grouped 3-D manipulation diagnostics.
+It is an observer:
 none of these displays or the status bridge publish motion commands, and none
 subscribe to `/ground_truth/*` or `/objects/*`.
 
 ## Default layout
 
+- `Navigation | Registered Scan + Path`: `/registered_scan` plus the line-only
+  navigation path. Planner tuning products such as the vehicle axes,
+  free-path fan, waypoint, boundary, duplicate maps, and goal-pose glyph stay
+  available but default off.
 - `Perception | Wrist RGB [LIVE]`: `/camera/color/image_raw`.
 - `Perception | Aligned Depth [LIVE]`:
   `/camera/aligned_depth_to_color/image_raw`, normalized by RViz for inspection.
@@ -19,7 +24,9 @@ subscribe to `/ground_truth/*` or `/objects/*`.
   `/z_manip/debug/markers`, the live planned TCP path from
   `/z_manip/debug/arm_path`, executed TCP paths, perceived collision markers,
   and Octomap occupied cells. Missing-upstream items are explicitly named and
-  disabled so a minimal navigation deployment stays clean.
+  disabled so a minimal navigation deployment stays clean. Candidate grasps,
+  executed-path history, target-pose glyphs, and key-frame axes are opt-in;
+  every `nav_msgs/Path` is rendered as a line without per-pose axes.
 - `Manipulation Diagnostics`: live standard `visualization_msgs/Marker` text for
   `/piper/execution_status` and `/z_manip/perception/status` plus
   `/z_manip/perception/valid`.  Gray means unavailable/stale, amber means active

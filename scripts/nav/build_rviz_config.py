@@ -45,6 +45,26 @@ ENV_OVERRIDES = {
 }
 
 
+# These displays are useful while tuning the upstream local planner, but they
+# duplicate the registered scan or render dense glyphs over it.  Keep the
+# displays available in the Navigation group without making them part of the
+# normal mobile-manipulation view.
+STOCK_DEBUG_DISPLAYS = frozenset({
+    "Vehicle",
+    "SensorScan",
+    "TerrainMap",
+    "TerrainMapExt",
+    "FreePaths",
+    "Waypoint",
+    "Boundary",
+    "AddedObstacles",
+    "OverallMap",
+    "ExploredAreas",
+    "Trajectory",
+    "Pose",
+})
+
+
 def load_contract(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema_version") != 1:
@@ -206,6 +226,27 @@ def _group(name: str, displays: list[dict[str, Any]], *, enabled: bool = True) -
     }
 
 
+def _walk_displays(displays: list[dict[str, Any]]):
+    for display in displays:
+        yield display
+        children = display.get("Displays")
+        if isinstance(children, list):
+            yield from _walk_displays(children)
+
+
+def _sanitize_stock_displays(displays: list[dict[str, Any]]) -> None:
+    """Make the inherited navigation view line-only and quiet by default."""
+    for display in _walk_displays(displays):
+        if display.get("Class") == "rviz_default_plugins/Path":
+            # The stock file historically omitted this field, which makes
+            # RViz render an axes glyph at every pose on some installations.
+            display["Pose Style"] = "None"
+            display["Buffer Length"] = 1
+        if display.get("Name") in STOCK_DEBUG_DISPLAYS:
+            display["Enabled"] = False
+            display["Value"] = False
+
+
 def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(config)
     panels = result.setdefault("Panels", [])
@@ -228,12 +269,11 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         if display.get("Class") != "rviz_default_plugins/Image"
         and not str(display.get("Name", "")).startswith(("Perception |", "Manipulation |"))
     ]
-    # Keep upstream navigation diagnostics available without letting large
-    # frame axes or the dense free-path fan cover the registered map.
-    for display in displays:
-        if display.get("Name") in {"Vehicle", "FreePaths"}:
-            display["Enabled"] = False
-            display["Value"] = False
+    # Keep upstream navigation diagnostics available without letting frame
+    # axes, pose glyphs, map duplicates, or the dense free-path fan cover the
+    # registered scan. Grouping them also keeps the operator tree short.
+    _sanitize_stock_displays(displays)
+    navigation = _group("Navigation | Registered Scan + Path", list(displays))
     topics = contract["topics"]
 
     image_displays = [
@@ -394,8 +434,14 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
         "Update Interval": 0,
         "Value": False,
     }
-    displays[:0] = image_displays + [local_lidar]
-    displays.extend([tf_display, perception, manipulation, diagnostics])
+    displays[:] = image_displays + [
+        local_lidar,
+        navigation,
+        tf_display,
+        perception,
+        manipulation,
+        diagnostics,
+    ]
 
     views = manager.setdefault("Views", {})
     current = views.get("Current")
@@ -436,6 +482,16 @@ def augment_config(config: dict[str, Any], contract: dict[str, Any]) -> dict[str
     geometry.pop("Perception | Target Mask [upstream required]", None)
     geometry["Displays"] = {"collapsed": False}
     geometry["Hide Left Dock"] = False
+    for stale_dock in (
+        "Image",
+        "SemanticImage",
+        "Selection",
+        "TeleopPanel",
+        "Time",
+        "Tool Properties",
+        "Views",
+    ):
+        geometry.pop(stale_dock, None)
     # The upstream opaque Qt state hides the Displays tree.  Dropping it lets
     # RViz lay out the RGB/depth docks beside an immediately operable tree.
     geometry.pop("QMainWindow State", None)

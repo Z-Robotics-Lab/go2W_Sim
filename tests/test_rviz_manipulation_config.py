@@ -53,6 +53,29 @@ def _minimal_stock():
                     "Topic": {"Value": "/free_paths"},
                 },
                 {
+                    "Class": "rviz_default_plugins/Path",
+                    "Name": "Path",
+                    "Enabled": True,
+                    "Value": True,
+                    "Buffer Length": 8,
+                    "Pose Style": "Axes",
+                    "Topic": {"Value": "/path"},
+                },
+                {
+                    "Class": "rviz_default_plugins/PointStamped",
+                    "Name": "Waypoint",
+                    "Enabled": True,
+                    "Value": True,
+                    "Topic": {"Value": "/way_point"},
+                },
+                {
+                    "Class": "rviz_default_plugins/Pose",
+                    "Name": "Pose",
+                    "Enabled": True,
+                    "Value": True,
+                    "Topic": {"Value": "/goal_pose"},
+                },
+                {
                     "Class": "rviz_default_plugins/Image",
                     "Name": "legacy image",
                     "Enabled": True,
@@ -94,6 +117,13 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Vehicle"]["Value"] is False
     assert by_name["FreePaths"]["Enabled"] is False
     assert by_name["FreePaths"]["Value"] is False
+    assert by_name["Waypoint"]["Enabled"] is False
+    assert by_name["Waypoint"]["Value"] is False
+    assert by_name["Pose"]["Enabled"] is False
+    assert by_name["Pose"]["Value"] is False
+    assert by_name["Path"]["Enabled"] is True
+    assert by_name["Path"]["Pose Style"] == "None"
+    assert by_name["Path"]["Buffer Length"] == 1
     assert "legacy image" not in by_name
     # Raw LiDAR uses the pitched physical frame and is an opt-in diagnostic;
     # level /registered_scan remains the default navigation visualization.
@@ -108,12 +138,14 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
     assert by_name["Perception | Detections + Mask [upstream required]"]["Enabled"] is False
     assert by_name["Validated Target Cloud [upstream required]"]["Enabled"] is False
     assert by_name["Scene Collision Cloud [upstream required]"]["Enabled"] is False
+    assert by_name["Tracked Target Pose [upstream required]"]["Enabled"] is False
     assert by_name["6DoF Grasp Candidates [upstream required]"]["Enabled"] is False
     assert by_name["6DoF Grasp Candidates [upstream required]"]["Value"] is False
     assert by_name["Selected Pregrasp + Grasp [LIVE when planned]"]["Enabled"] is True
     assert by_name["Selected Pregrasp + Grasp [LIVE when planned]"]["Value"] is True
     assert by_name["Planned TCP Trajectory [LIVE when planned]"]["Enabled"] is True
     assert by_name["Planned TCP Trajectory [LIVE when planned]"]["Pose Style"] == "None"
+    assert by_name["Executed TCP Trace [upstream required]"]["Enabled"] is False
     assert by_name["Octomap Occupied Cells [octomap_server required]"]["Enabled"] is False
     assert by_name["Perception Contract Status"]["Enabled"] is False
     assert by_name["PiPER Execution Status"]["Enabled"] is False
@@ -128,6 +160,23 @@ def test_combined_config_preserves_navigation_and_adds_safe_debug_views():
         == "camera_color_optical_frame"
     )
     assert "QMainWindow State" not in result["Window Geometry"]
+    assert "Image" not in result["Window Geometry"]
+    assert "SemanticImage" not in result["Window Geometry"]
+
+    top_level_names = {
+        display["Name"]
+        for display in result["Visualization Manager"]["Displays"]
+    }
+    assert "Navigation | Registered Scan + Path" in top_level_names
+    assert "RegScan" not in top_level_names
+    enabled_images = [
+        display for display in displays
+        if display["Class"] == "rviz_default_plugins/Image" and display["Enabled"]
+    ]
+    assert {display["Name"] for display in enabled_images} == {
+        "Perception | Wrist RGB [LIVE]",
+        "Perception | Aligned Depth [LIVE]",
+    }
 
     saved = result["Visualization Manager"]["Views"]["Saved"]
     assert {view["Name"] for view in saved} == {
@@ -207,6 +256,48 @@ def test_planning_displays_match_live_z_manip_debug_contract():
     assert path["Line Width"] > 0.0
 
 
+def test_every_navigation_and_manipulation_path_is_line_only():
+    builder = _load_builder()
+    result = builder.augment_config(_minimal_stock(), builder.load_contract(CONTRACT_PATH))
+    paths = [
+        display
+        for display in _flatten(result["Visualization Manager"]["Displays"])
+        if display["Class"] == "rviz_default_plugins/Path"
+    ]
+    assert {display["Topic"]["Value"] for display in paths} == {
+        "/path",
+        "/z_manip/debug/arm_path",
+        "/z_manip/visualization/executed_tcp_path",
+    }
+    assert all(display["Pose Style"] == "None" for display in paths)
+    assert all(display["Buffer Length"] == 1 for display in paths)
+
+
+def test_every_known_stock_debug_display_is_opt_in():
+    builder = _load_builder()
+    stock = _minimal_stock()
+    present = {
+        display["Name"]
+        for display in stock["Visualization Manager"]["Displays"]
+    }
+    for name in builder.STOCK_DEBUG_DISPLAYS - present:
+        stock["Visualization Manager"]["Displays"].append({
+            "Class": "rviz_default_plugins/PointCloud2",
+            "Name": name,
+            "Enabled": True,
+            "Value": True,
+        })
+    result = builder.augment_config(stock, builder.load_contract(CONTRACT_PATH))
+    displays = {
+        display["Name"]: display
+        for display in _flatten(result["Visualization Manager"]["Displays"])
+    }
+    assert all(
+        not displays[name]["Enabled"] and not displays[name]["Value"]
+        for name in builder.STOCK_DEBUG_DISPLAYS
+    )
+
+
 def test_only_standard_jazzy_display_plugins_are_required():
     builder = _load_builder()
     result = builder.augment_config(_minimal_stock(), builder.load_contract(CONTRACT_PATH))
@@ -224,6 +315,7 @@ def test_only_standard_jazzy_display_plugins_are_required():
         "rviz_default_plugins/MarkerArray",
         "rviz_default_plugins/Path",
         "rviz_default_plugins/PointCloud2",
+        "rviz_default_plugins/PointStamped",
         "rviz_default_plugins/Pose",
         "rviz_default_plugins/RobotModel",
         "rviz_default_plugins/TF",
