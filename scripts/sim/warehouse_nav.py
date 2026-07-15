@@ -292,6 +292,14 @@ def _rest_z(bbox_z: float) -> float:
 # 入选 3 件的立高 = 核验 bbox Y 分量（立正后即竖直尺寸）：soup 首抓 Ø66×H102 /
 # sugar 薄盒立起 176 高、38mm 薄边呈爪 / mustard 瓶 191 高、瓶身 58mm 呈爪。
 _H_SOUP, _H_SUGAR, _H_MUSTARD = 0.10185, 0.17625, 0.1913
+# ===== 爪子友好的窄抓取物：纯红小立方（CEO 令 2026-07-14）=====
+# 缘由：PiPER 平行爪最大张开 GRIPPER_WIDTH_MAX=0.070m；soup_can Ø66mm 仅 4mm 余量，
+# 平行爪物理上兜不过最粗处 → CEO 换更窄目标。取景同治：纯色小盒比俯视罐盖好检测/好肉眼分辨。
+# 尺寸配置驱动（真机换真实小物只改这一常量，带单位）：立方边长 0.04m ≤ 0.6×0.070=0.042m
+# （留 30mm 余量，vs soup 4mm）。立方对称 → 无姿态歧义、检测词形状分明。
+_RED_BLOCK_W = 0.04                 # 立方边长 [m]（宽=高=深；≤0.6×GRIPPER_WIDTH_MAX 0.042）
+_RED_BLOCK_COLOR = (0.9, 0.05, 0.05)  # 纯红 diffuse（PreviewSurfaceCfg；好检测好分辨）
+_RED_BLOCK_MASS = 0.05              # [kg] 轻质塑料小盒量级（YCB soup 罐 ~0.35kg，此更轻）
 # 一列贴 -X 近边（托盘转向后短轴面向机器人来向）：列 X = 锚-0.08（距转向后 -X 台缘
 # 0.20057-0.08=0.12057m ≤ reach gate 0.15m，与旧布局 0.12m margin 同量级）；
 # Y = 锚±0.18 间距（爪进入余量 + 单目标隔离；端件距 Y 台缘 0.30331-0.18=0.12331m）。
@@ -312,6 +320,25 @@ PROPS_OFFICE = [
      "pos": (_ROW_X, _ANCHOR_Y, _rest_z(_H_SUGAR)), "rot": _UPRIGHT, "physics": True},
     {"name": "mustard", "usd": f"{_ITEM_DIR}/006_mustard_bottle.usd",
      "pos": (_ROW_X, _ANCHOR_Y + 0.18, _rest_z(_H_MUSTARD)), "rot": _UPRIGHT, "physics": True},
+    # 爪子友好的窄抓取目标：纯红小立方（CEO 令，抓取目标改此件，soup_can 保留供参照）。
+    # 用 spawn 原语（CuboidCfg）而非 usd 路径——立方为程序化基元，spawn 键存在时 spawn 环节
+    # 直接用之（见下 spawn loop 的 additive 分支）。摆位：嵌入 soup_can(锚-0.18) 与
+    # sugar_box(锚) 之间的空档（Y=锚-0.09），距 GRASP spawn 0.903m/+4.4°（近 soup_can 直进
+    # 几何，几乎正前方），reach 窄带内（边距 0.1206m）。距 soup_can 37mm、sugar_box 47mm
+    # 不重叠。worst_to_corner=0.4995 < 现最坏 0.55885 ⇒ z-manip KEEPOUT_RADIUS 派生不变。
+    # 立方 z=顶面+半边+落差裕量（同 _rest_z 逻辑，实参=边长）。rot=_UPRIGHT 与其它件统一
+    # （立方对称，Rx90° 无害）→ 过 G-p7 立正 gate 的同一判据。
+    {"name": "red_block",
+     "spawn": sim_utils.CuboidCfg(
+         size=(_RED_BLOCK_W, _RED_BLOCK_W, _RED_BLOCK_W),
+         rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+         mass_props=sim_utils.MassPropertiesCfg(mass=_RED_BLOCK_MASS),
+         collision_props=sim_utils.CollisionPropertiesCfg(),
+         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=_RED_BLOCK_COLOR),
+         physics_material=sim_utils.RigidBodyMaterialCfg(
+             static_friction=1.5, dynamic_friction=1.3, restitution=0.0)),
+     "pos": (_ROW_X, _ANCHOR_Y - 0.09, _rest_z(_RED_BLOCK_W)),
+     "rot": _UPRIGHT, "physics": True},
 ]
 SCENES["office"]["props"] = PROPS_OFFICE  # 回填占位（前向引用规避）
 # 其它场景无 props ⇒ 取 [] 向后兼容（main 用 SCENE.get("props") or []）。
@@ -458,23 +485,29 @@ def main():
     # phys_props（name→RigidObject），供 GT 多路发布循环沿用 box 的组装逻辑（抽 _publish_odom）。
     phys_props = {}
     for _pd in SCENE_PROPS:
-        _pname, _pusd, _ppos = _pd["name"], _pd["usd"], _pd["pos"]
+        _pname, _ppos = _pd["name"], _pd["pos"]
         _prot = _pd.get("rot", (1.0, 0.0, 0.0, 0.0))   # quat(w,x,y,z)；YCB 立正用
         _pscale = _pd.get("scale")                      # None=原尺寸；托盘缩 XY 用
+        # spawn 源二选一（additive）：给 usd 路径走 UsdFileCfg（YCB 自带质量/collider）；
+        # 给 spawn 配置对象（如 CuboidCfg）则直接用之（程序化基元，如 red_block 窄抓取物）。
+        _pspawn = _pd.get("spawn")
+        _pusd = _pd.get("usd")
+        if _pspawn is None:
+            _pspawn = sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale)
+        _psrc = _pusd if _pusd is not None else type(_pspawn).__name__
         if _pd["physics"]:
-            # 参照 BOX_CFG，仅把 spawn 源从 CuboidCfg 换成 UsdFileCfg（YCB 自带质量/collider）。
+            # 参照 BOX_CFG：spawn 源 = usd(YCB) 或 CuboidCfg 等基元；init_state 落位/立正统一。
             _cfg = RigidObjectCfg(
                 prim_path=f"/World/Props/{_pname}",
-                spawn=sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale),
+                spawn=_pspawn,
                 init_state=RigidObjectCfg.InitialStateCfg(pos=_ppos, rot=_prot),
             )
             phys_props[_pname] = RigidObject(_cfg)
-            print(f"[NAV][M05] physics prop {_pname} @ {_ppos} rot={_prot} <- {_pusd}", flush=True)
+            print(f"[NAV][M05] physics prop {_pname} @ {_ppos} rot={_prot} <- {_psrc}", flush=True)
         else:
-            # 静态垫台：直落 USD prim（参照场景 USD 落法 env_cfg.func）。translate=落位。
-            _scfg = sim_utils.UsdFileCfg(usd_path=_pusd, scale=_pscale)
-            _scfg.func(f"/World/Props/{_pname}", _scfg, translation=_ppos, orientation=_prot)
-            print(f"[NAV][M05] static prop {_pname} @ {_ppos} scale={_pscale} <- {_pusd}", flush=True)
+            # 静态垫台：直落 prim（参照场景 USD 落法 env_cfg.func）。translate=落位。
+            _pspawn.func(f"/World/Props/{_pname}", _pspawn, translation=_ppos, orientation=_prot)
+            print(f"[NAV][M05] static prop {_pname} @ {_ppos} scale={_pscale} <- {_psrc}", flush=True)
     imu = IsaacImu(ImuCfg(
         prim_path="/World/Robot/mid360_link",
         # 注意（2026-07-08 更正）：OffsetCfg 从未传 rot（历史注释描述过"-20°反转装平"设计但
