@@ -136,8 +136,8 @@ red-team.
 | `GO2W_POLICY_LEG_STIFFNESS` | `25.0` | leg Kp (payload A/B B-arm = 100) | warehouse_nav.py |
 | `GO2W_POLICY_LEG_DAMPING` | `0.5` | leg Kd (B-arm = 5) | warehouse_nav.py |
 | `GO2W_STANDSTILL` | `1` | parking/standstill on/off | warehouse_nav.py |
-| `GO2W_STANDSTILL_WHEEL_KP` | `20.0` | parked wheel position Kp | standstill_control.py |
-| `GO2W_STANDSTILL_WHEEL_DAMPING` | `8.0` | parked wheel damping | standstill_control.py |
+| `GO2W_STANDSTILL_WHEEL_KP` | `100.0` | parked wheel position Kp (20→100: KP=20 let the arm-extension reaction roll parked wheels +13cm fore during a grasp sting, z-manip run65→67; park is standstill-only so nav is unaffected) | standstill_control.py |
+| `GO2W_STANDSTILL_WHEEL_DAMPING` | `40.0` | parked wheel damping (8→40 with the Kp bump) | standstill_control.py |
 | `GO2W_STANDSTILL_GAIN_TICKS` | `10` | drive↔park gain blend ticks | standstill_control.py |
 | `GO2W_IMU_ROUTE` | `rotate` | IMU frame route (2a) | warehouse_nav.py + sync_navstack_files.sh |
 | `GO2W_BRINGUP_ORDER` | `nav_first` | launch order (2b) | bringup.sh |
