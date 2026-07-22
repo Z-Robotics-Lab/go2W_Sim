@@ -1082,7 +1082,9 @@
     <child link="mount_plate" />
   </joint>
   <joint name="piper_mount_joint" type="fixed">
-    <origin xyz="0.06 0.0 0.067" rpy="0 0 0" />
+    <!-- 2026-07-22: calibrated mechanical assembly transform.  Keep this in
+         sync with Z-Mobile-manip/configs/piper_collision_capsules.json. -->
+    <origin xyz="0.128526599 0.0 0.081794287" rpy="0 0 0" />
     <parent link="base" />
     <child link="piper_base_link" />
   </joint>
