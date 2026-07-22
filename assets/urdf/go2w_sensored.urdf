@@ -1162,7 +1162,9 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
-        <cylinder radius="0.0325" length="0.065" />
+        <!-- Conservative Mid-360 envelope.  The visual mesh measures about
+             72.7 x 64.9 x 60.1 mm; this also covers its small mount tolerance. -->
+        <cylinder radius="0.042" length="0.075" />
       </geometry>
     </collision>
   </link>
