@@ -1171,9 +1171,36 @@
     </collision>
   </link>
   <joint name="mid360_joint" type="fixed">
-    <origin xyz="0.27 0.0 0.1" rpy="0 0.3490658503988659 0" />
+    <!-- 2026-07-28: measured Mid-360 origin on the real Go2-W head, approved by
+         the operator against a photograph (was xyz="0.27 0.0 0.1").  NOTE: this
+         edit changes NOTHING at runtime.  PinocchioSelfCollisionChecker reduces
+         the model to the six active arm joints, so every geometry fixed to
+         `base` (including this one and mid360_bracket_link below) is dropped
+         before a single collision pair is built.  Commit e4be019 "enlarge
+         envelope" edited head collision geometry here and had zero effect;
+         a8ecd46 then shrank the *enforced* capsule and nobody noticed.  The
+         enforced keep-out lives in
+         Z-Mobile-manip/configs/piper_collision_capsules.json ("mid360",
+         "mid360_bracket"); tests/test_lidar_keepout.py pins the two together. -->
+    <origin xyz="0.33 0.0 0.14" rpy="0 0.3490658503988659 0" />
     <parent link="base" />
     <child link="mid360_link" />
+  </joint>
+  <link name="mid360_bracket_link">
+    <!-- Mounting post carrying the Mid-360 above the torso deck.  Spans deck top
+         (base z=+0.057) to the sensor origin (base z=0.140) = 83 mm, 70x70 mm in
+         section.  Visualisation truth only; see the note on mid360_joint. -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.07 0.07 0.083" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="mid360_bracket_joint" type="fixed">
+    <origin xyz="0.317174 0.0 0.0985" rpy="0 0 0" />
+    <parent link="base" />
+    <child link="mid360_bracket_link" />
   </joint>
   <link name="d435_link">
     <inertial>
